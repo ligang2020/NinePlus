@@ -24,6 +24,7 @@ jobs:
       CONFIGURATION: Release
       APP_VERSION: 1.2.58
       BUILD_NUMBER: 58
+      EXPORT_PATH: ${{ runner.temp }}/ipa-export
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -33,7 +34,8 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Validate signing secrets
+      - name: Detect signing mode
+        id: signing
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
@@ -41,19 +43,16 @@ jobs:
           WIDGET_PROFILE_BASE64: ${{ secrets.WIDGET_PROFILE_BASE64 }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          missing=0
-          for name in BUILD_CERTIFICATE_BASE64 P12_PASSWORD APP_PROFILE_BASE64 WIDGET_PROFILE_BASE64 APPLE_TEAM_ID; do
-            if [ -z "$(eval echo \$$name)" ]; then
-              echo "Missing required secret: $name"
-              missing=1
-            fi
-          done
-          if [ "$missing" -ne 0 ]; then
-            echo "Configure Apple signing secrets before building a device-installable IPA."
-            exit 1
+          if [ -n "$BUILD_CERTIFICATE_BASE64" ] && [ -n "$P12_PASSWORD" ] && [ -n "$APP_PROFILE_BASE64" ] && [ -n "$WIDGET_PROFILE_BASE64" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Building signed IPA."
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "Apple signing secrets are missing; building an unsigned IPA artifact."
           fi
 
       - name: Install signing assets
+        if: steps.signing.outputs.signed == 'true'
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
@@ -85,7 +84,8 @@ jobs:
             cp "$profile" "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.mobileprovision"
           done
 
-      - name: Archive
+      - name: Archive signed app
+        if: steps.signing.outputs.signed == 'true'
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
@@ -100,13 +100,14 @@ jobs:
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
 
-      - name: Export IPA
+      - name: Export signed IPA
+        if: steps.signing.outputs.signed == 'true'
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           ARCHIVE_PATH="$RUNNER_TEMP/NineBotPlus.xcarchive"
-          EXPORT_PATH="$RUNNER_TEMP/ipa-export"
           EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
+          mkdir -p "$EXPORT_PATH"
           /usr/libexec/PlistBuddy -c 'Clear dict' "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c 'Add :method string ad-hoc' "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c 'Add :signingStyle string automatic' "$EXPORT_OPTIONS"
@@ -118,6 +119,36 @@ jobs:
             -archivePath "$ARCHIVE_PATH" \
             -exportPath "$EXPORT_PATH" \
             -exportOptionsPlist "$EXPORT_OPTIONS"
+
+      - name: Build unsigned IPA
+        if: steps.signing.outputs.signed != 'true'
+        run: |
+          DERIVED_DATA="$RUNNER_TEMP/unsigned-build"
+          xcodebuild clean build \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
+            MARKETING_VERSION="$APP_VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+
+          APP_PATH=$(find "$DERIVED_DATA/Build/Products/${CONFIGURATION}-iphoneos" -maxdepth 1 -name '*.app' -print -quit)
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app product found."
+            exit 1
+          fi
+
+          rm -rf "$EXPORT_PATH"
+          mkdir -p "$EXPORT_PATH/Payload"
+          cp -R "$APP_PATH" "$EXPORT_PATH/Payload/"
+          cd "$EXPORT_PATH"
+          /usr/bin/zip -qry "NineBotPlus-v${APP_VERSION}-unsigned.ipa" Payload
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
