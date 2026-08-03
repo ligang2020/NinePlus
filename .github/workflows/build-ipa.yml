@@ -24,7 +24,6 @@ jobs:
       CONFIGURATION: Release
       APP_VERSION: 1.2.58
       BUILD_NUMBER: 58
-      EXPORT_PATH: ${{ runner.temp }}/ipa-export
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -106,6 +105,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           ARCHIVE_PATH="$RUNNER_TEMP/NineBotPlus.xcarchive"
+          EXPORT_PATH="$RUNNER_TEMP/ipa-export"
           EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
           mkdir -p "$EXPORT_PATH"
           /usr/libexec/PlistBuddy -c 'Clear dict' "$EXPORT_OPTIONS"
@@ -124,6 +124,7 @@ jobs:
         if: steps.signing.outputs.signed != 'true'
         run: |
           DERIVED_DATA="$RUNNER_TEMP/unsigned-build"
+          EXPORT_PATH="$RUNNER_TEMP/ipa-export"
           xcodebuild clean build \
             -project "$PROJECT_PATH" \
             -scheme "$SCHEME" \
