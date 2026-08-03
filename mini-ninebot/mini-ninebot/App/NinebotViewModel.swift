@@ -9,6 +9,8 @@ enum NinebotInputError: LocalizedError {
     case missingAccount
     case missingPassword
     case missingCode
+    case missingVehicle
+    case missingVehicleLocation
     case platformOnly
 
     var errorDescription: String? {
@@ -21,6 +23,10 @@ enum NinebotInputError: LocalizedError {
             return "请填写密码"
         case .missingCode:
             return "请填写验证码"
+        case .missingVehicle:
+            return "请先刷新车辆数据"
+        case .missingVehicleLocation:
+            return "当前车辆没有可用定位，请刷新车况后再设置围栏"
         case .platformOnly:
             return "请切换到服务器模式后再拉取历史行程"
         }
@@ -280,9 +286,7 @@ final class NinebotViewModel: ObservableObject {
         await runLoadingOperation(message: "正在刷新车况") {
             let client = try makeClient()
             let dashboard = try await client.fetchDashboard(selectedSN: self.dashboard.selectedSN)
-            let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            let archivedDashboard = self.saveDashboardAndScheduleAttachments(dashboard)
             self.errorMessage = nil
             self.statusMessage = "已更新 \(Self.timeFormatter.string(from: archivedDashboard.updatedAt))"
             WidgetCenter.shared.reloadAllTimelines()
@@ -302,9 +306,7 @@ final class NinebotViewModel: ObservableObject {
             self.store.upsertInterfaceRideRecords(page.records, sn: vehicleSN)
 
             let dashboard = try await client.fetchDashboard(selectedSN: vehicleSN)
-            let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            let archivedDashboard = self.saveDashboardAndScheduleAttachments(dashboard)
 
             if page.total == 0 {
                 self.statusMessage = "\(Self.displayMonth(month)) 暂无行程"
@@ -325,15 +327,15 @@ final class NinebotViewModel: ObservableObject {
     }
 
     func enableChargingNotifications() async {
-        await runLoadingOperation(message: "正在开启充电通知") {
+        await runLoadingOperation(message: "正在开启车辆通知") {
             guard self.dataSourceMode == .platform else {
                 throw NinebotPushError.missingServer
             }
             _ = try await NinebotPushManager.shared.requestAuthorizationRegisterAndWaitForToken()
             self.pushDeviceToken = self.store.loadPushDeviceToken()
             if self.pushDeviceToken != nil {
-                try await NinebotPushManager.shared.registerStoredTokenWithServer()
-                self.statusMessage = "充电通知已开启"
+                try await NinebotPushManager.shared.registerStoredTokenWithServer(vehicleSN: self.currentPushVehicleSN)
+                self.statusMessage = "车辆通知已开启"
             } else {
                 self.statusMessage = "已允许通知，系统返回设备 Token 后会自动上报"
             }
@@ -348,7 +350,7 @@ final class NinebotViewModel: ObservableObject {
             }
             _ = try await NinebotPushManager.shared.requestAuthorizationRegisterAndWaitForToken()
             self.pushDeviceToken = self.store.loadPushDeviceToken()
-            try await NinebotPushManager.shared.registerStoredTokenWithServer()
+            try await NinebotPushManager.shared.registerStoredTokenWithServer(vehicleSN: self.currentPushVehicleSN)
             self.statusMessage = "设备 Token 已上报"
             self.errorMessage = nil
         }
@@ -360,10 +362,51 @@ final class NinebotViewModel: ObservableObject {
             _ = try await NinebotPushManager.shared.requestAuthorizationRegisterAndWaitForToken()
             pushDeviceToken = store.loadPushDeviceToken()
             if pushDeviceToken != nil {
-                try await NinebotPushManager.shared.registerStoredTokenWithServer()
+                try await NinebotPushManager.shared.registerStoredTokenWithServer(vehicleSN: currentPushVehicleSN)
             }
         } catch {
             // Token sync should not block normal app refresh; diagnostics can surface manual retry errors.
+        }
+    }
+
+    func enableCurrentVehicleGeofence(radiusMeters: Double = 300) async {
+        await runLoadingOperation(message: "正在设置电子围栏") {
+            guard self.dataSourceMode == .platform else {
+                throw NinebotInputError.platformOnly
+            }
+            guard let snapshot = self.dashboard.primaryVehicle else {
+                throw NinebotInputError.missingVehicle
+            }
+            guard let latitude = snapshot.state.latitude,
+                  let longitude = snapshot.state.longitude,
+                  (-90...90).contains(latitude),
+                  (-180...180).contains(longitude) else {
+                throw NinebotInputError.missingVehicleLocation
+            }
+            try await self.makeClient().syncGeofence(
+                sn: snapshot.vehicle.sn,
+                vehicleName: snapshot.vehicle.name,
+                centerLatitude: latitude,
+                centerLongitude: longitude,
+                radiusMeters: radiusMeters,
+                isEnabled: true
+            )
+            self.statusMessage = "电子围栏已开启 · 半径 \(Int(radiusMeters)) 米"
+            self.errorMessage = nil
+        }
+    }
+
+    func disableCurrentVehicleGeofence() async {
+        await runLoadingOperation(message: "正在关闭电子围栏") {
+            guard self.dataSourceMode == .platform else {
+                throw NinebotInputError.platformOnly
+            }
+            guard let sn = self.dashboard.primaryVehicle?.vehicle.sn else {
+                throw NinebotInputError.missingVehicle
+            }
+            try await self.makeClient().deleteGeofence(sn: sn)
+            self.statusMessage = "电子围栏已关闭"
+            self.errorMessage = nil
         }
     }
 
@@ -380,9 +423,7 @@ final class NinebotViewModel: ObservableObject {
             await self.syncPushDeviceTokenIfPossible()
 
             let dashboard = try await makeClient().fetchDashboard(selectedSN: self.dashboard.selectedSN)
-            let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            let archivedDashboard = self.saveDashboardAndScheduleAttachments(dashboard)
             self.errorMessage = nil
             self.statusMessage = "登录成功"
             WidgetCenter.shared.reloadAllTimelines()
@@ -418,9 +459,7 @@ final class NinebotViewModel: ObservableObject {
             await self.syncPushDeviceTokenIfPossible()
 
             let dashboard = try await makeClient().fetchDashboard(selectedSN: self.dashboard.selectedSN)
-            let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            let archivedDashboard = self.saveDashboardAndScheduleAttachments(dashboard)
             self.errorMessage = nil
             self.statusMessage = "登录成功"
             WidgetCenter.shared.reloadAllTimelines()
@@ -458,9 +497,7 @@ final class NinebotViewModel: ObservableObject {
             self.errorMessage = nil
 
             let dashboard = try await client.fetchDashboard(selectedSN: sn)
-            let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            _ = self.saveDashboardAndScheduleAttachments(dashboard)
             WidgetCenter.shared.reloadAllTimelines()
         }
     }
@@ -571,6 +608,10 @@ final class NinebotViewModel: ObservableObject {
         baseURLString.trimmed.isEmpty ? "\(dataSourceMode.shortTitle)未配置" : "\(dataSourceMode.shortTitle) · \(baseURLString.trimmed)"
     }
 
+    private var currentPushVehicleSN: String? {
+        dashboard.selectedSN ?? dashboard.primaryVehicle?.vehicle.sn
+    }
+
     private func makeClient() throws -> NinebotProxyClient {
         let configuration = currentConfiguration
         guard configuration.isUsable else {
@@ -605,6 +646,22 @@ final class NinebotViewModel: ObservableObject {
         self.dashboard = archivedDashboard
         history = Self.historyMap(for: archivedDashboard, store: store)
         NinebotChargingLiveActivityManager.sync(with: archivedDashboard)
+        return archivedDashboard
+    }
+
+    @discardableResult
+    private func saveDashboardAndScheduleAttachments(_ dashboard: NinebotDashboard) -> NinebotDashboard {
+        let archivedDashboard = saveDashboard(dashboard)
+        let vehicleSN = archivedDashboard.selectedSN ?? archivedDashboard.primaryVehicle?.vehicle.sn
+        Task { [archivedDashboard, vehicleSN] in
+            await self.cacheVehicleImages(for: archivedDashboard)
+            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            if self.dataSourceMode == .platform, self.store.loadPushDeviceToken() != nil {
+                try? await NinebotPushManager.shared.registerStoredTokenWithServer(vehicleSN: vehicleSN)
+                self.pushDeviceToken = self.store.loadPushDeviceToken()
+            }
+            WidgetCenter.shared.reloadAllTimelines()
+        }
         return archivedDashboard
     }
 

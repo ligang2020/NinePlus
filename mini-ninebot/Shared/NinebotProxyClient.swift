@@ -115,7 +115,7 @@ struct NinebotProxyClient {
         try await request(method: "POST", path: ["vehicles", sn, "engine", "stop"])
     }
 
-    func fetchDashboard(selectedSN: String? = nil) async throws -> NinebotDashboard {
+    func fetchDashboard(selectedSN: String? = nil, includeArchivedMonths: Bool = false) async throws -> NinebotDashboard {
         let vehiclesPayload = try await request(method: "GET", path: ["vehicles"])
         let vehicleValues = Self.arrayPayload(from: vehiclesPayload, preferredKeys: ["vehicles", "data"])
         let vehicles = vehicleValues.compactMap(Self.vehicleInfo)
@@ -126,14 +126,15 @@ struct NinebotProxyClient {
             let status = try? await request(method: "GET", path: ["vehicles", vehicle.sn, "status"])
             let travel = try? await fetchTravel(sn: vehicle.sn, month: currentMonth)
             let battery = try? await request(method: "GET", path: ["vehicles", vehicle.sn, "battery"])
-            let monthlyTravels = await fetchMonthlyTravels(
-                sn: vehicle.sn,
-                authDate: vehicle.authDate,
-                currentMonth: currentMonth,
-                currentTravel: travel
-            )
             var state = Self.vehicleState(status: status, travel: travel, battery: battery, updatedAt: Date())
-            if let totalMileage = Self.totalMileage(fromMonthlyTravels: monthlyTravels) {
+            if includeArchivedMonths,
+               let monthlyTravels = await fetchMonthlyTravels(
+                   sn: vehicle.sn,
+                   authDate: vehicle.authDate,
+                   currentMonth: currentMonth,
+                   currentTravel: travel
+               ),
+               let totalMileage = Self.totalMileage(fromMonthlyTravels: monthlyTravels) {
                 state.totalMileage = totalMileage
             }
             let resolvedVehicle = Self.vehicleInfo(vehicle, addingImageFrom: status, battery: battery)
@@ -216,16 +217,45 @@ struct NinebotProxyClient {
         return payloads
     }
 
-    func registerPushDevice(token: String, bundleID: String, environment: String) async throws {
+    func registerPushDevice(token: String, bundleID: String, environment: String, vehicleSN: String? = nil) async throws {
+        var body = [
+            "token": token,
+            "bundle_id": bundleID,
+            "environment": environment,
+        ]
+        if let vehicleSN, !vehicleSN.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body["vehicle_sn"] = vehicleSN
+        }
         _ = try await request(
             method: "POST",
             path: ["devices", "register"],
+            body: body
+        )
+    }
+
+    func syncGeofence(
+        sn: String,
+        vehicleName: String,
+        centerLatitude: Double,
+        centerLongitude: Double,
+        radiusMeters: Double,
+        isEnabled: Bool = true
+    ) async throws {
+        _ = try await requestJSON(
+            method: "POST",
+            path: ["vehicles", sn, "geofence"],
             body: [
-                "token": token,
-                "bundle_id": bundleID,
-                "environment": environment,
+                "vehicle_name": .string(vehicleName),
+                "center_latitude": .number(centerLatitude),
+                "center_longitude": .number(centerLongitude),
+                "radius_meters": .number(radiusMeters),
+                "is_enabled": .bool(isEnabled),
             ]
         )
+    }
+
+    func deleteGeofence(sn: String) async throws {
+        _ = try await request(method: "DELETE", path: ["vehicles", sn, "geofence"])
     }
 
     private func request(
@@ -253,6 +283,47 @@ struct NinebotProxyClient {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(body)
         }
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NinebotProxyError.invalidResponse
+        }
+
+        if !(200..<300).contains(httpResponse.statusCode) {
+            throw NinebotProxyError.httpStatus(httpResponse.statusCode, Self.errorMessage(from: data))
+        }
+
+        if data.isEmpty {
+            return .object([:])
+        }
+
+        let root = try JSONDecoder().decode(JSONValue.self, from: data)
+        return try Self.unwrapEnvelope(root)
+    }
+
+    private func requestJSON(
+        method: String,
+        path: [String],
+        queryItems: [URLQueryItem] = [],
+        body: [String: JSONValue]
+    ) async throws -> JSONValue {
+        let url = try buildURL(path: path, queryItems: queryItems)
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let token = configuration.bearerToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        if let sessionToken = configuration.appSessionToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !sessionToken.isEmpty {
+            request.setValue(sessionToken, forHTTPHeaderField: "X-NinePlus-Session")
+        }
+
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(JSONValue.object(body))
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -507,6 +578,7 @@ private extension NinebotProxyClient {
             monthMileage: firstDouble(["total_mileages", "monthMileage"], in: travelObject),
             monthEnergy: firstDouble(["ec", "monthEnergy"], in: travelObject),
             monthUsedElectricity: firstDouble(["used_electricity", "usedElectricity"], in: travelObject),
+            mileageSinceLastCharge: nil,
             lastMileage: lastRide?.mileage,
             lastEnergy: lastRide?.energy,
             lastUsedElectricity: lastRide?.usedElectricity,

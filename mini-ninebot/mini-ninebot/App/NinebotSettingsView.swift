@@ -125,6 +125,32 @@ struct NinebotSettingsView: View {
                         }
                         .buttonStyle(.bordered)
                         .disabled(model.dataSourceMode != .platform || !model.hasConfiguration)
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("电子围栏使用当前车辆位置作为中心点，后台轮询发现进出 300 米范围时推送通知。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            HStack(spacing: 10) {
+                                Button {
+                                    Task { await model.enableCurrentVehicleGeofence() }
+                                } label: {
+                                    SettingsCompactButtonLabel(title: "开启围栏", systemImage: "mappin.and.ellipse")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(!canEnableGeofence)
+
+                                Button {
+                                    Task { await model.disableCurrentVehicleGeofence() }
+                                } label: {
+                                    SettingsCompactButtonLabel(title: "关闭围栏", systemImage: "mappin.slash")
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(!canDisableGeofence)
+                            }
+                            .font(.subheadline.weight(.semibold))
+                        }
                     }
                     .padding(.top, 8)
                 } label: {
@@ -208,6 +234,21 @@ struct NinebotSettingsView: View {
             return "\(model.dataSourceMode.shortTitle)已配置 · \(model.pushDeviceToken == nil ? "APNs 未上报" : "APNs 已就绪")"
         }
         return "配置服务器、代理模式和通知上报"
+    }
+
+    private var canEnableGeofence: Bool {
+        guard model.dataSourceMode == .platform,
+              model.hasConfiguration,
+              let state = model.dashboard.primaryVehicle?.state,
+              let latitude = state.latitude,
+              let longitude = state.longitude else {
+            return false
+        }
+        return (-90...90).contains(latitude) && (-180...180).contains(longitude)
+    }
+
+    private var canDisableGeofence: Bool {
+        model.dataSourceMode == .platform && model.hasConfiguration && model.dashboard.primaryVehicle != nil
     }
 
     private var proxyModeBinding: Binding<Bool> {

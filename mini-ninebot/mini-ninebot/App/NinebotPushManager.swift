@@ -74,7 +74,7 @@ final class NinebotPushManager: NSObject, UIApplicationDelegate, UNUserNotificat
         return await waitForStoredToken()
     }
 
-    func registerStoredTokenWithServer() async throws {
+    func registerStoredTokenWithServer(vehicleSN: String? = nil) async throws {
         guard let token = store.loadPushDeviceToken() else {
             throw NinebotPushError.missingToken
         }
@@ -87,7 +87,8 @@ final class NinebotPushManager: NSObject, UIApplicationDelegate, UNUserNotificat
         try await NinebotProxyClient(configuration: configuration).registerPushDevice(
             token: token,
             bundleID: bundleID,
-            environment: Self.apnsEnvironment
+            environment: Self.apnsEnvironment,
+            vehicleSN: vehicleSN
         )
     }
 

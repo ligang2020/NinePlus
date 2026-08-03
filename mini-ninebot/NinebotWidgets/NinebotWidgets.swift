@@ -738,7 +738,11 @@ private struct LargeStatusWidget: View {
                 HStack(spacing: 8) {
                     WidgetInfoTile(title: "本月日均", value: primary.state.dailyAverageMileageText, systemImage: "calendar")
                     WidgetInfoTile(title: "行程均速", value: primary.state.averageSpeedText, systemImage: "speedometer")
-                    WidgetInfoTile(title: "最近骑行", value: primary.state.lastRideSummaryText, systemImage: "point.topleft.down.curvedto.point.bottomright.up")
+                    WidgetInfoTile(
+                        title: primary.state.isCharging == true ? "上次充电后" : "最近骑行",
+                        value: primary.state.isCharging == true ? primary.state.mileageSinceLastChargeText : primary.state.lastRideSummaryText,
+                        systemImage: "point.topleft.down.curvedto.point.bottomright.up"
+                    )
                 }
                 .frame(height: 60)
 

@@ -568,6 +568,7 @@ private struct VehicleChargingAnalysisPanel: View {
                 BasicInfoTile(title: "充电速度", value: snapshot.state.estimatedChargingSpeedText, systemImage: "bolt.car.fill")
                 BasicInfoTile(title: "充电快照", value: "\(chargingPoints.count) 个", systemImage: "clock.arrow.circlepath")
                 BasicInfoTile(title: "电量变化", value: chargingDeltaText, systemImage: "battery.100")
+                BasicInfoTile(title: "上次充电后", value: snapshot.state.mileageSinceLastChargeText, systemImage: "road.lanes")
             }
         }
         .padding(16)
@@ -1759,8 +1760,10 @@ private struct VehicleRideSummaryGroupCard: View {
 
             VStack(spacing: 8) {
                 VehicleRideSummaryTile(
-                    title: "最近骑行",
-                    value: formatDistanceNumber(snapshot.state.lastMileage),
+                    title: snapshot.state.isCharging == true ? "上次充电后" : "最近骑行",
+                    value: snapshot.state.isCharging == true
+                        ? formatDistanceNumber(snapshot.state.mileageSinceLastCharge)
+                        : formatDistanceNumber(snapshot.state.lastMileage),
                     unit: "km",
                     systemImage: "arrow.left.arrow.right",
                     isPrimary: true
@@ -3311,6 +3314,7 @@ private struct VehicleDetailPanel: View {
                 DetailRow(title: "续航可信", value: snapshot.state.rangePerBatteryPercentText, systemImage: "speedometer")
                 DetailRow(title: "充电状态", value: snapshot.state.chargingStateText, systemImage: "bolt.fill")
                 DetailRow(title: "充电速度", value: snapshot.state.estimatedChargingSpeedText, systemImage: "bolt.car.fill")
+                DetailRow(title: "上次充电后", value: snapshot.state.mileageSinceLastChargeText, systemImage: "road.lanes")
                 DetailRow(title: "充至 80%", value: snapshot.state.estimatedChargeTo80TimeText, systemImage: "battery.75")
                 DetailRow(title: "80% 时间", value: snapshot.state.estimatedChargeTo80ClockText, systemImage: "clock.badge.checkmark")
                 DetailRow(title: "预计充满", value: snapshot.state.estimatedFullChargeTimeText, systemImage: "timer")

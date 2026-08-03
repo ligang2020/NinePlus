@@ -248,23 +248,74 @@ struct NinebotSharedStore {
         for index in archivedDashboard.vehicles.indices {
             let sn = archivedDashboard.vehicles[index].vehicle.sn
             let incomingRecords = archivedDashboard.vehicles[index].state.rides
-            guard !incomingRecords.isEmpty else {
-                let storedRecords = loadInterfaceRideRecords(sn: sn)
-                if !storedRecords.isEmpty {
-                    archivedDashboard.vehicles[index].state.rideRecords = storedRecords
-                }
-                continue
+            let storedRecords = loadInterfaceRideRecords(sn: sn)
+            let mergedRecords: [NinebotRideRecord]
+            if incomingRecords.isEmpty {
+                mergedRecords = storedRecords
+            } else {
+                mergedRecords = mergeInterfaceRideRecords(incoming: incomingRecords, stored: storedRecords)
+                saveInterfaceRideRecords(mergedRecords, sn: sn)
             }
-
-            let mergedRecords = mergeInterfaceRideRecords(
-                incoming: incomingRecords,
-                stored: loadInterfaceRideRecords(sn: sn)
-            )
-            saveInterfaceRideRecords(mergedRecords, sn: sn)
             archivedDashboard.vehicles[index].state.rideRecords = mergedRecords.isEmpty ? nil : mergedRecords
+            archivedDashboard.vehicles[index].state.mileageSinceLastCharge = mileageSinceLastCharge(
+                state: archivedDashboard.vehicles[index].state,
+                history: loadHistory(sn: sn),
+                rides: mergedRecords
+            )
         }
 
         return archivedDashboard
+    }
+
+    private func mileageSinceLastCharge(
+        state: NinebotVehicleState,
+        history: [NinebotVehicleHistoryPoint],
+        rides: [NinebotRideRecord]
+    ) -> Double? {
+        guard state.isCharging == true else { return nil }
+
+        let sortedHistory = history.sorted { $0.date < $1.date }
+        var lastChargeEnd: NinebotVehicleHistoryPoint?
+        var previous: NinebotVehicleHistoryPoint?
+
+        for point in sortedHistory {
+            if previous?.isCharging == true, point.isCharging != true {
+                lastChargeEnd = point
+            }
+            previous = point
+        }
+
+        if let chargeEndMileage = lastChargeEnd?.totalMileage,
+           let currentMileage = state.totalMileage,
+           currentMileage >= chargeEndMileage {
+            return currentMileage - chargeEndMileage
+        }
+
+        guard let chargeEndDate = lastChargeEnd?.date else { return nil }
+        let currentChargeStart = currentChargeStartDate(history: sortedHistory) ?? state.updatedAt
+        let mileage = rides.reduce(0.0) { total, ride in
+            let rideDate = ride.endedAt ?? ride.startedAt
+            guard let rideDate,
+                  rideDate >= chargeEndDate,
+                  rideDate <= currentChargeStart,
+                  let rideMileage = ride.mileage else {
+                return total
+            }
+            return total + max(rideMileage, 0)
+        }
+        return mileage > 0 ? mileage : nil
+    }
+
+    private func currentChargeStartDate(history: [NinebotVehicleHistoryPoint]) -> Date? {
+        var start: Date?
+        var previousWasCharging = false
+        for point in history.sorted(by: { $0.date < $1.date }) {
+            if point.isCharging == true, !previousWasCharging {
+                start = point.date
+            }
+            previousWasCharging = point.isCharging == true
+        }
+        return start
     }
 
     private func loadInterfaceRideRecords(sn: String) -> [NinebotRideRecord] {

@@ -901,6 +901,7 @@ struct NinebotVehicleState: Codable, Equatable {
     var monthMileage: Double?
     var monthEnergy: Double?
     var monthUsedElectricity: Double?
+    var mileageSinceLastCharge: Double?
     var lastMileage: Double?
     var lastEnergy: Double?
     var lastUsedElectricity: Double?
@@ -1238,6 +1239,11 @@ struct NinebotVehicleState: Codable, Equatable {
         let mileage = lastMileage.map { "\(Self.numberText($0, maximumFractionDigits: 1)) km" } ?? "-- km"
         let energy = lastEnergy.map { "\(Self.numberText($0, maximumFractionDigits: 0)) Wh" } ?? "-- Wh"
         return "\(mileage) · \(energy)"
+    }
+
+    var mileageSinceLastChargeText: String {
+        guard let mileageSinceLastCharge else { return "-- km" }
+        return "\(Self.numberText(max(mileageSinceLastCharge, 0), maximumFractionDigits: 1)) km"
     }
 
     var latestSpeed: Double? {
@@ -1656,6 +1662,7 @@ struct NinebotDashboard: Codable, Equatable {
                     monthMileage: 128.4,
                     monthEnergy: 3200,
                     monthUsedElectricity: 2800,
+                    mileageSinceLastCharge: nil,
                     lastMileage: 4.6,
                     lastEnergy: 200,
                     lastUsedElectricity: 4,
