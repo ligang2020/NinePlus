@@ -1,0 +1,13 @@
+services:
+  nineplus:
+    build: .
+    container_name: nineplus
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      NINEPLUS_DATA_DIR: /data
+      NINEPLUS_SESSION_TTL: "2592000"
+      NINEPLUS_CLOUD_TIMEOUT: "30"
+      NINEPLUS_COOKIE_SECURE: "auto"
+    volumes:
+      - ./data:/data

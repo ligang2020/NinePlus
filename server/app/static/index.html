@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f5f5f7">
+  <title>NinePlus</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <section id="loginView" class="login-view">
+    <main class="login-panel">
+      <div class="brand-mark" aria-hidden="true">9+</div>
+      <h1>NinePlus</h1>
+      <p class="subtitle">连接你的九号座驾</p>
+      <form id="loginForm" class="login-form">
+        <label>
+          <span>九号账号</span>
+          <input id="account" name="account" autocomplete="username" required placeholder="手机号或邮箱">
+        </label>
+        <label>
+          <span>密码</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="九号账号密码">
+        </label>
+        <button id="loginButton" class="primary-button" type="submit">登录</button>
+      </form>
+      <p class="privacy-note">凭据仅用于本次九号云登录，不写入磁盘。</p>
+    </main>
+  </section>
+
+  <section id="appView" class="app-view" hidden>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="#overview" aria-label="NinePlus 首页">
+          <span class="brand-mark small">9+</span>
+          <span>NinePlus</span>
+        </a>
+        <div class="toolbar-actions">
+          <button id="refreshButton" class="icon-button" title="刷新车辆数据" aria-label="刷新车辆数据">↻</button>
+          <button id="logoutButton" class="text-button">退出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="vehicle-switcher" aria-label="车辆列表">
+        <div id="vehicleTabs" class="segmented-control"></div>
+      </section>
+
+      <section id="loadingState" class="state-view">
+        <div class="spinner" aria-hidden="true"></div>
+        <p>正在读取车辆数据</p>
+      </section>
+
+      <section id="emptyState" class="state-view" hidden>
+        <div class="empty-icon" aria-hidden="true">9+</div>
+        <h2>未找到车辆</h2>
+        <p>请确认当前账号已绑定九号车辆。</p>
+      </section>
+
+      <div id="dashboard" hidden>
+        <section class="vehicle-hero" id="overview">
+          <div class="vehicle-copy">
+            <p id="vehicleModel" class="eyebrow"></p>
+            <h1 id="vehicleName">我的座驾</h1>
+            <p id="updatedAt" class="updated-at"></p>
+            <div class="hero-stats">
+              <div><strong id="batteryValue">--</strong><span>剩余电量</span></div>
+              <div><strong id="rangeValue">--</strong><span>预计续航</span></div>
+              <div><strong id="mileageValue">--</strong><span>总里程</span></div>
+            </div>
+          </div>
+          <div class="vehicle-media">
+            <img id="vehicleImage" alt="当前九号车辆" hidden>
+            <div id="vehiclePlaceholder" class="vehicle-placeholder" aria-hidden="true">9+</div>
+          </div>
+        </section>
+
+        <section class="metrics-grid" aria-label="车辆状态">
+          <article class="metric-card">
+            <span class="metric-icon" aria-hidden="true">●</span>
+            <span class="metric-label">在线状态</span>
+            <strong id="onlineValue">--</strong>
+          </article>
+          <article class="metric-card">
+            <span class="metric-icon" aria-hidden="true">⌁</span>
+            <span class="metric-label">实时速度</span>
+            <strong id="speedValue">--</strong>
+          </article>
+          <article class="metric-card">
+            <span class="metric-icon" aria-hidden="true">⌖</span>
+            <span class="metric-label">车辆位置</span>
+            <strong id="locationValue">--</strong>
+          </article>
+          <article class="metric-card">
+            <span class="metric-icon" aria-hidden="true">▰</span>
+            <span class="metric-label">电池健康</span>
+            <strong id="batteryHealthValue">--</strong>
+          </article>
+        </section>
+
+        <section class="section-block">
+          <div class="section-heading">
+            <div><p class="eyebrow">远程控制</p><h2>车辆操作</h2></div>
+            <span id="controlStatus" class="status-pill">已就绪</span>
+          </div>
+          <div class="control-grid">
+            <button class="control-button" data-action="bell"><span aria-hidden="true">♬</span><strong>鸣笛</strong></button>
+            <button class="control-button" data-action="buck"><span aria-hidden="true">⌃</span><strong>开座桶</strong></button>
+            <button class="control-button positive" data-action="engine_start"><span aria-hidden="true">▶</span><strong>启动</strong></button>
+            <button class="control-button destructive" data-action="engine_stop"><span aria-hidden="true">■</span><strong>熄火</strong></button>
+          </div>
+        </section>
+
+        <section class="section-block">
+          <div class="section-heading">
+            <div><p class="eyebrow">最近活动</p><h2>骑行记录</h2></div>
+            <input id="monthPicker" class="month-picker" type="month" aria-label="选择月份">
+          </div>
+          <div id="travelList" class="travel-list"></div>
+        </section>
+
+        <details class="raw-panel">
+          <summary>原始车辆数据</summary>
+          <pre id="rawData"></pre>
+        </details>
+      </div>
+    </main>
+  </section>
+
+  <dialog id="confirmDialog" class="confirm-dialog">
+    <form method="dialog">
+      <h2 id="confirmTitle">确认操作</h2>
+      <p id="confirmMessage"></p>
+      <div class="dialog-actions">
+        <button value="cancel" class="secondary-button">取消</button>
+        <button id="confirmAction" value="confirm" class="primary-button">确认</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
+

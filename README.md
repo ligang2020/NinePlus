@@ -1,53 +1,57 @@
-# NineBot+
+# NinePlus
 
-NineBot+ is a personal iOS app for viewing and managing Ninebot vehicle status, with Home Screen widgets, Lock Screen widgets, Siri Shortcuts, trip history, location views, and local ride recording.
+NinePlus combines a personal iOS client with a standalone FastAPI web console
+for Ninebot vehicles. The server lives in [`server/`](server/) and uses Docker
+Compose for deployment on a Feiniu NAS or any Linux host with Docker.
 
-This project is intended for personal builds. It is not configured for App Store distribution by default.
+> **Important:** the server uses `ninecli`, the community cloud client used by
+> [`hasscc/ninebot`](https://github.com/hasscc/ninebot). This is not a published
+> official Ninebot developer API. It calls the user-facing Ninebot cloud service
+> for the signed-in account, so Ninebot can change the protocol at any time.
 
-Telegram: https://t.me/ninebotultra
+## Web console
 
-> **Branch notice:** `main` is server-only and no longer includes the dual-mode connection path. Use the `nine-proxy` branch when dual-mode support is required.
+The responsive web console has an Apple-inspired visual language: restrained
+material surfaces, clear hierarchy, responsive layout, dark mode, reduced-motion
+support, and confirmation dialogs for remote controls.
 
-## Features
+Features include:
 
-- Vehicle dashboard with battery, estimated range, status, charging state, and location.
-- Home Screen and Lock Screen widgets.
-- Siri Shortcuts and App Intents support.
-- Trip history, mileage trends, and local ride recording.
-- MapKit vehicle location and reverse geocoding.
-- Local cache shared between the app and widgets through App Groups.
+- Ninebot account login with an HttpOnly browser session.
+- Bound vehicle list and multi-vehicle switching.
+- Current battery, range, mileage, speed, location, and online status.
+- Battery telemetry and raw upstream payload inspection.
+- Monthly ride history.
+- Confirmed bell, seat-bucket, start, and stop commands supported by `ninecli`.
+- Health endpoint at `/healthz` and OpenAPI documentation at `/api/docs`.
 
-## Requirements
+Run locally or on the NAS:
 
-- macOS with Xcode.
-- An Apple Developer account for device signing.
-- A configured iOS device.
-- A reachable NinePlus Platform server.
+```bash
+docker compose -f server/compose.yaml up -d --build
+```
 
-## Build
+The service is available on port `8765` by default. See
+[`server/README.md`](server/README.md) for configuration and the full API
+surface. The interface analysis and security boundaries are documented in
+[`docs/ninebot-interface-analysis.md`](docs/ninebot-interface-analysis.md).
 
-1. Clone the repository.
-2. Open `mini-ninebot/mini-ninebot.xcodeproj` in Xcode.
-3. Select your Apple Developer Team for the app target and the `NinebotWidgets` target.
-4. Replace the sample Bundle IDs with your own:
-   - App: `com.example.NineBotPlus`
-   - Widgets: `com.example.NineBotPlus.NinebotWidgets`
-5. Enable the same App Group for both targets, for example `group.com.example.NineBotPlus`.
-6. Build and run on a physical iPhone.
+## iOS app
 
-## Setup
+The iOS project is under [`mini-ninebot/`](mini-ninebot/). Open
+`mini-ninebot/mini-ninebot.xcodeproj` in Xcode, configure your Apple Developer
+Team and App Group, then set the NinePlus server address in the app settings.
 
-1. Open the app on the iPhone.
-2. Go to the profile/settings tab.
-3. Enter your NinePlus server address and optional App Bearer Token.
-4. Bind your account.
-5. Return to the vehicle dashboard and refresh.
-6. Add the Home Screen or Lock Screen widgets after the first successful refresh.
+The app includes vehicle status, widgets, Siri/App Intents, ride history,
+location views, and local ride recording. It is intended for personal builds
+and is not configured for App Store distribution by default.
 
-## Widgets
+## Privacy and operational safety
 
-Widgets read the latest cached vehicle snapshot from the shared App Group container. iOS controls widget background refresh frequency, so opening the app and refreshing manually is the fastest way to update widget data immediately.
-
-## Privacy
-
-The app stores configuration, login state, vehicle snapshots, cached addresses, trip records, and local ride records on the device. Do not commit personal tokens, account data, signing certificates, provisioning profiles, or generated build artifacts to this repository.
+- Do not commit Ninebot passwords, app tokens, certificates, or provisioning
+  profiles.
+- Credentials are sent only to the cloud client during login and are not stored
+  by NinePlus. Browser sessions are in memory and expire on container restart.
+- Keep the NAS service on a trusted LAN or put it behind HTTPS and an access
+  control layer before exposing it externally.
+- Use remote controls only when the vehicle is visible and in a safe state.
