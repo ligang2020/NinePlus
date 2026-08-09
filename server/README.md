@@ -1,9 +1,8 @@
 # NinePlus Server
 
-NinePlus Server is a standalone FastAPI web console for the cloud client used
-by [`hasscc/ninebot`](https://github.com/hasscc/ninebot). It provides an Apple-
-inspired responsive interface for vehicle status, battery details, location,
-ride history, and confirmed remote controls.
+NinePlus Server is a standalone FastAPI web console for the current `ninecli`
+Ninebot client. It provides an Apple-inspired responsive interface for vehicle
+status, battery details, location, ride history, and confirmed remote controls.
 
 > **Important:** `ninecli` is a community client for the user-facing Ninebot
 > cloud service. This project does not contain or claim an official public
@@ -16,22 +15,23 @@ cd server
 docker compose up -d --build
 ```
 
-The service listens on `8765` and stores only runtime data under `server/data`.
-The browser session itself is held in memory; restarting the container logs out
-all users. No account password or cloud token is persisted by NinePlus.
+The service listens on `8765`. The authenticated CLI token directories live on
+container tmpfs, while no account password or cloud token is persisted to the
+host. Restarting or recreating the container logs out all users.
 
-Open `http://NAS_IP:8765` on the trusted LAN. The OpenAPI schema is available at
-`/api/docs`.
+Open `http://NAS_IP:8765` on the trusted LAN. OpenAPI documentation is at
+`/api/docs` and the health probe is at `/healthz`.
 
 ## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `NINEPLUS_PORT` | `8765` | Documented host port; Compose uses host networking |
 | `NINEPLUS_SESSION_TTL` | `2592000` | Browser session lifetime in seconds |
-| `NINEPLUS_CLOUD_TIMEOUT` | `30` | Timeout for a Ninebot cloud operation |
+| `NINEPLUS_CLI_TIMEOUT` | `45` | Timeout for a ninecli operation |
+| `NINEPLUS_SESSION_ROOT` | `/run/nineplus/sessions` | Ephemeral token directory |
 | `NINEPLUS_COOKIE_SECURE` | `auto` | `true` for HTTPS-only cookie, `false` for plain LAN HTTP |
 | `NINEPLUS_LOG_LEVEL` | `INFO` | Server log level |
+| `NINEPLUS_NINECLI_BIN` | `ninecli` | CLI executable override |
 
 For an HTTPS reverse proxy, set `NINEPLUS_COOKIE_SECURE=true`.
 

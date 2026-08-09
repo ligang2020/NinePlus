@@ -1,45 +1,54 @@
 # Ninebot interface analysis
 
-## What is actually being used
+## Source and boundary
 
-NinePlus is built around the public Home Assistant integration at
-[`hasscc/ninebot`](https://github.com/hasscc/ninebot). That integration delegates
-its cloud work to the `ninecli` Python package (`ninecli==0.1.7` in the
-integration version reviewed for this project).
+NinePlus is informed by the public Home Assistant integration at
+[`hasscc/ninebot`](https://github.com/hasscc/ninebot) and uses the current
+`ninecli` release that the integration depends on. The installed `ninecli`
+0.1.7 package is a small Python launcher around a bundled Go binary; it does
+not expose the old `ninecli.api.NinebotCloud` Python class.
 
-The important distinction is that this is **not a published official Ninebot
-Open API**. The package talks to the user-facing Ninebot cloud service on behalf
-of an authenticated account. Ninebot may change login, endpoints, payloads,
-anti-abuse checks, or supported control commands without notice.
+That distinction matters: this is **not a published official Ninebot developer
+API**. `ninecli` is a community client for the user-facing Ninebot Passport and
+business services. The upstream service can change login, payloads, hostnames,
+anti-abuse checks, or supported controls without notice.
 
-## Observed cloud surface
+## Observed client surface
 
-The integration/client surface used by the server is:
+The actual binary exposes these commands:
 
-| ninecli method | NinePlus route | Purpose |
+| ninecli command | NinePlus route | Purpose |
 | --- | --- | --- |
-| `initialize()` | `POST /auth/login` | Authenticate a Ninebot account |
-| `get_user_vehicles()` | `GET /vehicles` | List bound vehicles |
-| `get_current_vehicle_data(sn)` | `GET /vehicles/{sn}/status` | Current telemetry and location |
-| `get_battery_info(sn)` | `GET /vehicles/{sn}/battery` | Battery telemetry |
-| `get_vehicle_travel(sn, page, page_size, month)` | `GET /vehicles/{sn}/travel` | Ride history |
-| `get_travel_detail(sn, travel_id)` | `GET /vehicles/{sn}/travel/{id}` | One ride detail |
-| `set_vehicle_control(sn, control_type, control_value)` | `POST /vehicles/{sn}/control` | Supported remote controls |
+| `login --user ... --password ...` | `POST /auth/login` | Authenticate the account |
+| `vehicles` | `GET /vehicles` | List owned/shared vehicles |
+| `status SN` | `GET /vehicles/{sn}/status` | Location, battery, lock, ACC, permissions |
+| `battery SN` | `GET /vehicles/{sn}/battery` | Battery voltage, temperature, cycles, charge data |
+| `travel SN --month YYYYMM` | `GET /vehicles/{sn}/travel` | Ride history |
+| `travel SN --detail ID` | `GET /vehicles/{sn}/travel/{id}` | One ride detail |
+| `bell SN` | `POST /vehicles/{sn}/control` | Find-my-vehicle bell |
+| `buck SN` | `POST /vehicles/{sn}/control` | Seat-trunk control |
+| `engine-start SN` / `engine-stop SN` | `POST /vehicles/{sn}/control` | Power/unlock or power/lock |
 
-NinePlus intentionally keeps upstream response fields tolerant and preserves
-raw response data in the dashboard because fields differ by vehicle family and
-firmware version.
+The binary also includes a `serve` mode that exposes a REST proxy on
+`127.0.0.1:18009` by default. NinePlus invokes the binary directly instead so
+each browser login gets an isolated token directory and cannot share another
+user's cloud session.
 
-## Security boundaries
+The CLI help identifies the default service families as Passport, business,
+motor, e-bike, and travel hosts. NinePlus deliberately does not hard-code those
+URLs; the binary remains the compatibility boundary.
 
-- Ninebot credentials are sent only to the cloud client during login and are
-  never written to the repository or `/data`.
-- Browser sessions are stored in memory and represented to the browser only by
-  an HttpOnly cookie. A container restart invalidates all sessions.
-- Cloud calls are serialized per account and run off the FastAPI event loop so a
-  synchronous client cannot block other HTTP requests. Calls also have a
-  configurable timeout.
-- Remote controls require an explicit confirmation in the API request and in
-  the UI. Use them only when the vehicle is in sight and in a safe state.
+## Security and reliability boundaries
+
+- Login credentials are passed to the `ninecli` process only for the login
+  command. Authenticated tokens are kept in a per-session directory mounted on
+  container tmpfs, never in the Git repository or host `server/data` volume.
+- Browser sessions are represented only by an HttpOnly cookie. A container
+  restart clears the tmpfs and logs out all users.
+- Each session has a lock so the stateful CLI config is not used concurrently.
+  The subprocess has a configurable timeout and is run off the FastAPI event
+  loop.
+- Remote controls require explicit confirmation in both the browser and API.
+  Use them only when the vehicle is visible and in a safe state.
 - The default Compose deployment is LAN-oriented. Put it behind HTTPS and an
   access-control layer before exposing it outside the trusted network.

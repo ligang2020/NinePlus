@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
 import secrets
+import shutil
 import time
-from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,30 +17,25 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-try:
-    from ninecli.api import NinebotCloud
-except ImportError:  # pragma: no cover - reported by /healthz
-    NinebotCloud = None
-
 
 APP_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path(os.getenv("NINEPLUS_DATA_DIR", "/data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 SESSION_TTL = max(300, int(os.getenv("NINEPLUS_SESSION_TTL", "2592000")))
-CLOUD_TIMEOUT = max(5, int(os.getenv("NINEPLUS_CLOUD_TIMEOUT", "30")))
+CLI_TIMEOUT = max(5, int(os.getenv("NINEPLUS_CLI_TIMEOUT", "45")))
 COOKIE_SECURE = os.getenv("NINEPLUS_COOKIE_SECURE", "auto").lower()
 BOOT_TIME = time.time()
 SN_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+SESSION_ROOT = Path(os.getenv("NINEPLUS_SESSION_ROOT", "/run/nineplus/sessions"))
+NINECLI_BIN = os.getenv("NINEPLUS_NINECLI_BIN", "ninecli")
 
 logger = logging.getLogger("nineplus")
 logging.basicConfig(level=os.getenv("NINEPLUS_LOG_LEVEL", "INFO"))
 
 app = FastAPI(
     title="NinePlus",
-    version="1.1.0",
+    version="1.2.0",
     description=(
-        "NinePlus is an unofficial personal web console for the Ninebot cloud "
-        "client exposed by ninecli. It does not represent an official Ninebot API."
+        "Unofficial personal Ninebot web console. The backend invokes the "
+        "community ninecli command-line client against the user-facing cloud service."
     ),
     docs_url="/api/docs",
     redoc_url=None,
@@ -58,44 +54,24 @@ class ControlBody(BaseModel):
 
 
 class CloudSession:
-    def __init__(self, account: str, cloud: Any, expires_at: float):
+    def __init__(self, account: str, config_dir: Path, expires_at: float):
         self.account = account
-        self.cloud = cloud
+        self.config_dir = config_dir
         self.expires_at = expires_at
-        # ninecli maintains authentication state; serialize calls per account.
         self.lock = asyncio.Lock()
 
 
 sessions: dict[str, CloudSession] = {}
 
 
-def serializable(value: Any) -> Any:
-    """Convert ninecli's mixed dict/model/object responses to JSON-safe data."""
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if is_dataclass(value):
-        return serializable(asdict(value))
-    if isinstance(value, dict):
-        return {str(key): serializable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [serializable(item) for item in value]
-    if hasattr(value, "model_dump"):
-        return serializable(value.model_dump())
-    if hasattr(value, "__dict__"):
-        return {
-            str(key): serializable(item)
-            for key, item in vars(value).items()
-            if not str(key).startswith("_")
-        }
-    return str(value)
-
-
 def ok(data: Any = None) -> dict[str, Any]:
-    return {"ok": True, "data": serializable(data if data is not None else {})}
+    return {"ok": True, "data": data if data is not None else {}}
 
 
-def error(status: int, code: str, message: str) -> None:
-    raise HTTPException(status_code=status, detail={"code": code, "message": message})
+def error(status: int, code: str, message: str, **extra: Any) -> None:
+    detail: dict[str, Any] = {"code": code, "message": message}
+    detail.update(extra)
+    raise HTTPException(status_code=status, detail=detail)
 
 
 def cookie_is_secure(request: Request) -> bool:
@@ -104,6 +80,41 @@ def cookie_is_secure(request: Request) -> bool:
     if COOKIE_SECURE in {"0", "false", "no", "off"}:
         return False
     return request.url.scheme == "https"
+
+
+def validate_sn(sn: str) -> str:
+    if not SN_PATTERN.fullmatch(sn):
+        error(400, "invalid_vehicle_sn", "车辆序列号格式无效")
+    return sn
+
+
+def cli_available() -> bool:
+    return bool(shutil.which(NINECLI_BIN) or Path(NINECLI_BIN).exists())
+
+
+def parse_cli_json(stdout: bytes) -> Any:
+    text = stdout.decode("utf-8", errors="replace").strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Some ninecli builds add a short informational line before JSON. Find
+        # the first valid JSON document without exposing the raw output to users.
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(text):
+            if char not in "[{":
+                continue
+            try:
+                value, _ = decoder.raw_decode(text[index:])
+                return value
+            except json.JSONDecodeError:
+                continue
+    return {"raw": text}
+
+
+def cleanup_session(session: CloudSession) -> None:
+    shutil.rmtree(session.config_dir, ignore_errors=True)
 
 
 def get_session(
@@ -120,6 +131,7 @@ def get_session(
     session = sessions[token]
     if session.expires_at <= time.time():
         sessions.pop(token, None)
+        cleanup_session(session)
         error(401, "session_expired", "登录已过期，请重新登录")
     return token, session
 
@@ -132,35 +144,57 @@ def auth_from_request(request: Request, cookie: str | None) -> tuple[str, CloudS
     )
 
 
-def validate_sn(sn: str) -> str:
-    if not SN_PATTERN.fullmatch(sn):
-        error(400, "invalid_vehicle_sn", "车辆序列号格式无效")
-    return sn
+async def run_cli(
+    session: CloudSession,
+    *args: str,
+    password: str | None = None,
+) -> Any:
+    """Run the real ninecli binary in a per-session ephemeral config directory."""
+    command = [NINECLI_BIN, "--json", "--config", str(session.config_dir), *args]
+    if password is not None:
+        command.extend(["--password", password])
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=CLI_TIMEOUT)
+    except asyncio.TimeoutError:
+        if "process" in locals():
+            process.kill()
+            await process.wait()
+        error(504, "ninebot_cloud_timeout", "九号云请求超时，请稍后重试")
+    except OSError:
+        error(503, "ninecli_unavailable", "ninecli 未安装或不可执行")
+
+    if process.returncode != 0:
+        diagnostic = stderr.decode("utf-8", errors="replace").strip().replace("\n", " ")
+        logger.warning("ninecli operation failed (%s): %s", args[0] if args else "unknown", diagnostic[:240])
+        if args and args[0] == "login":
+            error(401, "login_failed", "九号账号或密码错误，或九号云暂时不可用")
+        error(502, "ninebot_cloud_error", "九号云请求失败，请稍后重试")
+    return parse_cli_json(stdout)
 
 
-
-async def cloud_call(session: CloudSession, method: str, *args: Any, **kwargs: Any) -> Any:
+async def cloud_call(session: CloudSession, *args: str) -> Any:
     async with session.lock:
-        operation = getattr(session.cloud, method, None)
-        if operation is None:
-            error(502, "unsupported_cloud_method", f"当前 ninecli 不支持 {method}")
-        try:
-            if asyncio.iscoroutinefunction(operation):
-                result = await asyncio.wait_for(operation(*args, **kwargs), timeout=CLOUD_TIMEOUT)
-            else:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(operation, *args, **kwargs), timeout=CLOUD_TIMEOUT
-                )
-            return serializable(result)
-        except asyncio.TimeoutError:
-            error(504, "ninebot_cloud_timeout", "九号云请求超时，请稍后重试")
-        except HTTPException:
-            raise
-        except Exception as exc:
-            # Keep upstream details out of the response: some client versions include
-            # request fragments or account metadata in their exception text.
-            logger.warning("ninebot operation failed: %s", method, exc_info=exc)
-            error(502, "ninebot_cloud_error", "九号云请求失败，请稍后重试")
+        return await run_cli(session, *args)
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    SESSION_ROOT.mkdir(parents=True, exist_ok=True)
+    if not cli_available():
+        logger.warning("ninecli is not available; login and vehicle APIs will be disabled")
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    for session in list(sessions.values()):
+        cleanup_session(session)
+    sessions.clear()
 
 
 @app.exception_handler(RequestValidationError)
@@ -197,7 +231,7 @@ async def healthz():
     return ok({
         "service": "nineplus",
         "version": app.version,
-        "ninecli": NinebotCloud is not None,
+        "ninecli": cli_available(),
         "uptime_seconds": int(time.time() - BOOT_TIME),
         "active_sessions": len(sessions),
     })
@@ -205,34 +239,22 @@ async def healthz():
 
 @app.post("/auth/login")
 async def login(body: LoginBody, request: Request, response: Response):
-    if NinebotCloud is None:
+    if not cli_available():
         error(503, "dependency_missing", "ninecli 未安装")
 
     account = body.account.strip()
-    try:
-        cloud = NinebotCloud(account, body.password)
-        initialize = getattr(cloud, "initialize", None)
-        if initialize is None:
-            error(503, "dependency_invalid", "当前 ninecli 缺少登录接口")
-        if asyncio.iscoroutinefunction(initialize):
-            initialized = await asyncio.wait_for(initialize(), timeout=CLOUD_TIMEOUT)
-        else:
-            initialized = await asyncio.wait_for(asyncio.to_thread(initialize), timeout=CLOUD_TIMEOUT)
-    except asyncio.TimeoutError:
-        error(504, "login_timeout", "登录九号云超时，请稍后重试")
-    except HTTPException:
-        raise
-    except Exception:
-        logger.warning("ninebot login failed for account %s", account[:3] + "***")
-        error(401, "login_failed", "九号账号或密码错误，或九号云暂时不可用")
-
-    if initialized is False:
-        error(401, "login_failed", "九号账号或密码错误")
-
     token = secrets.token_urlsafe(32)
-    expires_at = time.time() + SESSION_TTL
-    sessions[token] = CloudSession(account, cloud, expires_at)
+    config_dir = SESSION_ROOT / token
+    config_dir.mkdir(parents=True, exist_ok=False)
+    session = CloudSession(account, config_dir, time.time() + SESSION_TTL)
+    try:
+        # The CLI writes its authenticated token into this ephemeral config dir.
+        await run_cli(session, "login", "--user", account, password=body.password)
+    except Exception:
+        cleanup_session(session)
+        raise
 
+    sessions[token] = session
     response.set_cookie(
         "nineplus_session",
         token,
@@ -243,14 +265,14 @@ async def login(body: LoginBody, request: Request, response: Response):
         path="/",
     )
     response.headers["Cache-Control"] = "no-store"
-    # Never return the session token in JSON; browser clients use the HttpOnly cookie.
-    return ok({"account": account, "expires_at": expires_at})
+    return ok({"account": account, "expires_at": session.expires_at})
 
 
 @app.post("/auth/logout")
 async def logout(request: Request, response: Response, nineplus_session: str | None = Cookie(default=None)):
-    token, _ = auth_from_request(request, nineplus_session)
+    token, session = auth_from_request(request, nineplus_session)
     sessions.pop(token, None)
+    cleanup_session(session)
     response.delete_cookie("nineplus_session", path="/")
     response.headers["Cache-Control"] = "no-store"
     return ok()
@@ -265,19 +287,19 @@ async def me(request: Request, nineplus_session: str | None = Cookie(default=Non
 @app.get("/vehicles")
 async def vehicles(request: Request, nineplus_session: str | None = Cookie(default=None)):
     _, session = auth_from_request(request, nineplus_session)
-    return ok(await cloud_call(session, "get_user_vehicles"))
+    return ok(await cloud_call(session, "vehicles"))
 
 
 @app.get("/vehicles/{sn}/status")
 async def vehicle_status(sn: str, request: Request, nineplus_session: str | None = Cookie(default=None)):
     _, session = auth_from_request(request, nineplus_session)
-    return ok(await cloud_call(session, "get_current_vehicle_data", validate_sn(sn)))
+    return ok(await cloud_call(session, "status", validate_sn(sn)))
 
 
 @app.get("/vehicles/{sn}/battery")
 async def vehicle_battery(sn: str, request: Request, nineplus_session: str | None = Cookie(default=None)):
     _, session = auth_from_request(request, nineplus_session)
-    return ok(await cloud_call(session, "get_battery_info", validate_sn(sn)))
+    return ok(await cloud_call(session, "battery", validate_sn(sn)))
 
 
 @app.get("/vehicles/{sn}/travel")
@@ -292,14 +314,12 @@ async def vehicle_travel(
     if page < 1 or page > 1000 or page_size < 1 or page_size > 100:
         error(400, "invalid_pagination", "分页参数超出范围")
     _, session = auth_from_request(request, nineplus_session)
-    return ok(await cloud_call(
-        session,
-        "get_vehicle_travel",
-        validate_sn(sn),
-        page,
-        page_size,
-        month or None,
-    ))
+    normalized_month = month.replace("-", "") if month else ""
+    payload = await cloud_call(session, "travel", validate_sn(sn), "--month", normalized_month) if normalized_month else await cloud_call(session, "travel", validate_sn(sn))
+    if isinstance(payload, list):
+        start = (page - 1) * page_size
+        return ok(payload[start:start + page_size])
+    return ok(payload)
 
 
 @app.get("/vehicles/{sn}/travel/{travel_id}")
@@ -310,14 +330,14 @@ async def travel_detail(
     nineplus_session: str | None = Cookie(default=None),
 ):
     _, session = auth_from_request(request, nineplus_session)
-    return ok(await cloud_call(session, "get_travel_detail", validate_sn(sn), travel_id))
+    return ok(await cloud_call(session, "travel", validate_sn(sn), "--detail", travel_id))
 
 
-CONTROL_MAP = {
-    "bell": "5",
-    "buck": "3",
-    "engine_start": "1",
-    "engine_stop": "2",
+CONTROL_COMMANDS = {
+    "bell": "bell",
+    "buck": "buck",
+    "engine_start": "engine-start",
+    "engine_stop": "engine-stop",
 }
 
 
@@ -331,7 +351,7 @@ async def vehicle_control(
     if not body.confirm:
         error(400, "confirmation_required", "远程控制必须明确确认")
     _, session = auth_from_request(request, nineplus_session)
-    return ok(await cloud_call(session, "set_vehicle_control", validate_sn(sn), CONTROL_MAP[body.action]))
+    return ok(await cloud_call(session, "-y", CONTROL_COMMANDS[body.action], validate_sn(sn)))
 
 
 @app.post("/vehicles/{sn}/bell")

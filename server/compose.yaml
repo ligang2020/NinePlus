@@ -5,9 +5,9 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
-      NINEPLUS_DATA_DIR: /data
+      NINEPLUS_SESSION_ROOT: /run/nineplus/sessions
       NINEPLUS_SESSION_TTL: "2592000"
-      NINEPLUS_CLOUD_TIMEOUT: "30"
+      NINEPLUS_CLI_TIMEOUT: "45"
       NINEPLUS_COOKIE_SECURE: "auto"
-    volumes:
-      - ./data:/data
+    tmpfs:
+      - /run/nineplus:mode=700,size=64m
