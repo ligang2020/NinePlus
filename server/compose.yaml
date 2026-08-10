@@ -15,8 +15,6 @@ services:
       NINEPLUS_CACHE_TTL_BATTERY: "15"
       NINEPLUS_CACHE_TTL_TRAVEL: "60"
       NINEPLUS_COOKIE_SECURE: "auto"
-      # Installation-wide API token; keep the real value only in server/.env.
-      NINEPLUS_ACCESS_TOKEN: "${NINEPLUS_ACCESS_TOKEN:?请在 server/.env 中设置 NinePlus 访问口令}"
       NINEPLUS_DEVICE_ID: "${NINEPLUS_DEVICE_ID:-}"
       # NinePlus 自有门户账号；密码只放在 server/.env，不要提交到 Git。
       NINEPLUS_PORTAL_USERNAME: "${NINEPLUS_PORTAL_USERNAME:-gang}"

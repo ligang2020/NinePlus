@@ -5,20 +5,14 @@ enum NinebotAppGroup {
     static let identifier = "group.com.example.NineBotPlus"
 }
 
-/// Build-time connection values. The app does not expose the proxy address or
-/// installation token in its UI; only the Ninebot account login is shown.
-/// The access token is injected by the build pipeline through Info.plist.
+/// Build-time connection values. The app only exposes the Ninebot account
+/// login. No NinePlus installation access token is required or embedded.
 enum NinebotAppRuntimeConfiguration {
     static let baseURL: String = {
         let value = Bundle.main.object(forInfoDictionaryKey: "NINEPLUS_BASE_URL") as? String
         return value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             ? value!.trimmingCharacters(in: .whitespacesAndNewlines)
             : NinebotProxyConfiguration.defaultPlatformURL
-    }()
-
-    static let accessToken: String = {
-        let value = Bundle.main.object(forInfoDictionaryKey: "NINEPLUS_ACCESS_TOKEN") as? String
-        return value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }()
 }
 
@@ -70,7 +64,10 @@ struct NinebotProxyConfiguration: Codable, Equatable {
     static let defaultPlatformURL = "https://9hao.ligangs2025.top:16689"
 
     var baseURLString: String
-    var bearerToken: String
+    /// Kept for decoding older installations. New builds never require or
+    /// inject a deployment token; the official Ninebot login creates the
+    /// per-installation session instead.
+    var bearerToken: String = ""
     var appSessionToken: String? = nil
 
     var baseURL: URL? {
@@ -88,7 +85,7 @@ struct NinebotProxyConfiguration: Codable, Equatable {
     }
 
     var isUsable: Bool {
-        baseURL != nil && !bearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        baseURL != nil
     }
 }
 

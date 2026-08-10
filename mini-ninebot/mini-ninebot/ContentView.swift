@@ -98,8 +98,8 @@ struct NinebotCloudLoginView: View {
         ZStack {
             LinearGradient(
                 colors: [
-                    Color(red: 0.93, green: 0.98, blue: 0.94),
-                    Color(red: 0.98, green: 0.99, blue: 0.98)
+                    Color(uiColor: .systemGroupedBackground),
+                    Color(uiColor: .secondarySystemGroupedBackground)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -112,7 +112,7 @@ struct NinebotCloudLoginView: View {
                         .font(.system(size: 42, weight: .bold))
                         .foregroundStyle(Color(red: 0.13, green: 0.72, blue: 0.24))
                         .frame(width: 78, height: 78)
-                        .background(.white.opacity(0.86))
+                        .background(Color(uiColor: .secondarySystemBackground))
                         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 8) {
@@ -184,7 +184,7 @@ struct NinebotCloudLoginView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(24)
-                .background(.white.opacity(0.90))
+                .background(Color(uiColor: .systemBackground).opacity(0.96))
                 .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
                 .shadow(color: .black.opacity(0.08), radius: 24, x: 0, y: 14)
                 .padding(.horizontal, 20)
@@ -234,7 +234,7 @@ private struct CloudLoginField<Field: Hashable>: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 52)
-            .background(Color.black.opacity(0.045))
+            .background(Color(uiColor: .tertiarySystemFill))
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }

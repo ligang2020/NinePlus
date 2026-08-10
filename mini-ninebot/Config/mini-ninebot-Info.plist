@@ -22,8 +22,6 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NINEPLUS_BASE_URL</key>
 	<string>https://9hao.ligangs2025.top:16689</string>
-	<key>NINEPLUS_ACCESS_TOKEN</key>
-	<string>$(NINEPLUS_APP_ACCESS_TOKEN)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>

@@ -1,11 +1,10 @@
 # mini-ninebot
 
-NineBot+ iOS app, version **1.2.61** (build **61**).
+NineBot+ iOS app, version **1.2.62** (build **62**).
 
-The app's first screen is the Ninebot account login. Service address and
-installation access token are build-time configuration values; they are not
-shown as user-editable fields. GitHub Actions injects the repository secret
-`NINEPLUS_ACCESS_TOKEN` when packaging the IPA.
+The app's first screen is the Ninebot account login. The service URL is
+built in, and no NinePlus installation access token or token secret is required.
+The app stores only the returned per-login session token.
 
 The app talks to the companion NinePlus service, which uses the community
 `ninecli` cloud compatibility client. It is not an official public Ninebot

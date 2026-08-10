@@ -16,9 +16,9 @@ enum NinebotInputError: LocalizedError {
         case .missingProxy:
             return "请先填写服务地址"
         case .missingAccount:
-            return "请填写手机号"
+            return "请填写九号账号"
         case .missingPassword:
-            return "请填写令牌口令"
+            return "请填写九号账号密码"
         case .missingCode:
             return "请填写验证码"
         case .platformOnly:
@@ -168,7 +168,7 @@ final class NinebotViewModel: ObservableObject {
         let portalLoginResult = store.loadPortalLoginResult()
         self.dataSourceMode = store.loadDataSourceMode()
         self.baseURLString = configuration?.baseURLString ?? NinebotAppRuntimeConfiguration.baseURL
-        self.bearerToken = configuration?.bearerToken ?? NinebotAppRuntimeConfiguration.accessToken
+        self.bearerToken = ""
         self.loginResult = loginResult
         self.portalLoginResult = portalLoginResult
         self.portalUsername = portalLoginResult?.username ?? ""
@@ -271,11 +271,6 @@ final class NinebotViewModel: ObservableObject {
             errorMessage = NinebotInputError.missingProxy.localizedDescription
             return
         }
-        guard !bearerToken.trimmed.isEmpty else {
-            errorMessage = "此版本未配置内置服务访问凭据，请使用 GitHub Actions 的 NINEPLUS_ACCESS_TOKEN Secret 重新打包。"
-            return
-        }
-
         store.saveDataSourceMode(dataSourceMode)
         store.saveConfiguration(configuration)
         errorMessage = nil
@@ -291,7 +286,7 @@ final class NinebotViewModel: ObservableObject {
     func connectToService() async {
         await runLoadingOperation(message: "正在连接服务并获取车辆") {
             guard self.hasConfiguration else {
-                throw NinebotProxyError.server("此版本未配置内置服务访问凭据")
+                throw NinebotProxyError.server("九号云服务地址无效")
             }
             self.saveConfiguration()
             let client = try self.makeClient()
@@ -435,7 +430,7 @@ final class NinebotViewModel: ObservableObject {
             guard !account.trimmed.isEmpty else { throw NinebotInputError.missingAccount }
             guard !password.isEmpty else { throw NinebotInputError.missingPassword }
             guard self.hasConfiguration else {
-                throw NinebotProxyError.server("此版本未配置内置服务访问凭据，请重新打包")
+                throw NinebotProxyError.server("九号云服务地址无效，请检查内置服务配置")
             }
 
             self.saveConfiguration()

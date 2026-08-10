@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import copy
 import json
 import logging
 import os
 import re
 import secrets
-import hashlib
 import shutil
 import sys
 import time
@@ -48,9 +46,6 @@ PUSH_DEVICES_FILE = SESSION_ROOT / "push-devices.json"
 PORTAL_SESSIONS_FILE = SESSION_ROOT / "portal-sessions.json"
 PORTAL_USERNAME = os.getenv("NINEPLUS_PORTAL_USERNAME", "gang").strip()
 PORTAL_PASSWORD = os.getenv("NINEPLUS_PORTAL_PASSWORD", "")
-# Separate installation token; never use the per-login session token as the
-# deployment password and never commit this value to source control.
-ACCESS_TOKEN = os.getenv("NINEPLUS_ACCESS_TOKEN", "").strip()
 NINECLI_BIN = os.getenv("NINEPLUS_NINECLI_BIN", "").strip()
 NINECLI_MODULE = os.getenv("NINEPLUS_NINECLI_MODULE", "ninecli").strip() or "ninecli"
 DEVICE_ID = os.getenv("NINEPLUS_DEVICE_ID", "").strip().lower() or secrets.token_hex(16)
@@ -62,7 +57,7 @@ logging.basicConfig(level=os.getenv("NINEPLUS_LOG_LEVEL", "INFO"))
 
 app = FastAPI(
     title="NinePlus",
-    version="1.2.1",
+    version="1.2.62",
     description=(
         "Unofficial personal Ninebot web console. The backend invokes the "
         "community ninecli command-line client against the user-facing cloud service."
@@ -72,39 +67,12 @@ app = FastAPI(
 )
 app.mount("/assets", StaticFiles(directory=APP_DIR / "static"), name="assets")
 
-_PUBLIC_PATHS = {"/", "/healthz", "/api/docs", "/openapi.json"}
-
-
-def _access_token_from_request(request: Request) -> str:
-    supplied = request.headers.get("x-nineplus-access-token", "").strip()
-    authorization = request.headers.get("authorization", "")
-    if not supplied and authorization.lower().startswith("bearer "):
-        supplied = authorization[7:].strip()
-    return supplied
-
 
 @app.middleware("http")
 async def require_access_token(request: Request, call_next):
-    # Keep static assets and diagnostics reachable, but protect every API
-    # endpoint (including both login endpoints) when a deployment token is
-    # configured. The iOS app sends it as Authorization: Bearer.
-    if ACCESS_TOKEN and (
-        request.url.path in _PUBLIC_PATHS
-        or request.url.path.startswith("/assets/")
-    ):
-        return await call_next(request)
-    if ACCESS_TOKEN and not hmac.compare_digest(_access_token_from_request(request), ACCESS_TOKEN):
-        return JSONResponse(
-            status_code=401,
-            content={
-                "ok": False,
-                "error": {
-                    "code": "access_token_required",
-                    "message": "需要填写 NinePlus 服务访问口令",
-                },
-            },
-            headers={"Cache-Control": "no-store", "WWW-Authenticate": "Bearer"},
-        )
+    # v1.2.62 authenticates the app with the Ninebot account itself. There is
+    # no deployment-wide frontend token; protected routes validate the
+    # per-login session in their handlers.
     return await call_next(request)
 
 
@@ -447,40 +415,24 @@ def get_session(
     x_session: str | None,
     cookie_session: str | None,
 ) -> tuple[str, PortalSession]:
-    # The iOS client intentionally has no account-login screen. When the
-    # installation access token is supplied as Bearer auth, expose the
-    # already-bound persistent cloud account as a lightweight app session.
-    # This keeps the deployment token as the only credential required by the
-    # frontend while preserving the existing cookie/session flow for the web UI.
-    supplied_access_token = ""
-    if authorization and authorization.lower().startswith("bearer "):
-        supplied_access_token = authorization[7:].strip()
-    if ACCESS_TOKEN and hmac.compare_digest(supplied_access_token, ACCESS_TOKEN) and not (x_session or cookie_session):
-        token = "app-" + hashlib.sha256(ACCESS_TOKEN.encode("utf-8")).hexdigest()
-        session = sessions.get(token)
-        if session is None:
-            session = PortalSession("app", time.time() + SESSION_TTL)
-            session.cloud = restore_persistent_cloud()
-            sessions[token] = session
-        if session.cloud is None:
-            error(409, "cloud_account_required", "服务端尚未绑定九号官方账号")
-    else:
-        token = x_session or cookie_session
-        if not token and supplied_access_token:
-            token = supplied_access_token
-        if not token or token not in sessions:
-            error(401, "not_authenticated", "请先连接 NinePlus 服务")
-        session = sessions[token]
+    # The app sends the session returned by POST /ninebot/login. Keep the
+    # Authorization argument for source compatibility with older clients, but
+    # never interpret it as an installation-wide access token.
+    del authorization
+    token = x_session or cookie_session
+    if not token or token not in sessions:
+        error(401, "not_authenticated", "请先登录九号账号")
+    session = sessions[token]
 
     now = time.time()
     if session.expires_at <= now:
         sessions.pop(token, None)
         cleanup_portal_session(session)
         persist_portal_sessions()
-        error(401, "session_expired", "NinePlus 登录已过期，请重新登录")
+        error(401, "session_expired", "九号登录已过期，请重新登录")
 
     # Sliding renewal keeps an actively used app session alive indefinitely
-    # while abandoned tokens still expire after the configured TTL.
+    # while abandoned sessions still expire after the configured TTL.
     if session.expires_at - now <= SESSION_TTL / 2:
         session.expires_at = now + SESSION_TTL
         if session.cloud is not None:
@@ -726,7 +678,18 @@ async def perform_portal_login(body: PortalLoginBody, request: Request, response
 
 
 async def perform_official_login(body: OfficialLoginBody, request: Request, response: Response) -> dict[str, Any]:
-    token, portal = portal_from_request(request, request.cookies.get("nineplus_session"))
+    # The mobile app intentionally has no NinePlus portal-login screen. Start
+    # an anonymous per-device portal session on the official-account login
+    # endpoint, then bind the supplied Ninebot account to that session.
+    try:
+        token, portal = portal_from_request(request, request.cookies.get("nineplus_session"))
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
+        token = secrets.token_urlsafe(32)
+        portal = PortalSession("official-app", time.time() + SESSION_TTL)
+        sessions[token] = portal
+
     if not cli_available():
         error(503, "dependency_missing", "ninecli 未安装")
 

@@ -15,13 +15,14 @@ cd server
 docker compose up -d --build
 ```
 
-The service listens on `8765`. The authenticated CLI token directories live on
-container tmpfs, while no account password or cloud token is persisted to the
-host. Restarting or recreating the container logs out all users.
+The service listens on `8765`. The authenticated CLI token directories live on the persistent session
+volume, while no account password is persisted to the host. Restarting or
+recreating the container restores the official binding but expires app
+sessions according to `NINEPLUS_SESSION_TTL`.
 
 Open `http://NAS_IP:8765` on the trusted LAN for the web console. The iOS
-release has the service URL and installation token injected at build time, so
-its UI only asks for the Ninebot account. OpenAPI documentation is at
+release has the service URL built in and asks only for the Ninebot account.
+OpenAPI documentation is at
 `/api/docs` and the health probe is at `/healthz`.
 
 ## Configuration
@@ -36,7 +37,6 @@ its UI only asks for the Ninebot account. OpenAPI documentation is at
 | `NINEPLUS_CACHE_TTL_TRAVEL` | `60` | Per-session travel cache in seconds |
 | `NINEPLUS_SESSION_ROOT` | `/run/nineplus/sessions` | Ephemeral token directory |
 | `NINEPLUS_COOKIE_SECURE` | `auto` | `true` for HTTPS-only cookie, `false` for plain LAN HTTP |
-| `NINEPLUS_ACCESS_TOKEN` | required | Installation-wide API access token; send as `Authorization: Bearer` or `X-NinePlus-Access-Token` |
 | `NINEPLUS_LOG_LEVEL` | `INFO` | Server log level |
 | `NINEPLUS_NINECLI_BIN` | `ninecli` | CLI executable override |
 | `NINEPLUS_DEVICE_ID` | generated | 32-character device ID used by the cloud login client |
@@ -86,9 +86,9 @@ curl http://127.0.0.1:8765/healthz
 
 ## iOS 登录流程
 
-正式版 iOS App 使用 `Authorization: Bearer <NINEPLUS_ACCESS_TOKEN>` 作为
-安装级访问凭据调用 `POST /ninebot/login`。服务端会为 App 自动创建轻量会话，
-再把九号手机号/邮箱和密码交给 `ninecli`；接口返回的会话令牌随后用于
+v1.2.62 iOS App 直接调用服务端的 `POST /ninebot/login`，不再发送
+`NINEPLUS_ACCESS_TOKEN`。服务端按九号账号登录创建每次安装的会话，
+再把手机号/邮箱和密码交给 `ninecli`；返回的会话令牌随后用于
 `/dashboard`、车辆状态、电池、行程和控制接口。
 
 网页控制台仍然保留独立的两步登录：先 `POST /auth/login` 登录本地门户，

@@ -261,10 +261,8 @@ struct NinebotProxyClient {
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let token = configuration.bearerToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        // Do not send a build-time NinePlus access token. Authentication is
+        // established by the Ninebot account login and the session header.
         if let sessionToken = configuration.appSessionToken?.trimmingCharacters(in: .whitespacesAndNewlines),
            !sessionToken.isEmpty {
             request.setValue(sessionToken, forHTTPHeaderField: "X-NinePlus-Session")

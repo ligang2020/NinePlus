@@ -7,10 +7,10 @@ location views, and local ride recording.
 ## iOS login flow
 
 The iOS app no longer displays a service-address or bearer-token form. The
-release build contains the deployment URL and receives the installation access
-token at build time; the only credential entered in the app is the user's
-Ninebot account and password. After login, the app fetches vehicle, status,
-battery, location, and trip data and stores only the returned session token.
+release build contains the service URL; the only credential entered in the app
+is the user's Ninebot account and password. After login, the app fetches
+vehicle, status, battery, location, and trip data and stores only the returned
+per-login session token.
 The password is cleared from memory after login and is not persisted.
 
 The cloud compatibility layer is the repository's `server/` service, which
@@ -21,16 +21,10 @@ server boundary instead of embedding an unsupported executable into iOS.
 
 ## Build and IPA
 
-Version **1.2.61**, build **61** is configured in the Xcode project.
+Version **1.2.62**, build **62** is configured in the Xcode project.
 GitHub Actions builds an unsigned device IPA and publishes it as both an
-Actions artifact and, for tag `v1.2.61` or a manual release build, a GitHub
-Release asset.
-
-Before triggering the workflow, add the repository secret
-`NINEPLUS_ACCESS_TOKEN`. It is injected into `NINEPLUS_ACCESS_TOKEN` in the
-app's Info.plist at build time and is never committed to the repository.
-Without that secret the IPA can still be packaged, but the app cannot pass the
-server's installation-authentication gate.
+Actions artifact and, for tag `v1.2.62` or a manual release build, a GitHub
+Release asset. No `NINEPLUS_ACCESS_TOKEN` secret is required.
 
 The local machine used for this checkout currently has only Command Line Tools,
 not the full Xcode toolchain, so IPA generation must run on the macOS GitHub
