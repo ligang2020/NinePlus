@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hmac
 import json
 import logging
 import os
@@ -620,6 +621,7 @@ async def healthz():
     return ok({
         "service": "nineplus",
         "version": app.version,
+        "auth_mode": "per-login-session",
         "ninecli": cli_available(),
         "uptime_seconds": int(time.time() - BOOT_TIME),
         "active_sessions": len(sessions),

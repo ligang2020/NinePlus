@@ -278,10 +278,9 @@ struct NinebotProxyClient {
             throw NinebotProxyError.invalidResponse
         }
 
-        // A server restart clears the in-memory app session, while the
-        // persistent ninecli cloud binding can still be restored. Retry once
-        // with the build-time access token and let the backend recreate the
-        // lightweight app session; the user should not have to log in again.
+        // A server restart can clear the in-memory app session. Re-login with
+        // the Ninebot account instead of falling back to a deployment-wide
+        // bearer token.
         if httpResponse.statusCode == 401,
            allowSessionRecovery,
            configuration.appSessionToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {

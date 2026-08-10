@@ -1309,18 +1309,9 @@ private struct VehicleControlHero: View {
                     .foregroundStyle(Color.teslaSecondaryText)
             }
 
-            ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(Color.black.opacity(0.035))
-                    .frame(height: 24)
-                    .blur(radius: 16)
-                    .offset(y: 60)
-
-                VehicleImage(urlString: snapshot.vehicle.imageURLString, size: 246, showsBackground: false)
-                    .shadow(color: Color.black.opacity(0.12), radius: 24, x: 0, y: 18)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 196)
+            VehicleMotionScene(snapshot: snapshot)
+                .frame(maxWidth: .infinity)
+                .frame(height: 218)
 
             VStack(spacing: 12) {
                 BatteryProgressBar(value: snapshot.state.batteryFraction)
@@ -1351,6 +1342,344 @@ private struct VehicleControlHero: View {
             return nil
         }
         return value
+    }
+}
+
+private enum VehicleMotionSceneMode: Equatable {
+    case parked
+    case riding
+    case charging
+}
+
+/// 主页车辆动态场景。
+///
+/// v1.2.62 重构主页时只保留了静态 VehicleImage，导致旧版的道路、车辆和充电画面消失。
+/// 这里保留当前版本的数据和登录结构，仅恢复一个不依赖额外网络请求的本地场景，确保深色模式、离线和图片接口异常时仍然有稳定画面。
+private struct VehicleMotionScene: View {
+    var snapshot: NinebotVehicleSnapshot
+
+    private var mode: VehicleMotionSceneMode {
+        if snapshot.state.isCharging == true {
+            return .charging
+        }
+
+        if let rawStatus = snapshot.state.rawStatus {
+            let movementKeys = ["isRiding", "riding", "isMoving", "moving", "inMotion", "driving"]
+            if movementKeys.contains(where: { rawStatus[$0]?.boolValue == true }) {
+                return .riding
+            }
+        }
+
+        // 九号接口经常没有实时速度字段；已上电且未锁定时视为当前骑行状态，
+        // 与主页的“滑动关锁”状态保持一致，避免错误地显示成纯静态卡片。
+        if snapshot.state.isPoweredOn == true && snapshot.state.isLocked != true {
+            return .riding
+        }
+        return .parked
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                scene(size: proxy.size, phase: timeline.date.timeIntervalSinceReferenceDate)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(sceneAccessibilityLabel)
+    }
+
+    @ViewBuilder
+    private func scene(size: CGSize, phase: TimeInterval) -> some View {
+        switch mode {
+        case .parked:
+            VehicleParkedScene(snapshot: snapshot, size: size, phase: phase)
+        case .riding:
+            VehicleRidingScene(snapshot: snapshot, size: size, phase: phase)
+        case .charging:
+            VehicleChargingScene(snapshot: snapshot, size: size, phase: phase)
+        }
+    }
+
+    private var sceneAccessibilityLabel: String {
+        switch mode {
+        case .parked: return snapshot.state.isPoweredOn == true ? "车辆已停稳，已上电" : "车辆已停稳"
+        case .riding: return "车辆骑行画面"
+        case .charging: return "车辆充电画面"
+        }
+    }
+}
+
+private struct VehicleSceneBackdrop: View {
+    var size: CGSize
+    var phase: TimeInterval
+    var animatesRoadAndCity: Bool
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.08, green: 0.12, blue: 0.20),
+                    Color(red: 0.22, green: 0.31, blue: 0.42),
+                    Color(red: 0.54, green: 0.61, blue: 0.65)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Circle()
+                .fill(Color.white.opacity(0.22))
+                .frame(width: size.height * 0.42)
+                .blur(radius: 10)
+                .offset(x: size.width * 0.27, y: -size.height * 0.25)
+
+            skyline
+            road
+        }
+        .frame(width: size.width, height: size.height)
+        .clipped()
+    }
+
+    private var skyline: some View {
+        GeometryReader { proxy in
+            HStack(alignment: .bottom, spacing: proxy.size.width * 0.018) {
+                ForEach(0..<14, id: \.self) { index in
+                    let height = proxy.size.height * (0.13 + CGFloat((index * 17) % 8) * 0.012)
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(Color.black.opacity(0.16 + Double(index % 3) * 0.025))
+                        .frame(width: max(11, proxy.size.width * 0.055), height: height)
+                        .overlay(alignment: .top) {
+                            VStack(spacing: 4) {
+                                ForEach(0..<2, id: \.self) { _ in
+                                    Capsule()
+                                        .fill(Color.white.opacity(0.10))
+                                        .frame(width: 3, height: 2)
+                                }
+                            }
+                            .padding(.top, 7)
+                        }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .offset(y: -proxy.size.height * 0.24)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var road: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: proxy.size.height * 0.72))
+                    path.addLine(to: CGPoint(x: proxy.size.width, y: proxy.size.height * 0.62))
+                    path.addLine(to: CGPoint(x: proxy.size.width, y: proxy.size.height))
+                    path.addLine(to: CGPoint(x: 0, y: proxy.size.height))
+                    path.closeSubpath()
+                }
+                .fill(Color.black.opacity(0.30))
+
+                Path { path in
+                    path.move(to: CGPoint(x: proxy.size.width * 0.52, y: proxy.size.height * 0.64))
+                    path.addLine(to: CGPoint(x: proxy.size.width * 0.50, y: proxy.size.height))
+                }
+                .stroke(Color.white.opacity(0.28), style: StrokeStyle(lineWidth: 2, dash: [10, 14]))
+
+                if animatesRoadAndCity {
+                    ForEach(0..<7, id: \.self) { index in
+                        let progress = (phase * 0.22 + Double(index) * 0.15).truncatingRemainder(dividingBy: 1)
+                        Capsule()
+                            .fill(Color.white.opacity(0.22))
+                            .frame(width: proxy.size.width * (0.02 + CGFloat(progress) * 0.04), height: 2)
+                            .offset(x: proxy.size.width * (-0.45 + CGFloat(index) * 0.14), y: proxy.size.height * (0.68 + CGFloat(progress) * 0.27))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct VehicleParkedScene: View {
+    var snapshot: NinebotVehicleSnapshot
+    var size: CGSize
+    var phase: TimeInterval
+
+    var body: some View {
+        ZStack {
+            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: false)
+
+            Ellipse()
+                .fill(Color.black.opacity(0.28))
+                .frame(width: size.width * 0.55, height: size.height * 0.06)
+                .blur(radius: 7)
+                .offset(x: size.width * 0.03, y: size.height * 0.30)
+
+            VehicleImage(urlString: snapshot.vehicle.imageURLString, sn: snapshot.vehicle.sn, size: min(size.width * 0.76, 270), showsBackground: false)
+                .shadow(color: .black.opacity(0.30), radius: 12, x: 0, y: 8)
+                .offset(x: size.width * 0.03, y: size.height * 0.03)
+
+            VehicleSceneBadge(
+                title: snapshot.state.isPoweredOn == true ? "车辆已停稳 · 已上电" : "车辆已停稳",
+                icon: snapshot.state.isPoweredOn == true ? "power" : "lock.fill",
+                tint: snapshot.state.isPoweredOn == true ? .orange : .white
+            )
+            .position(x: size.width * 0.22, y: size.height * 0.14)
+        }
+        .frame(width: size.width, height: size.height)
+    }
+}
+
+private struct VehicleRidingScene: View {
+    var snapshot: NinebotVehicleSnapshot
+    var size: CGSize
+    var phase: TimeInterval
+
+    var body: some View {
+        let bob = CGFloat(sin(phase * 6.4)) * 1.1
+        let drift = CGFloat(sin(phase * 1.8)) * 1.5
+
+        return ZStack {
+            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: true)
+            VehicleMotionStreaks(size: size, phase: phase)
+
+            Ellipse()
+                .fill(Color.black.opacity(0.34))
+                .frame(width: size.width * 0.52, height: size.height * 0.06)
+                .blur(radius: 6)
+                .offset(x: size.width * 0.05, y: size.height * 0.30)
+
+            VehicleImage(urlString: snapshot.vehicle.imageURLString, sn: snapshot.vehicle.sn, size: min(size.width * 0.76, 270), showsBackground: false)
+                .shadow(color: .black.opacity(0.36), radius: 11, x: 0, y: 7)
+                .offset(x: size.width * 0.05 + drift, y: size.height * 0.025 + bob)
+
+            VehicleSceneBadge(title: "骑行中", icon: "figure.outdoor.cycle", tint: Color.white)
+                .position(x: size.width * 0.16, y: size.height * 0.14)
+        }
+        .frame(width: size.width, height: size.height)
+    }
+}
+
+private struct VehicleMotionStreaks: View {
+    var size: CGSize
+    var phase: TimeInterval
+
+    var body: some View {
+        ForEach(0..<9, id: \.self) { index in
+            let progress = (phase * 0.42 + Double(index) * 0.13).truncatingRemainder(dividingBy: 1)
+            Capsule()
+                .fill(Color.white.opacity(0.12 + Double(index % 2) * 0.08))
+                .frame(width: size.width * (0.025 + CGFloat(progress) * 0.045), height: 2)
+                .rotationEffect(.degrees(-8))
+                .offset(x: size.width * (-0.42 + CGFloat(index % 4) * 0.23), y: size.height * (0.53 + CGFloat(progress) * 0.25))
+        }
+    }
+}
+
+private struct VehicleChargingScene: View {
+    var snapshot: NinebotVehicleSnapshot
+    var size: CGSize
+    var phase: TimeInterval
+
+    var body: some View {
+        let pulse = 0.78 + 0.22 * (0.5 + 0.5 * sin(phase * 4.0))
+
+        return ZStack {
+            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: false)
+
+            Ellipse()
+                .fill(Color.black.opacity(0.31))
+                .frame(width: size.width * 0.53, height: size.height * 0.06)
+                .blur(radius: 7)
+                .offset(x: -size.width * 0.02, y: size.height * 0.30)
+
+            VehicleChargingCable(size: size, phase: phase)
+
+            VehicleImage(urlString: snapshot.vehicle.imageURLString, sn: snapshot.vehicle.sn, size: min(size.width * 0.70, 256), showsBackground: false)
+                .shadow(color: .black.opacity(0.34), radius: 12, x: 0, y: 8)
+                .offset(x: -size.width * 0.07, y: size.height * 0.03)
+
+            VehicleChargePillar(isAnimating: true, pulse: pulse)
+                .frame(width: size.width * 0.16, height: size.height * 0.60)
+                .position(x: size.width * 0.84, y: size.height * 0.62)
+
+            VehicleSceneBadge(title: snapshot.state.isFullyCharged ? "已充满" : "充电中", icon: "bolt.fill", tint: Color.teslaGreen)
+                .position(x: size.width * 0.17, y: size.height * 0.14)
+        }
+        .frame(width: size.width, height: size.height)
+    }
+}
+
+private struct VehicleSceneBadge: View {
+    var title: String
+    var icon: String
+    var tint: Color
+
+    var body: some View {
+        Label(title, systemImage: icon)
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(.black.opacity(0.28), in: Capsule())
+            .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.7))
+    }
+}
+
+private struct VehicleChargePillar: View {
+    var isAnimating: Bool
+    var pulse: Double
+
+    var body: some View {
+        VStack(spacing: 5) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color.black.opacity(0.84))
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Color.white.opacity(0.18), lineWidth: 1))
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 15, weight: .black))
+                    .foregroundStyle(Color.teslaGreen)
+                    .opacity(pulse)
+                    .shadow(color: Color.teslaGreen.opacity(0.85), radius: 6)
+            }
+            .frame(height: 34)
+
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(LinearGradient(colors: [.black.opacity(0.86), .black.opacity(0.55)], startPoint: .top, endPoint: .bottom))
+                .overlay(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.22)).frame(width: 1).padding(.vertical, 7).padding(.leading, 4)
+                }
+
+            Capsule()
+                .fill(Color.black.opacity(0.55))
+                .frame(width: 34, height: 5)
+        }
+        .shadow(color: .black.opacity(0.28), radius: 8, x: -3, y: 6)
+    }
+}
+
+private struct VehicleChargingCable: View {
+    var size: CGSize
+    var phase: TimeInterval
+
+    var body: some View {
+        let chargerPort = CGPoint(x: size.width * 0.82, y: size.height * 0.48)
+        let batteryPort = CGPoint(x: size.width * 0.57, y: size.height * 0.63)
+        let control1 = CGPoint(x: size.width * 0.75, y: size.height * 0.82)
+        let control2 = CGPoint(x: size.width * 0.64, y: size.height * 0.51)
+        return ZStack {
+            Path { path in
+                path.move(to: chargerPort)
+                path.addCurve(to: batteryPort, control1: control1, control2: control2)
+            }
+            .stroke(.black.opacity(0.66), style: StrokeStyle(lineWidth: 3.2, lineCap: .round))
+
+            Path { path in
+                path.move(to: chargerPort)
+                path.addCurve(to: batteryPort, control1: control1, control2: control2)
+            }
+            .stroke(Color.teslaGreen.opacity(0.42), style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: [2, 10], dashPhase: phase * -28))
+            .shadow(color: Color.teslaGreen.opacity(0.65), radius: 3)
+        }
     }
 }
 
@@ -4756,8 +5085,10 @@ private struct EmptyDashboardView: View {
 
 private struct VehicleImage: View {
     var urlString: String?
+    var sn: String?
     var size: CGFloat
     var showsBackground = true
+    @State private var cachedImage: UIImage?
 
     var body: some View {
         ZStack {
@@ -4777,8 +5108,9 @@ private struct VehicleImage: View {
                     case .failure:
                         fallbackImage
                     case .empty:
-                        ProgressView()
-                            .controlSize(.small)
+                        // 不再让 ProgressView 永久占据车辆区域；网络图片加载期间
+                        // 先显示缓存或内置车辆图，避免用户看到空白主页。
+                        fallbackImage
                     @unknown default:
                         fallbackImage
                     }
@@ -4788,12 +5120,28 @@ private struct VehicleImage: View {
             }
         }
         .frame(width: size, height: size)
+        .task(id: sn) {
+            guard let sn, !sn.isEmpty else { return }
+            guard let data = NinebotSharedStore().loadVehicleImageData(sn: sn),
+                  let image = UIImage(data: data) else { return }
+            cachedImage = image
+        }
     }
 
+    @ViewBuilder
     private var fallbackImage: some View {
-        Image(systemName: "bolt.car.fill")
-            .font(.system(size: size * 0.38, weight: .semibold))
-            .foregroundStyle(.secondary)
+        if let cachedImage {
+            Image(uiImage: cachedImage)
+                .resizable()
+                .scaledToFit()
+                .padding(6)
+        } else {
+            Image("LoginVehicle")
+                .resizable()
+                .scaledToFit()
+                .padding(size * 0.08)
+                .opacity(0.92)
+        }
     }
 }
 
