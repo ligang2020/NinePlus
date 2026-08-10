@@ -1,0 +1,108 @@
+name: Build and publish IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Upload the IPA to a GitHub Release
+        required: false
+        default: true
+        type: boolean
+      release_tag:
+        description: Optional release tag; blank uses the app version
+        required: false
+        default: ''
+  push:
+    branches: [main, master, nine-proxy]
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-ipa:
+    name: Build iOS IPA
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Verify Xcode and app version
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          PROJECT=mini-ninebot/mini-ninebot.xcodeproj/project.pbxproj
+          VERSION="$(awk -F ' = ' '/MARKETING_VERSION = / { gsub(/;/, "", $2); print $2; exit }' "$PROJECT")"
+          BUILD="$(awk -F ' = ' '/CURRENT_PROJECT_VERSION = / { gsub(/;/, "", $2); print $2; exit }' "$PROJECT")"
+          test "$VERSION" = "1.2.61"
+          test "$BUILD" = "61"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "v$VERSION" = "$GITHUB_REF_NAME"
+          fi
+          echo "Building NinePlus v$VERSION ($BUILD)."
+
+      - name: Build and package unsigned IPA
+        id: package
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/NinePlusIPA
+          DERIVED_DATA: ${{ runner.temp }}/NinePlusDerivedData
+          NINEPLUS_APP_ACCESS_TOKEN: ${{ secrets.NINEPLUS_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          IPA_PATH="$(scripts/package-unsigned-ipa.sh --output "$ARTIFACT_DIR" --derived-data "$DERIVED_DATA")"
+          echo "ipa_path=$IPA_PATH" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$IPA_PATH.sha256" >> "$GITHUB_OUTPUT"
+          echo "ipa_name=$(basename "$IPA_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload IPA artifact to GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.ipa_name }}
+          path: |
+            ${{ steps.package.outputs.ipa_path }}
+            ${{ steps.package.outputs.checksum_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          VERSION="$(awk -F ' = ' '/MARKETING_VERSION = / { gsub(/;/, "", $2); print $2; exit }' mini-ninebot/mini-ninebot.xcodeproj/project.pbxproj)"
+          EXPECTED_TAG="v${VERSION}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = "$EXPECTED_TAG"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$EXPECTED_TAG" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == workflow_dispatch && "$PUBLISH_RELEASE" == true ]]; then
+            if [[ -n "$REQUESTED_TAG" ]]; then test "$REQUESTED_TAG" = "$EXPECTED_TAG"; fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$EXPECTED_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload IPA to GitHub Release
+        if: steps.release.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IPA_PATH: ${{ steps.package.outputs.ipa_path }}
+          CHECKSUM_PATH: ${{ steps.package.outputs.checksum_path }}
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "$IPA_PATH" "$CHECKSUM_PATH" --clobber
+          else
+            gh release create "$TAG_NAME" "$IPA_PATH" "$CHECKSUM_PATH" \
+              --title "NinePlus LiveRide $TAG_NAME" \
+              --notes "Unsigned IPA built by GitHub Actions from ${GITHUB_SHA}."
+          fi

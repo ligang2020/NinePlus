@@ -1,0 +1,26 @@
+services:
+  nineplus:
+    build: .
+    container_name: nineplus
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      NINEPLUS_SESSION_ROOT: /run/nineplus/sessions
+      NINEPLUS_SESSION_TTL: "2592000"
+      NINEPLUS_CLI_TIMEOUT: "45"
+      # Short per-login caches avoid starting ninecli repeatedly while the
+      # home screen, widgets, and manual refresh overlap.
+      NINEPLUS_CACHE_TTL_VEHICLES: "30"
+      NINEPLUS_CACHE_TTL_STATUS: "8"
+      NINEPLUS_CACHE_TTL_BATTERY: "15"
+      NINEPLUS_CACHE_TTL_TRAVEL: "60"
+      NINEPLUS_COOKIE_SECURE: "auto"
+      # Installation-wide API token; keep the real value only in server/.env.
+      NINEPLUS_ACCESS_TOKEN: "${NINEPLUS_ACCESS_TOKEN:?请在 server/.env 中设置 NinePlus 访问口令}"
+      NINEPLUS_DEVICE_ID: "${NINEPLUS_DEVICE_ID:-}"
+      # NinePlus 自有门户账号；密码只放在 server/.env，不要提交到 Git。
+      NINEPLUS_PORTAL_USERNAME: "${NINEPLUS_PORTAL_USERNAME:-gang}"
+      NINEPLUS_PORTAL_PASSWORD: "${NINEPLUS_PORTAL_PASSWORD:?请在 server/.env 中设置 NinePlus 登录密码}"
+    volumes:
+      # Keep the ninecli official-account token across container restarts.
+      - ./persistent-sessions:/run/nineplus/sessions
