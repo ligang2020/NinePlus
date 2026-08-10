@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import MapKit
 
 struct NinebotSettingsView: View {
     @ObservedObject var model: NinebotViewModel
@@ -39,6 +40,11 @@ struct NinebotSettingsView: View {
                 }
 
                 NinebotBuiltInConnectionRow()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .ninePlusCard(cornerRadius: 24)
+
+                VehicleEventsCard(events: model.vehicleEvents)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
                     .ninePlusCard(cornerRadius: 24)
@@ -104,6 +110,162 @@ struct NinebotSettingsView: View {
     }
 
 
+}
+
+
+private struct VehicleEventsCard: View {
+    var events: [NinebotVehicleEvent]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("车辆事件记录")
+                        .font(.headline.weight(.semibold))
+                    Text(events.isEmpty ? "刷新车况后自动记录报警和充电状态变化" : "按时间倒序展示本机已记录的车辆事件")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "list.bullet.clipboard.fill")
+                    .foregroundStyle(Color.teslaGreen)
+            }
+
+            if events.isEmpty {
+                Label("暂无事件，下一次刷新检测到变化后会自动加入列表", systemImage: "clock.arrow.circlepath")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
+            } else {
+                LazyVStack(spacing: 10) {
+                    ForEach(events) { event in
+                        VehicleEventRow(event: event)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct VehicleEventRow: View {
+    var event: NinebotVehicleEvent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: event.type.systemImage)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(tint)
+                    .frame(width: 30, height: 30)
+                    .background(tint.opacity(0.14), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(event.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(event.vehicleName.isEmpty ? event.vehicleSN : event.vehicleName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(Self.dateFormatter.string(from: event.occurredAt))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(event.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if event.hasCoordinate, let latitude = event.latitude, let longitude = event.longitude {
+                Map(position: .constant(.region(Self.region(latitude: latitude, longitude: longitude)))) {
+                    Marker(event.title, systemImage: event.type.systemImage, coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude))
+                        .tint(tint)
+                }
+                .frame(height: 116)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .allowsHitTesting(false)
+            } else {
+                Label("接口未返回事件坐标", systemImage: "location.slash")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                if let durationMinutes = event.durationMinutes {
+                    EventValuePill(title: "充电耗时", value: Self.durationText(durationMinutes), systemImage: "timer")
+                }
+                if let chargingPower = event.chargingPower {
+                    EventValuePill(title: "充电功率", value: "\(Int(chargingPower.rounded())) W", systemImage: "bolt.fill")
+                }
+                if let batteryTemperature = event.batteryTemperature {
+                    EventValuePill(title: "电池温度", value: "\(String(format: "%.1f", batteryTemperature)) °C", systemImage: "thermometer.medium")
+                }
+                if let voltage = event.voltage {
+                    EventValuePill(title: "电压", value: "\(String(format: "%.1f", voltage)) V", systemImage: "gauge.with.dots.needle.67percent")
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.teslaControlBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(tint.opacity(0.14), lineWidth: 1))
+    }
+
+    private var tint: Color {
+        switch event.type {
+        case .alarm: return .orange
+        case .chargeStarted: return .blue
+        case .chargeEnded: return Color.teslaGreen
+        }
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter
+    }()
+
+    private static func durationText(_ minutes: Double) -> String {
+        let total = max(Int(minutes.rounded()), 0)
+        let hours = total / 60
+        let remaining = total % 60
+        if hours > 0 { return "\(hours)小时\(remaining)分" }
+        return "\(remaining)分钟"
+    }
+
+    private static func region(latitude: Double, longitude: Double) -> MKCoordinateRegion {
+        MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+            span: MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)
+        )
+    }
+}
+
+private struct EventValuePill: View {
+    var title: String
+    var value: String
+    var systemImage: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+    }
 }
 
 private struct NinebotBuiltInConnectionRow: View {

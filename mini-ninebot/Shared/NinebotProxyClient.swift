@@ -576,7 +576,10 @@ private extension NinebotProxyClient {
             ),
             batteryCycleCount: firstInt(["bms_cycle", "bmsCycle", "cycle", "cycles"], in: batteryListObject)
                 ?? firstInt(["bms_cycle", "bmsCycle", "cycle", "cycles"], in: batteryPayloadObject),
-            chargingPower: firstDouble(["charging_power", "chargingPower", "charge_power", "chargePower"], in: batteryPayloadObject),
+            chargingPower: firstDouble(["charging_power", "chargingPower", "charge_power", "chargePower"], in: batteryPayloadObject)
+                ?? firstDouble(["charging_power", "chargingPower", "charge_power", "chargePower"], in: batterySources),
+            interfaceMaximumSpeed: firstDouble(["max_speed", "maxSpeed", "highest_speed", "highestSpeed", "peak_speed", "peakSpeed", "top_speed", "topSpeed"], in: [statusObject, travelObject, batteryPayloadObject])
+                .flatMap { $0 > 0 && $0 <= 120 ? $0 : nil },
             endurance: firstDouble(["precise_estimate_mileage", "preciseEstimateMileage", "estimate_mileage", "estimateMileage"], in: statusObject),
             aiEstimatedMileage: firstDouble(["ai_estimate_mileage", "aiEstimateMileage", "ai_estimated_mileage", "aiEstimatedMileage"], in: statusObject),
             isCharging: firstBoolLike(["charging", "chargingState"], in: statusObject, trueValue: 1)
@@ -639,7 +642,7 @@ private extension NinebotProxyClient {
         let energy = firstDouble(["ec", "energy", "electricity", "consume"], in: object)
         let usedElectricity = firstDouble(["used_electricity", "usedElectricity", "usedElectric", "useElectricity"], in: object)
         let durationMinutes = firstDurationMinutes(in: object, startedAt: startedAt, endedAt: endedAt)
-        let speed = firstDouble(["speed", "avg_speed", "avgSpeed", "average_speed", "averageSpeed"], in: object)
+        let speed = firstDouble(["max_speed", "maxSpeed", "highest_speed", "highestSpeed", "peak_speed", "peakSpeed", "top_speed", "topSpeed", "speed"], in: object)
 
         let id = firstString(["travel_id", "travelId", "ride_id", "rideId", "record_id", "recordId", "id"], in: object)
             ?? startedAt.map { "\(Int($0.timeIntervalSince1970))" }

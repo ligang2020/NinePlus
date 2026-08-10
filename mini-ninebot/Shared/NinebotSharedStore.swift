@@ -15,6 +15,7 @@ struct NinebotSharedStore {
         static let interfaceRidePrefix = "ninebot.vehicle.interface.rides."
         static let vehicleImagePrefix = "ninebot.vehicle.image."
         static let recordedRides = "ninebot.recorded.rides"
+        static let vehicleEvents = "ninebot.vehicle.events"
         static let pushDeviceToken = "ninebot.push.device.token"
     }
 
@@ -130,6 +131,20 @@ struct NinebotSharedStore {
             return []
         }
         return points.sorted { $0.date < $1.date }
+    }
+
+    func loadVehicleEvents() -> [NinebotVehicleEvent] {
+        guard let data = defaults.data(forKey: Key.vehicleEvents),
+              let events = try? decoder.decode([NinebotVehicleEvent].self, from: data) else {
+            return []
+        }
+        return events.sorted { $0.occurredAt > $1.occurredAt }
+    }
+
+    func saveVehicleEvents(_ events: [NinebotVehicleEvent]) {
+        let limited = Array(events.sorted { $0.occurredAt > $1.occurredAt }.prefix(200))
+        guard let data = try? encoder.encode(limited) else { return }
+        defaults.set(data, forKey: Key.vehicleEvents)
     }
 
     func loadRecordedRides() -> [NinebotRecordedRide] {

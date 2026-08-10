@@ -1323,7 +1323,7 @@ private struct VehicleControlHero: View {
                     TeslaHeroMetric(title: "接口续航", value: snapshot.state.enduranceText, systemImage: "road.lanes")
                     Divider()
                         .frame(height: 34)
-                    TeslaHeroMetric(title: "均速", value: snapshot.state.averageSpeedText, systemImage: "speedometer")
+                    TeslaHeroMetric(title: "最高速度", value: snapshot.state.maximumSpeedText, systemImage: "speedometer")
                 }
             }
 
@@ -1355,8 +1355,295 @@ private enum VehicleMotionSceneMode: Equatable {
 ///
 /// v1.2.62 重构主页时只保留了静态 VehicleImage，导致旧版的道路、车辆和充电画面消失。
 /// 这里保留当前版本的数据和登录结构，仅恢复一个不依赖额外网络请求的本地场景，确保深色模式、离线和图片接口异常时仍然有稳定画面。
+private enum RideWeatherCondition: String, Codable, Equatable {
+    case clear
+    case partlyCloudy
+    case cloudy
+    case rain
+    case storm
+    case snow
+    case fog
+
+    var title: String {
+        switch self {
+        case .clear: return "晴"
+        case .partlyCloudy: return "多云"
+        case .cloudy: return "阴天"
+        case .rain: return "下雨"
+        case .storm: return "雷雨"
+        case .snow: return "下雪"
+        case .fog: return "雾"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .clear: return "sun.max.fill"
+        case .partlyCloudy: return "cloud.sun.fill"
+        case .cloudy: return "cloud.fill"
+        case .rain: return "cloud.rain.fill"
+        case .storm: return "cloud.bolt.rain.fill"
+        case .snow: return "cloud.snow.fill"
+        case .fog: return "cloud.fog.fill"
+        }
+    }
+
+    var isWet: Bool { self == .rain || self == .storm }
+}
+
+private struct RideWeatherSnapshot: Equatable {
+    var condition: RideWeatherCondition
+    var temperatureC: Double?
+    var windSpeedKmh: Double?
+    var ultravioletIndex: Double?
+    var isDay: Bool
+    var fetchedAt: Date
+
+    static var fallback: RideWeatherSnapshot {
+        let hour = Calendar.current.component(.hour, from: Date())
+        return RideWeatherSnapshot(
+            condition: .partlyCloudy,
+            temperatureC: nil,
+            windSpeedKmh: nil,
+            ultravioletIndex: nil,
+            isDay: (7...18).contains(hour),
+            fetchedAt: Date()
+        )
+    }
+}
+
+private final class RideWeatherProvider: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @Published private(set) var snapshot = RideWeatherSnapshot.fallback
+
+    private let locationManager = CLLocationManager()
+    private var latestPhoneLocation: CLLocation?
+    private var locationContinuation: CheckedContinuation<CLLocation?, Never>?
+    private var lastCoordinate: CLLocationCoordinate2D?
+    private var lastFetchedAt: Date?
+
+    override init() {
+        super.init()
+        locationManager.delegate = self
+        locationManager.desiredAccuracy = kCLLocationAccuracyKilometer
+    }
+
+    func refresh(vehicleLatitude: Double?, vehicleLongitude: Double?) async {
+        let coordinate: CLLocationCoordinate2D?
+        if let vehicleLatitude, let vehicleLongitude,
+           abs(vehicleLatitude) <= 90, abs(vehicleLongitude) <= 180 {
+            coordinate = CLLocationCoordinate2D(latitude: vehicleLatitude, longitude: vehicleLongitude)
+        } else {
+            coordinate = await requestPhoneCoordinate()
+        }
+
+        guard let coordinate else {
+            await MainActor.run { self.snapshot = .fallback }
+            return
+        }
+
+        if let lastCoordinate,
+           let lastFetchedAt,
+           Date().timeIntervalSince(lastFetchedAt) < 300,
+           abs(lastCoordinate.latitude - coordinate.latitude) < 0.02,
+           abs(lastCoordinate.longitude - coordinate.longitude) < 0.02 {
+            return
+        }
+
+        do {
+            let weather = try await fetchWeather(coordinate: coordinate)
+            await MainActor.run {
+                self.snapshot = weather
+                self.lastCoordinate = coordinate
+                self.lastFetchedAt = Date()
+            }
+        } catch {
+            // Keep the last successful weather instead of blanking the scene while offline.
+            await MainActor.run {
+                if self.lastFetchedAt == nil { self.snapshot = .fallback }
+            }
+        }
+    }
+
+    private func requestPhoneCoordinate() async -> CLLocationCoordinate2D? {
+        if let latestPhoneLocation { return latestPhoneLocation.coordinate }
+        guard CLLocationManager.locationServicesEnabled() else { return nil }
+
+        switch locationManager.authorizationStatus {
+        case .notDetermined:
+            locationManager.requestWhenInUseAuthorization()
+        case .denied, .restricted:
+            return nil
+        default:
+            break
+        }
+
+        return await withCheckedContinuation { continuation in
+            locationContinuation = continuation
+            locationManager.requestLocation()
+        }.map(\.coordinate)
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        switch manager.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            if locationContinuation != nil { manager.requestLocation() }
+        case .denied, .restricted:
+            locationContinuation?.resume(returning: nil)
+            locationContinuation = nil
+        default:
+            break
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        latestPhoneLocation = locations.last
+        locationContinuation?.resume(returning: locations.last)
+        locationContinuation = nil
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        locationContinuation?.resume(returning: nil)
+        locationContinuation = nil
+    }
+
+    private func fetchWeather(coordinate: CLLocationCoordinate2D) async throws -> RideWeatherSnapshot {
+        var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
+        components.queryItems = [
+            URLQueryItem(name: "latitude", value: String(format: "%.5f", coordinate.latitude)),
+            URLQueryItem(name: "longitude", value: String(format: "%.5f", coordinate.longitude)),
+            URLQueryItem(name: "current", value: "temperature_2m,weather_code,wind_speed_10m,is_day,uv_index"),
+            URLQueryItem(name: "timezone", value: "auto")
+        ]
+        guard let url = components.url else { throw URLError(.badURL) }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        let payload = try JSONDecoder().decode(OpenMeteoWeatherResponse.self, from: data)
+        let current = payload.current
+        return RideWeatherSnapshot(
+            condition: RideWeatherCondition(code: current.weatherCode),
+            temperatureC: current.temperature,
+            windSpeedKmh: current.windSpeed,
+            ultravioletIndex: current.uvIndex,
+            isDay: current.isDay == 1,
+            fetchedAt: Date()
+        )
+    }
+}
+
+private struct OpenMeteoWeatherResponse: Decodable {
+    var current: Current
+
+    struct Current: Decodable {
+        var temperature: Double?
+        var weatherCode: Int?
+        var windSpeed: Double?
+        var isDay: Int?
+        var uvIndex: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case temperature = "temperature_2m"
+            case weatherCode = "weather_code"
+            case windSpeed = "wind_speed_10m"
+            case isDay = "is_day"
+            case uvIndex = "uv_index"
+        }
+    }
+}
+
+private extension RideWeatherCondition {
+    init(code: Int?) {
+        switch code ?? -1 {
+        case 0: self = .clear
+        case 1...3: self = code == 1 ? .partlyCloudy : .cloudy
+        case 45, 48: self = .fog
+        case 51...67, 80...82: self = .rain
+        case 71...77, 85...86: self = .snow
+        case 95...99: self = .storm
+        default: self = .partlyCloudy
+        }
+    }
+}
+
+
+private struct WeatherCloudLayer: View {
+    var size: CGSize
+    var phase: TimeInterval
+    var dense: Bool
+
+    var body: some View {
+        HStack(spacing: size.width * 0.04) {
+            ForEach(0..<3, id: \.self) { index in
+                HStack(spacing: -size.width * 0.035) {
+                    Circle().fill(.white.opacity(dense ? 0.22 : 0.16)).frame(width: size.width * 0.16)
+                    Circle().fill(.white.opacity(dense ? 0.28 : 0.20)).frame(width: size.width * 0.22)
+                    Circle().fill(.white.opacity(dense ? 0.18 : 0.14)).frame(width: size.width * 0.13)
+                }
+                .offset(x: CGFloat(sin(phase * 0.12 + Double(index))) * 8, y: CGFloat(index % 2) * 12)
+            }
+        }
+        .blur(radius: 2)
+        .offset(x: -size.width * 0.12, y: -size.height * 0.27)
+        .allowsHitTesting(false)
+    }
+}
+
+private struct WeatherRainLayer: View {
+    var size: CGSize
+    var phase: TimeInterval
+
+    var body: some View {
+        ForEach(0..<22, id: \.self) { index in
+            let progress = (phase * 0.65 + Double(index) * 0.077).truncatingRemainder(dividingBy: 1)
+            Capsule()
+                .fill(.white.opacity(0.16 + Double(index % 3) * 0.05))
+                .frame(width: 1.2, height: size.height * (0.035 + CGFloat(index % 4) * 0.008))
+                .rotationEffect(.degrees(12))
+                .offset(
+                    x: size.width * (-0.48 + CGFloat(index % 11) * 0.095),
+                    y: size.height * (-0.28 + CGFloat(progress) * 0.76)
+                )
+        }
+        .allowsHitTesting(false)
+    }
+}
+private struct RideWeatherCard: View {
+    var snapshot: RideWeatherSnapshot
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: snapshot.condition.systemImage)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(snapshot.condition.isWet ? Color.cyan : Color.white)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(snapshot.condition.title)
+                    .font(.caption2.weight(.bold))
+                HStack(spacing: 5) {
+                    Text(snapshot.temperatureC.map { "\(Int($0.rounded()))°" } ?? "--°")
+                    Text("风 \(snapshot.windSpeedKmh.map { String(format: "%.0f", $0) } ?? "--")")
+                }
+                .font(.system(size: 9, weight: .medium, design: .rounded).monospacedDigit())
+                Text("UV \(snapshot.ultravioletIndex.map { String(format: "%.0f", $0) } ?? "--")")
+                    .font(.system(size: 9, weight: .medium, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+            .foregroundStyle(.white)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.black.opacity(0.36), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(.white.opacity(0.18), lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 3)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("天气 \(snapshot.condition.title)，气温 \(snapshot.temperatureC.map { String(format: "%.0f", $0) } ?? "未知") 度，风速 \(snapshot.windSpeedKmh.map { String(format: "%.0f", $0) } ?? "未知") 公里每小时，紫外线 \(snapshot.ultravioletIndex.map { String(format: "%.0f", $0) } ?? "未知")")
+    }
+}
+
 private struct VehicleMotionScene: View {
     var snapshot: NinebotVehicleSnapshot
+    @StateObject private var weatherProvider = RideWeatherProvider()
 
     private var mode: VehicleMotionSceneMode {
         if snapshot.state.isCharging == true {
@@ -1386,6 +1673,9 @@ private struct VehicleMotionScene: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .task(id: weatherLocationKey) {
+            await weatherProvider.refresh(vehicleLatitude: snapshot.state.latitude, vehicleLongitude: snapshot.state.longitude)
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(sceneAccessibilityLabel)
     }
@@ -1394,12 +1684,19 @@ private struct VehicleMotionScene: View {
     private func scene(size: CGSize, phase: TimeInterval) -> some View {
         switch mode {
         case .parked:
-            VehicleParkedScene(snapshot: snapshot, size: size, phase: phase)
+            VehicleParkedScene(snapshot: snapshot, weather: weatherProvider.snapshot, size: size, phase: phase)
         case .riding:
-            VehicleRidingScene(snapshot: snapshot, size: size, phase: phase)
+            VehicleRidingScene(snapshot: snapshot, weather: weatherProvider.snapshot, size: size, phase: phase)
         case .charging:
-            VehicleChargingScene(snapshot: snapshot, size: size, phase: phase)
+            VehicleChargingScene(snapshot: snapshot, weather: weatherProvider.snapshot, size: size, phase: phase)
         }
+    }
+
+    private var weatherLocationKey: String {
+        if let latitude = snapshot.state.latitude, let longitude = snapshot.state.longitude {
+            return "vehicle-\(latitude)-\(longitude)"
+        }
+        return "phone-location"
     }
 
     private var sceneAccessibilityLabel: String {
@@ -1415,27 +1712,38 @@ private struct VehicleSceneBackdrop: View {
     var size: CGSize
     var phase: TimeInterval
     var animatesRoadAndCity: Bool
+    var weather: RideWeatherSnapshot
 
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [
-                    Color(red: 0.08, green: 0.12, blue: 0.20),
-                    Color(red: 0.22, green: 0.31, blue: 0.42),
-                    Color(red: 0.54, green: 0.61, blue: 0.65)
-                ],
+                colors: weather.isDay
+                    ? [Color(red: 0.22, green: 0.49, blue: 0.75), Color(red: 0.56, green: 0.74, blue: 0.86), Color(red: 0.78, green: 0.80, blue: 0.72)]
+                    : [Color(red: 0.025, green: 0.045, blue: 0.12), Color(red: 0.10, green: 0.15, blue: 0.27), Color(red: 0.25, green: 0.29, blue: 0.34)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
 
             Circle()
-                .fill(Color.white.opacity(0.22))
+                .fill(weather.isDay ? Color.white.opacity(0.25) : Color.yellow.opacity(0.10))
                 .frame(width: size.height * 0.42)
                 .blur(radius: 10)
                 .offset(x: size.width * 0.27, y: -size.height * 0.25)
 
+            if weather.condition == .clear && weather.isDay {
+                Circle().fill(Color.yellow.opacity(0.35)).frame(width: size.height * 0.16).blur(radius: 4).offset(x: size.width * 0.30, y: -size.height * 0.27)
+            }
+            if weather.condition == .partlyCloudy || weather.condition == .cloudy || weather.condition == .fog {
+                WeatherCloudLayer(size: size, phase: phase, dense: weather.condition == .cloudy)
+            }
+            if weather.condition.isWet {
+                WeatherRainLayer(size: size, phase: phase)
+            }
+
             skyline
             road
+            RideWeatherCard(snapshot: weather)
+                .position(x: size.width * 0.80, y: size.height * 0.16)
         }
         .frame(width: size.width, height: size.height)
         .clipped()
@@ -1447,13 +1755,13 @@ private struct VehicleSceneBackdrop: View {
                 ForEach(0..<14, id: \.self) { index in
                     let height = proxy.size.height * (0.13 + CGFloat((index * 17) % 8) * 0.012)
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(Color.black.opacity(0.16 + Double(index % 3) * 0.025))
+                        .fill(weather.isDay ? Color.black.opacity(0.16 + Double(index % 3) * 0.025) : Color.black.opacity(0.32 + Double(index % 3) * 0.04))
                         .frame(width: max(11, proxy.size.width * 0.055), height: height)
                         .overlay(alignment: .top) {
                             VStack(spacing: 4) {
                                 ForEach(0..<2, id: \.self) { _ in
                                     Capsule()
-                                        .fill(Color.white.opacity(0.10))
+                                        .fill(weather.isDay ? Color.white.opacity(0.08) : Color.yellow.opacity(0.78))
                                         .frame(width: 3, height: 2)
                                 }
                             }
@@ -1501,12 +1809,13 @@ private struct VehicleSceneBackdrop: View {
 
 private struct VehicleParkedScene: View {
     var snapshot: NinebotVehicleSnapshot
+    var weather: RideWeatherSnapshot
     var size: CGSize
     var phase: TimeInterval
 
     var body: some View {
         ZStack {
-            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: false)
+            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: false, weather: weather)
 
             Ellipse()
                 .fill(Color.black.opacity(0.28))
@@ -1531,6 +1840,7 @@ private struct VehicleParkedScene: View {
 
 private struct VehicleRidingScene: View {
     var snapshot: NinebotVehicleSnapshot
+    var weather: RideWeatherSnapshot
     var size: CGSize
     var phase: TimeInterval
 
@@ -1539,8 +1849,9 @@ private struct VehicleRidingScene: View {
         let drift = CGFloat(sin(phase * 1.8)) * 1.5
 
         return ZStack {
-            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: true)
+            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: true, weather: weather)
             VehicleMotionStreaks(size: size, phase: phase)
+            WindRibbonLayer(size: size, phase: phase)
 
             Ellipse()
                 .fill(Color.black.opacity(0.34))
@@ -1575,8 +1886,31 @@ private struct VehicleMotionStreaks: View {
     }
 }
 
+private struct WindRibbonLayer: View {
+    var size: CGSize
+    var phase: TimeInterval
+
+    var body: some View {
+        ForEach(0..<4, id: \.self) { index in
+            Path { path in
+                let y = size.height * (0.33 + CGFloat(index) * 0.075)
+                path.move(to: CGPoint(x: size.width * 0.03, y: y))
+                path.addCurve(
+                    to: CGPoint(x: size.width * 0.30, y: y - 3),
+                    control1: CGPoint(x: size.width * 0.11, y: y - 12),
+                    control2: CGPoint(x: size.width * 0.20, y: y + 9)
+                )
+            }
+            .trim(from: max(0, (phase * 0.22 + Double(index) * 0.18).truncatingRemainder(dividingBy: 1) - 0.25), to: 1)
+            .stroke(.white.opacity(0.18), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 private struct VehicleChargingScene: View {
     var snapshot: NinebotVehicleSnapshot
+    var weather: RideWeatherSnapshot
     var size: CGSize
     var phase: TimeInterval
 
@@ -1584,7 +1918,7 @@ private struct VehicleChargingScene: View {
         let pulse = 0.78 + 0.22 * (0.5 + 0.5 * sin(phase * 4.0))
 
         return ZStack {
-            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: false)
+            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: false, weather: weather)
 
             Ellipse()
                 .fill(Color.black.opacity(0.31))
@@ -2266,7 +2600,7 @@ private struct VehicleRangeEstimatePanel: View {
 
             HStack(spacing: 10) {
                 BasicInfoTile(title: "本地模型", value: snapshot.state.localEstimatedMileageText, systemImage: "function")
-                BasicInfoTile(title: "行程均速", value: snapshot.state.averageSpeedText, systemImage: "speedometer")
+                BasicInfoTile(title: "行程最高速度", value: snapshot.state.maximumSpeedText, systemImage: "speedometer")
                 BasicInfoTile(title: "接口续航", value: snapshot.state.enduranceText, systemImage: "road.lanes")
             }
         }
@@ -2392,7 +2726,7 @@ private struct VehicleUsagePanel: View {
             ) {
                 BasicInfoTile(title: "本月日均", value: snapshot.state.dailyAverageMileageText, systemImage: "calendar")
                 BasicInfoTile(title: "最近骑行", value: snapshot.state.lastRideSummaryText, systemImage: "clock.arrow.circlepath")
-                BasicInfoTile(title: "行程均速", value: snapshot.state.averageSpeedText, systemImage: "speedometer")
+                BasicInfoTile(title: "行程最高速度", value: snapshot.state.maximumSpeedText, systemImage: "speedometer")
                 BasicInfoTile(title: "本月能耗", value: snapshot.state.monthEnergyPerKmText, systemImage: "bolt.horizontal.fill")
             }
         }
@@ -2452,7 +2786,7 @@ private struct TripHeroPanel: View {
                 spacing: 10
             ) {
                 BasicInfoTile(title: "今日里程", value: snapshot.state.todayMileageText, systemImage: "sun.max.fill")
-                BasicInfoTile(title: "平均速度", value: snapshot.state.averageSpeedText, systemImage: "speedometer")
+                BasicInfoTile(title: "最高速度", value: snapshot.state.maximumSpeedText, systemImage: "speedometer")
                 BasicInfoTile(title: "有效样本", value: "\(snapshot.state.observedRangeSampleCount) 次", systemImage: "scope")
                 BasicInfoTile(title: "本月日均", value: snapshot.state.dailyAverageMileageText, systemImage: "calendar")
             }
@@ -2759,7 +3093,7 @@ private struct TripTrendRideCard: View {
 
                 Spacer()
 
-                Text(formatSpeed(analysis.averageSpeed))
+                Text(formatSpeed(analysis.maximumSpeed))
                     .font(.headline.monospacedDigit().weight(.semibold))
                     .foregroundStyle(Color.teslaGreen)
             }
@@ -2771,7 +3105,7 @@ private struct TripTrendRideCard: View {
                     .frame(height: 168)
 
                 HStack(spacing: 10) {
-                    ControlMetricPill(title: "平均速度", value: formatSpeed(analysis.averageSpeed), systemImage: "speedometer")
+                    ControlMetricPill(title: "最高速度", value: formatSpeed(analysis.maximumSpeed), systemImage: "speedometer")
                     ControlMetricPill(title: "平均用电", value: formatPercent(analysis.averageUsedElectricity), systemImage: "powerplug.fill")
                     ControlMetricPill(title: "最高里程", value: formatDistance(analysis.peakRideMileage), systemImage: "arrow.up.right")
                 }
@@ -2995,6 +3329,10 @@ private struct TripTrendAnalysis {
         let samples = rides.compactMap(\.speed).filter { $0 > 0 }
         guard !samples.isEmpty else { return nil }
         return samples.reduce(0, +) / Double(samples.count)
+    }
+
+    var maximumSpeed: Double? {
+        snapshot.state.maximumSpeed
     }
 
     var averageUsedElectricity: Double? {
@@ -3928,7 +4266,7 @@ private struct RideRecordRow: View {
         [
             record.energy.map { RideDisplayMetric(title: "能耗", value: formatEnergyWh($0), systemImage: "bolt.horizontal.fill") },
             record.usedElectricity.map { RideDisplayMetric(title: "用电", value: formatPercent($0), systemImage: "powerplug.fill") },
-            record.speed.map { RideDisplayMetric(title: "速度", value: formatSpeed($0), systemImage: "speedometer") }
+            record.speed.map { RideDisplayMetric(title: "最高速度", value: formatSpeed($0), systemImage: "speedometer") }
         ].compactMap { $0 }
     }
 }
@@ -3965,7 +4303,7 @@ private struct NinebotRideDetailView: View {
                     DetailRow(title: "结束时间", value: effectiveRecord.endedAt.map(formatDate) ?? "--", systemImage: "stop.fill")
                     DetailRow(title: "里程", value: formatDistance(effectiveRecord.mileage), systemImage: "road.lanes")
                     DetailRow(title: "时长", value: formatDuration(effectiveRecord.durationMinutes), systemImage: "timer")
-                    DetailRow(title: "速度", value: formatSpeed(effectiveRecord.speed), systemImage: "speedometer")
+                    DetailRow(title: "最高速度", value: formatSpeed(effectiveRecord.speed), systemImage: "speedometer")
                     DetailRow(title: "能耗", value: formatEnergyWh(effectiveRecord.energy), systemImage: "bolt.horizontal.fill")
                     DetailRow(title: "用电", value: formatPercent(effectiveRecord.usedElectricity), systemImage: "powerplug.fill")
                     DetailRow(title: "行程 ID", value: record.id, systemImage: "number")
@@ -4076,7 +4414,7 @@ private struct RideDetailHero: View {
 
     private var metrics: [RideDisplayMetric] {
         var result: [RideDisplayMetric] = [
-            record.speed.map { RideDisplayMetric(title: "接口速度", value: formatSpeed($0), systemImage: "speedometer") },
+            record.speed.map { RideDisplayMetric(title: "接口最高速度", value: formatSpeed($0), systemImage: "speedometer") },
             record.energy.map { RideDisplayMetric(title: "能耗", value: formatEnergyWh($0), systemImage: "bolt.horizontal.fill") },
             record.usedElectricity.map { RideDisplayMetric(title: "用电", value: formatPercent($0), systemImage: "powerplug.fill") },
             record.durationMinutes.map { RideDisplayMetric(title: "时长", value: formatDuration($0), systemImage: "timer") }
@@ -4129,6 +4467,15 @@ private struct RideTrackMapPanel: View {
                         .stroke(segment.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
                 }
 
+                if let firstCoordinate = record.speedTrackCoordinates.first {
+                    Marker("起点", systemImage: "flag.fill", coordinate: firstCoordinate)
+                        .tint(.green)
+                }
+                if let lastCoordinate = record.speedTrackCoordinates.last,
+                   record.speedTrackCoordinates.count > 1 {
+                    Marker("终点", systemImage: "flag.checkered", coordinate: lastCoordinate)
+                        .tint(.red)
+                }
                 if let maxSpeedPoint = record.maxSpeedTrackPoint {
                     Annotation("最快", coordinate: maxSpeedPoint.coordinate) {
                         TrackMaxSpeedBadge(speed: maxSpeedPoint.speedKmh)
@@ -4204,6 +4551,14 @@ private struct InterfaceRideTrackMapPanel: View {
                         .stroke(segment.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
                 }
 
+                if let firstPoint = points.first {
+                    Marker("起点", systemImage: "flag.fill", coordinate: firstPoint.coordinate)
+                        .tint(.green)
+                }
+                if let lastPoint = points.last, points.count > 1 {
+                    Marker("终点", systemImage: "flag.checkered", coordinate: lastPoint.coordinate)
+                        .tint(.red)
+                }
                 if let maxSpeedPoint {
                     Annotation("最快", coordinate: maxSpeedPoint.coordinate) {
                         TrackMaxSpeedBadge(speed: maxSpeedPoint.speedKmh)

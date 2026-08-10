@@ -203,6 +203,49 @@ struct NinebotVehicleHealth: Codable, Equatable {
     var systemImage: String
 }
 
+enum NinebotVehicleEventType: String, Codable, Equatable {
+    case alarm
+    case chargeStarted
+    case chargeEnded
+
+    var title: String {
+        switch self {
+        case .alarm: return "车辆报警"
+        case .chargeStarted: return "开始充电"
+        case .chargeEnded: return "充电结束"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .alarm: return "exclamationmark.triangle.fill"
+        case .chargeStarted: return "bolt.batteryblock.fill"
+        case .chargeEnded: return "checkmark.bolt.fill"
+        }
+    }
+}
+
+struct NinebotVehicleEvent: Codable, Equatable, Identifiable {
+    var id: String
+    var vehicleSN: String
+    var vehicleName: String
+    var type: NinebotVehicleEventType
+    var title: String
+    var detail: String
+    var occurredAt: Date
+    var latitude: Double?
+    var longitude: Double?
+    var durationMinutes: Double?
+    var chargingPower: Double?
+    var batteryTemperature: Double?
+    var voltage: Double?
+
+    var hasCoordinate: Bool {
+        guard let latitude, let longitude else { return false }
+        return abs(latitude) <= 90 && abs(longitude) <= 180
+    }
+}
+
 struct NinebotRideRecord: Codable, Equatable, Identifiable {
     var id: String
     var startedAt: Date?
@@ -213,6 +256,16 @@ struct NinebotRideRecord: Codable, Equatable, Identifiable {
     var durationMinutes: Double?
     var speed: Double?
     var raw: [String: JSONValue]?
+
+    var maximumSpeedFromRaw: Double? {
+        guard let raw else { return nil }
+        for key in ["max_speed", "maxSpeed", "highest_speed", "highestSpeed", "peak_speed", "peakSpeed", "top_speed", "topSpeed"] {
+            if let value = raw[key]?.doubleValue, value > 0, value <= 120 {
+                return value
+            }
+        }
+        return nil
+    }
 }
 
 struct NinebotTravelPage: Equatable {
@@ -914,6 +967,9 @@ struct NinebotVehicleState: Codable, Equatable {
     var batteryTemperature: Double?
     var batteryCycleCount: Int?
     var chargingPower: Double?
+    /// Interface-provided peak speed for the current/history data.
+    /// Kept optional so older cached dashboards continue to decode.
+    var interfaceMaximumSpeed: Double?
     var endurance: Double?
     var aiEstimatedMileage: Double?
     var isCharging: Bool?
@@ -1284,6 +1340,20 @@ struct NinebotVehicleState: Codable, Equatable {
     var averageSpeedText: String {
         guard let averageSpeed else { return "-- km/h" }
         return "\(Self.numberText(averageSpeed, maximumFractionDigits: 1)) km/h"
+    }
+
+    var maximumSpeed: Double? {
+        let explicit = [
+            self.interfaceMaximumSpeed,
+            rides.compactMap(\.maximumSpeedFromRaw).max(),
+            rides.compactMap(rideSpeed).max()
+        ].compactMap { $0 }.filter { $0 > 0 && $0 <= 120 }
+        return explicit.max()
+    }
+
+    var maximumSpeedText: String {
+        guard let maximumSpeed else { return "-- km/h" }
+        return "\(Self.numberText(maximumSpeed, maximumFractionDigits: 1)) km/h"
     }
 
     var rides: [NinebotRideRecord] {
@@ -1669,6 +1739,7 @@ struct NinebotDashboard: Codable, Equatable {
                     batteryTemperature: 28.5,
                     batteryCycleCount: 36,
                     chargingPower: 0,
+                    interfaceMaximumSpeed: 31.4,
                     endurance: 42.5,
                     aiEstimatedMileage: 38.2,
                     isCharging: false,

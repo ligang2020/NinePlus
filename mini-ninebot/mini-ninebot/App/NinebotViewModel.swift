@@ -156,6 +156,7 @@ final class NinebotViewModel: ObservableObject {
     @Published private(set) var resolvedAddresses: [String: NinebotResolvedAddress] = [:]
     @Published private(set) var recordedRides: [NinebotRecordedRide] = []
     @Published private(set) var rideDetails: [String: NinebotRideDetail] = [:]
+    @Published private(set) var vehicleEvents: [NinebotVehicleEvent] = []
     @Published private(set) var loadingRideDetailKeys: Set<String> = []
     @Published private(set) var syncingTravelMonth: String?
 
@@ -179,6 +180,7 @@ final class NinebotViewModel: ObservableObject {
         self.history = Self.historyMap(for: self.dashboard, store: store)
         self.resolvedAddresses = store.loadResolvedAddresses().filter { $0.value.source == Self.addressGeocodingSource }
         self.recordedRides = store.loadRecordedRides()
+        self.vehicleEvents = store.loadVehicleEvents()
     }
 
     var hasConfiguration: Bool {
@@ -682,11 +684,100 @@ final class NinebotViewModel: ObservableObject {
 
     @discardableResult
     private func saveDashboard(_ dashboard: NinebotDashboard) -> NinebotDashboard {
+        let previousDashboard = self.dashboard
         let archivedDashboard = store.saveDashboard(dashboard)
+        recordVehicleEvents(previous: previousDashboard, current: archivedDashboard)
         self.dashboard = archivedDashboard
         history = Self.historyMap(for: archivedDashboard, store: store)
         NinebotChargingLiveActivityManager.sync(with: archivedDashboard)
         return archivedDashboard
+    }
+
+    private func recordVehicleEvents(previous: NinebotDashboard, current: NinebotDashboard) {
+        var nextEvents = vehicleEvents
+        let now = current.updatedAt
+
+        for snapshot in current.vehicles {
+            let old = previous.vehicles.first(where: { $0.vehicle.sn == snapshot.vehicle.sn })
+            let oldCharging = old?.state.isCharging == true
+            let newCharging = snapshot.state.isCharging == true
+
+            if !oldCharging && newCharging {
+                nextEvents.insert(NinebotVehicleEvent(
+                    id: "charge-start-\(snapshot.vehicle.sn)-\(Int(now.timeIntervalSince1970))",
+                    vehicleSN: snapshot.vehicle.sn,
+                    vehicleName: snapshot.vehicle.name,
+                    type: .chargeStarted,
+                    title: NinebotVehicleEventType.chargeStarted.title,
+                    detail: "车辆检测到充电开始",
+                    occurredAt: now,
+                    latitude: snapshot.state.latitude,
+                    longitude: snapshot.state.longitude,
+                    durationMinutes: nil,
+                    chargingPower: snapshot.state.chargingPower,
+                    batteryTemperature: snapshot.state.batteryTemperature,
+                    voltage: snapshot.state.batteryVoltage
+                ), at: 0)
+            } else if oldCharging && !newCharging {
+                let matchingStart = nextEvents.first(where: { $0.vehicleSN == snapshot.vehicle.sn && $0.type == .chargeStarted })
+                let duration = matchingStart.map { max(now.timeIntervalSince($0.occurredAt) / 60, 0) }
+                nextEvents.insert(NinebotVehicleEvent(
+                    id: "charge-end-\(snapshot.vehicle.sn)-\(Int(now.timeIntervalSince1970))",
+                    vehicleSN: snapshot.vehicle.sn,
+                    vehicleName: snapshot.vehicle.name,
+                    type: .chargeEnded,
+                    title: NinebotVehicleEventType.chargeEnded.title,
+                    detail: "车辆检测到充电结束",
+                    occurredAt: now,
+                    latitude: snapshot.state.latitude,
+                    longitude: snapshot.state.longitude,
+                    durationMinutes: duration,
+                    chargingPower: snapshot.state.chargingPower,
+                    batteryTemperature: snapshot.state.batteryTemperature,
+                    voltage: snapshot.state.batteryVoltage
+                ), at: 0)
+            }
+
+            if let alarm = alarmText(in: snapshot.state.rawStatus), alarm != alarmText(in: old?.state.rawStatus) {
+                nextEvents.insert(NinebotVehicleEvent(
+                    id: "alarm-\(snapshot.vehicle.sn)-\(Int(now.timeIntervalSince1970))",
+                    vehicleSN: snapshot.vehicle.sn,
+                    vehicleName: snapshot.vehicle.name,
+                    type: .alarm,
+                    title: NinebotVehicleEventType.alarm.title,
+                    detail: alarm,
+                    occurredAt: now,
+                    latitude: snapshot.state.latitude,
+                    longitude: snapshot.state.longitude,
+                    durationMinutes: nil,
+                    chargingPower: nil,
+                    batteryTemperature: snapshot.state.batteryTemperature,
+                    voltage: snapshot.state.batteryVoltage
+                ), at: 0)
+            }
+        }
+
+        nextEvents = Array(nextEvents.sorted { $0.occurredAt > $1.occurredAt }.prefix(200))
+        vehicleEvents = nextEvents
+        store.saveVehicleEvents(nextEvents)
+    }
+
+    private func alarmText(in raw: [String: JSONValue]?) -> String? {
+        guard let raw else { return nil }
+        for (key, value) in raw {
+            let normalizedKey = key.lowercased()
+            guard normalizedKey.contains("alarm") || normalizedKey.contains("fault") || normalizedKey.contains("error") else { continue }
+            if let text = value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty,
+               !["0", "false", "no", "off", "none", "null"].contains(text.lowercased()) {
+                return "\(key)：\(text)"
+            }
+            if let number = value.doubleValue, number != 0 {
+                return "\(key)：\(number)"
+            }
+            if value.boolValue == true { return key }
+        }
+        return nil
     }
 
     private func refreshResolvedAddressesIfNeeded(for dashboard: NinebotDashboard) async {
