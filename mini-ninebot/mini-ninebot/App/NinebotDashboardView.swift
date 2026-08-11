@@ -1631,11 +1631,11 @@ private struct RideWeatherCard: View {
             }
             .foregroundStyle(.white)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(.black.opacity(0.36), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(.white.opacity(0.18), lineWidth: 0.7))
-        .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 3)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.14), lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.30), radius: 14, x: 0, y: 5)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("天气 \(snapshot.condition.title)，气温 \(snapshot.temperatureC.map { String(format: "%.0f", $0) } ?? "未知") 度，风速 \(snapshot.windSpeedKmh.map { String(format: "%.0f", $0) } ?? "未知") 公里每小时，紫外线 \(snapshot.ultravioletIndex.map { String(format: "%.0f", $0) } ?? "未知")")
     }
@@ -1718,25 +1718,10 @@ private struct VehicleSceneBackdrop: View {
         ZStack {
             RideSkyGradient(isDay: weather.isDay, condition: weather.condition)
 
-            // A soft atmospheric layer keeps the buildings grounded in the weather instead of
-            // looking like floating geometric cards.
-            LinearGradient(
-                colors: [.clear, .black.opacity(weather.isDay ? 0.05 : 0.22)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            if weather.condition == .clear && weather.isDay {
-                Circle()
-                    .fill(Color.yellow.opacity(0.36))
-                    .frame(width: size.height * 0.14)
-                    .blur(radius: 5)
-                    .offset(x: size.width * 0.31, y: -size.height * 0.28)
+            if !weather.isDay && weather.condition == .clear {
+                NightSkyDetails(size: size, phase: phase)
             }
 
-            if weather.condition == .partlyCloudy || weather.condition == .cloudy || weather.condition == .fog {
-                WeatherCloudLayer(size: size, phase: phase, dense: weather.condition == .cloudy)
-            }
             if weather.condition.isWet {
                 WeatherRainLayer(size: size, phase: phase)
             }
@@ -1750,15 +1735,13 @@ private struct VehicleSceneBackdrop: View {
 
             RealisticAsphaltRoad(size: size, phase: phase, animates: animatesRoadAndCity)
 
-            // Keep this pinned to the trailing edge. It no longer sits over the scooter on
-            // narrow screens, while still remaining inside the rounded scene card.
             VStack {
                 HStack {
                     Spacer(minLength: 0)
                     RideWeatherCard(snapshot: weather)
                 }
-                .padding(.top, 12)
-                .padding(.trailing, 9)
+                .padding(.top, 13)
+                .padding(.trailing, 12)
                 Spacer(minLength: 0)
             }
         }
@@ -1773,17 +1756,50 @@ private struct RideSkyGradient: View {
 
     var body: some View {
         let dayColors: [Color] = condition.isWet
-            ? [Color(red: 0.18, green: 0.27, blue: 0.36), Color(red: 0.42, green: 0.50, blue: 0.55), Color(red: 0.35, green: 0.39, blue: 0.40)]
-            : [Color(red: 0.16, green: 0.40, blue: 0.66), Color(red: 0.49, green: 0.70, blue: 0.82), Color(red: 0.79, green: 0.78, blue: 0.67)]
+            ? [Color(red: 0.20, green: 0.27, blue: 0.34), Color(red: 0.39, green: 0.48, blue: 0.53), Color(red: 0.28, green: 0.31, blue: 0.32)]
+            : [Color(red: 0.14, green: 0.35, blue: 0.58), Color(red: 0.46, green: 0.66, blue: 0.78), Color(red: 0.70, green: 0.70, blue: 0.64)]
         let nightColors: [Color] = condition.isWet
-            ? [Color(red: 0.018, green: 0.026, blue: 0.055), Color(red: 0.08, green: 0.12, blue: 0.19), Color(red: 0.16, green: 0.18, blue: 0.20)]
-            : [Color(red: 0.012, green: 0.025, blue: 0.075), Color(red: 0.055, green: 0.10, blue: 0.20), Color(red: 0.18, green: 0.21, blue: 0.25)]
+            ? [Color(red: 0.008, green: 0.016, blue: 0.040), Color(red: 0.025, green: 0.060, blue: 0.115), Color(red: 0.11, green: 0.14, blue: 0.17)]
+            : [Color(red: 0.006, green: 0.014, blue: 0.042), Color(red: 0.018, green: 0.050, blue: 0.115), Color(red: 0.12, green: 0.15, blue: 0.19)]
 
         LinearGradient(
             colors: isDay ? dayColors : nightColors,
             startPoint: .top,
             endPoint: .bottom
         )
+    }
+}
+
+private struct NightSkyDetails: View {
+    var size: CGSize
+    var phase: TimeInterval
+
+    var body: some View {
+        ZStack {
+            ForEach(0..<12, id: \.self) { index in
+                Circle()
+                    .fill(Color.white.opacity(0.30 + Double(index % 3) * 0.10))
+                    .frame(width: index % 4 == 0 ? 2.4 : 1.4, height: index % 4 == 0 ? 2.4 : 1.4)
+                    .position(
+                        x: size.width * (0.06 + CGFloat((index * 17) % 88) / 100),
+                        y: size.height * (0.08 + CGFloat((index * 13) % 32) / 100)
+                    )
+            }
+
+            Circle()
+                .fill(Color.white.opacity(0.13))
+                .frame(width: size.height * 0.20)
+                .blur(radius: 14)
+                .offset(x: size.width * 0.33, y: -size.height * 0.27)
+
+            Circle()
+                .fill(Color(red: 0.86, green: 0.91, blue: 0.98).opacity(0.92))
+                .frame(width: size.height * 0.12)
+                .overlay(Circle().fill(Color.white.opacity(0.22)).blur(radius: 2))
+                .offset(x: size.width * 0.33, y: -size.height * 0.27)
+                .scaleEffect(1 + CGFloat(sin(phase * 0.18)) * 0.015)
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -1795,39 +1811,38 @@ private struct RealisticBusinessDistrict: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let drift = animates ? CGFloat(sin(phase * 0.24)) * 2.2 : 0
+            let drift = animates ? CGFloat(sin(phase * 0.24)) * 2.0 : 0
+
             ZStack(alignment: .bottom) {
-                // Distant skyline: desaturated and hazy to create depth.
                 HStack(alignment: .bottom, spacing: proxy.size.width * 0.018) {
-                    ForEach(0..<12, id: \.self) { index in
-                        RealisticOfficeBuilding(
+                    ForEach(0..<11, id: \.self) { index in
+                        GlassOfficeTower(
                             index: index,
-                            width: max(28, proxy.size.width * (0.075 + CGFloat(index % 2) * 0.014)),
-                            height: proxy.size.height * (0.18 + CGFloat((index * 19) % 7) * 0.024),
+                            width: max(25, proxy.size.width * (0.068 + CGFloat(index % 3) * 0.012)),
+                            height: proxy.size.height * (0.18 + CGFloat((index * 19) % 7) * 0.020),
                             isDay: isDay,
                             distant: true
                         )
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .offset(x: drift * 0.45, y: -proxy.size.height * 0.355)
+                .offset(x: drift * 0.35, y: -proxy.size.height * 0.33)
 
-                // The closer row has glass facades, vertical mullions and office windows.
-                HStack(alignment: .bottom, spacing: proxy.size.width * 0.026) {
+                HStack(alignment: .bottom, spacing: proxy.size.width * 0.025) {
                     ForEach(0..<7, id: \.self) { index in
-                        RealisticOfficeBuilding(
-                            index: index + 12,
-                            width: max(44, proxy.size.width * (0.13 + CGFloat(index % 3) * 0.012)),
-                            height: proxy.size.height * (0.25 + CGFloat((index * 13) % 6) * 0.032),
+                        GlassOfficeTower(
+                            index: index + 11,
+                            width: max(42, proxy.size.width * (0.115 + CGFloat(index % 2) * 0.018)),
+                            height: proxy.size.height * (0.26 + CGFloat((index * 13) % 5) * 0.030),
                             isDay: isDay,
                             distant: false
                         )
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .offset(x: drift, y: -proxy.size.height * 0.205)
+                .offset(x: drift, y: -proxy.size.height * 0.185)
 
-                UrbanTreeLine(size: proxy.size, isDay: isDay)
+                UrbanLandscape(size: proxy.size, isDay: isDay)
                 StreetLampRow(size: proxy.size, phase: phase, isDay: isDay)
             }
         }
@@ -1835,7 +1850,7 @@ private struct RealisticBusinessDistrict: View {
     }
 }
 
-private struct RealisticOfficeBuilding: View {
+private struct GlassOfficeTower: View {
     let index: Int
     let width: CGFloat
     let height: CGFloat
@@ -1843,89 +1858,90 @@ private struct RealisticOfficeBuilding: View {
     let distant: Bool
 
     var body: some View {
-        let facade = isDay
+        let glass = isDay
             ? LinearGradient(
-                colors: [Color(red: 0.13, green: 0.22, blue: 0.29).opacity(distant ? 0.65 : 0.96), Color(red: 0.48, green: 0.66, blue: 0.72).opacity(distant ? 0.55 : 0.88), Color(red: 0.10, green: 0.17, blue: 0.23).opacity(distant ? 0.68 : 0.95)],
+                colors: [Color(red: 0.08, green: 0.16, blue: 0.22).opacity(distant ? 0.58 : 0.94), Color(red: 0.43, green: 0.62, blue: 0.70).opacity(distant ? 0.44 : 0.78), Color(red: 0.06, green: 0.12, blue: 0.18).opacity(distant ? 0.62 : 0.92)],
                 startPoint: .leading,
                 endPoint: .trailing
             )
             : LinearGradient(
-                colors: [Color(red: 0.015, green: 0.028, blue: 0.06), Color(red: 0.07, green: 0.12, blue: 0.18), Color(red: 0.018, green: 0.03, blue: 0.065)],
+                colors: [Color(red: 0.008, green: 0.020, blue: 0.045), Color(red: 0.045, green: 0.085, blue: 0.135), Color(red: 0.008, green: 0.018, blue: 0.042)],
                 startPoint: .leading,
                 endPoint: .trailing
             )
 
         VStack(spacing: 0) {
             Rectangle()
-                .fill(Color.white.opacity(isDay ? 0.16 : 0.05))
-                .frame(height: max(2, height * 0.018))
+                .fill(Color.white.opacity(isDay ? 0.13 : 0.05))
+                .frame(height: max(1.5, height * 0.014))
 
             ZStack {
-                RoundedRectangle(cornerRadius: distant ? 2 : 4, style: .continuous)
-                    .fill(facade)
+                RoundedRectangle(cornerRadius: distant ? 2 : 3, style: .continuous)
+                    .fill(glass)
 
-                // Mullions make the facade read as glass curtain wall rather than a solid block.
-                HStack(spacing: max(7, width * 0.085)) {
+                HStack(spacing: max(6, width * 0.075)) {
                     ForEach(0..<3, id: \.self) { _ in
-                        Rectangle().fill(Color.white.opacity(isDay ? 0.13 : 0.08)).frame(width: 0.8)
+                        Rectangle()
+                            .fill(Color.white.opacity(isDay ? 0.12 : 0.07))
+                            .frame(width: 0.8)
                     }
                 }
                 .padding(.horizontal, width * 0.08)
 
-                VStack(spacing: max(5, height * 0.045)) {
-                    ForEach(0..<6, id: \.self) { row in
-                        HStack(spacing: max(4, width * 0.07)) {
+                VStack(spacing: max(4, height * 0.034)) {
+                    ForEach(0..<7, id: \.self) { row in
+                        HStack(spacing: max(3, width * 0.055)) {
                             ForEach(0..<4, id: \.self) { column in
-                                RoundedRectangle(cornerRadius: 1.2, style: .continuous)
+                                Rectangle()
                                     .fill(windowColor(row: row, column: column))
-                                    .frame(width: max(3.5, width * (distant ? 0.055 : 0.065)), height: max(2.5, height * 0.025))
+                                    .frame(width: max(3, width * (distant ? 0.052 : 0.061)), height: max(2, height * 0.020))
                             }
                         }
                     }
                 }
                 .padding(.horizontal, width * 0.10)
-                .padding(.vertical, height * 0.055)
+                .padding(.vertical, height * 0.05)
             }
-            .frame(height: height * 0.92)
+            .frame(height: height * 0.94)
         }
         .frame(width: width, height: height, alignment: .bottom)
-        .clipShape(RoundedRectangle(cornerRadius: distant ? 2 : 4, style: .continuous))
-        .shadow(color: .black.opacity(isDay ? 0.16 : 0.42), radius: distant ? 2 : 5, x: 0, y: 3)
+        .clipShape(RoundedRectangle(cornerRadius: distant ? 2 : 3, style: .continuous))
+        .shadow(color: .black.opacity(isDay ? 0.15 : 0.40), radius: distant ? 2 : 4, x: 0, y: 3)
     }
 
     private func windowColor(row: Int, column: Int) -> Color {
         if !isDay {
-            return ((row + column + index) % 4 == 0)
-                ? Color(red: 1.0, green: 0.70, blue: 0.28).opacity(0.92)
-                : Color(red: 0.27, green: 0.43, blue: 0.52).opacity(0.42)
+            return ((row * 3 + column + index) % 5 == 0)
+                ? Color(red: 1.0, green: 0.68, blue: 0.25).opacity(0.88)
+                : Color(red: 0.22, green: 0.39, blue: 0.50).opacity(0.34)
         }
-        return ((row + column + index) % 3 == 0)
-            ? Color.white.opacity(0.42)
-            : Color(red: 0.72, green: 0.87, blue: 0.91).opacity(0.32)
+        return ((row + column + index) % 4 == 0)
+            ? Color.white.opacity(0.40)
+            : Color(red: 0.70, green: 0.86, blue: 0.91).opacity(0.28)
     }
 }
 
-private struct UrbanTreeLine: View {
+private struct UrbanLandscape: View {
     var size: CGSize
     var isDay: Bool
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: size.width * 0.085) {
-            ForEach(0..<7, id: \.self) { index in
+        HStack(alignment: .bottom, spacing: size.width * 0.075) {
+            ForEach(0..<8, id: \.self) { index in
                 ZStack(alignment: .bottom) {
                     Capsule()
-                        .fill(Color(red: 0.18, green: 0.12, blue: 0.08).opacity(0.86))
-                        .frame(width: 2.5, height: size.height * (0.07 + CGFloat(index % 2) * 0.015))
-                    Circle()
-                        .fill(isDay ? Color(red: 0.08, green: 0.22, blue: 0.13).opacity(0.92) : Color(red: 0.025, green: 0.08, blue: 0.05).opacity(0.95))
-                        .frame(width: size.width * (0.075 + CGFloat(index % 3) * 0.012))
-                        .offset(y: -size.height * 0.045)
+                        .fill(Color(red: 0.13, green: 0.09, blue: 0.06).opacity(0.85))
+                        .frame(width: 2, height: size.height * (0.055 + CGFloat(index % 3) * 0.012))
+                    Ellipse()
+                        .fill(isDay ? Color(red: 0.06, green: 0.18, blue: 0.11).opacity(0.90) : Color(red: 0.018, green: 0.055, blue: 0.038).opacity(0.95))
+                        .frame(width: size.width * (0.060 + CGFloat(index % 2) * 0.014), height: size.height * 0.10)
+                        .offset(y: -size.height * 0.035)
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-        .padding(.leading, size.width * 0.05)
-        .padding(.bottom, size.height * 0.205)
+        .padding(.leading, size.width * 0.04)
+        .padding(.bottom, size.height * 0.18)
     }
 }
 
@@ -1936,42 +1952,39 @@ private struct StreetLampRow: View {
 
     var body: some View {
         HStack {
-            StreetLamp(size: size, isDay: isDay, glow: glow)
-                .offset(x: size.width * 0.07, y: size.height * 0.005)
+            StreetLamp(size: size, isDay: isDay, phase: phase)
+                .offset(x: size.width * 0.07)
             Spacer()
-            StreetLamp(size: size, isDay: isDay, glow: glow)
+            StreetLamp(size: size, isDay: isDay, phase: phase)
                 .scaleEffect(0.78)
-                .offset(x: -size.width * 0.16, y: size.height * 0.012)
+                .offset(x: -size.width * 0.14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .padding(.bottom, size.height * 0.235)
-    }
-
-    private var glow: Double {
-        guard !isDay else { return 0 }
-        return 0.82 + 0.08 * sin(phase * 2.0)
+        .padding(.bottom, size.height * 0.205)
     }
 }
 
 private struct StreetLamp: View {
     var size: CGSize
     var isDay: Bool
-    var glow: Double
+    var phase: TimeInterval
 
     var body: some View {
-        ZStack(alignment: .top) {
+        let lightOpacity = isDay ? 0.16 : 0.82 + 0.06 * sin(phase * 2.0)
+
+        ZStack(alignment: .topLeading) {
             Capsule()
-                .fill(Color.black.opacity(isDay ? 0.55 : 0.78))
+                .fill(Color.black.opacity(isDay ? 0.52 : 0.76))
                 .frame(width: 2.5, height: size.height * 0.23)
             Capsule()
-                .fill(Color.black.opacity(isDay ? 0.55 : 0.78))
-                .frame(width: size.width * 0.075, height: 2.5)
-                .offset(x: size.width * 0.036, y: -size.height * 0.112)
+                .fill(Color.black.opacity(isDay ? 0.52 : 0.76))
+                .frame(width: size.width * 0.070, height: 2.5)
+                .offset(x: size.width * 0.035, y: -size.height * 0.112)
             Circle()
-                .fill(isDay ? Color.white.opacity(0.12) : Color.orange.opacity(glow))
-                .frame(width: isDay ? 5 : 8, height: isDay ? 5 : 8)
+                .fill(isDay ? Color.white.opacity(0.10) : Color.orange.opacity(lightOpacity))
+                .frame(width: isDay ? 4 : 7, height: isDay ? 4 : 7)
                 .blur(radius: isDay ? 0 : 4)
-                .offset(x: size.width * 0.073, y: -size.height * 0.108)
+                .offset(x: size.width * 0.068, y: -size.height * 0.108)
         }
     }
 }
@@ -1983,64 +1996,50 @@ private struct RealisticAsphaltRoad: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let dashPhase = animates ? CGFloat((phase * 42).truncatingRemainder(dividingBy: 36)) : 0
-            ZStack {
-                Path { path in
-                    path.move(to: CGPoint(x: 0, y: proxy.size.height * 0.735))
-                    path.addLine(to: CGPoint(x: proxy.size.width, y: proxy.size.height * 0.735))
-                    path.addLine(to: CGPoint(x: proxy.size.width, y: proxy.size.height))
-                    path.addLine(to: CGPoint(x: 0, y: proxy.size.height))
-                    path.closeSubpath()
-                }
-                .fill(
-                    LinearGradient(
-                        colors: [Color(red: 0.055, green: 0.060, blue: 0.065), Color(red: 0.012, green: 0.014, blue: 0.018)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-
-                // Subtle asphalt sheen and road edge, without returning to the previous cartoon look.
+            let scroll = animates ? CGFloat((phase * 26).truncatingRemainder(dividingBy: 26)) : 0
+            ZStack(alignment: .top) {
                 Rectangle()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(red: 0.045, green: 0.050, blue: 0.057), Color(red: 0.008, green: 0.010, blue: 0.014)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .frame(height: proxy.size.height * 0.34)
+                    .offset(y: proxy.size.height * 0.70)
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.13))
                     .frame(height: 1)
-                    .offset(y: proxy.size.height * 0.735 - proxy.size.height * 0.5)
+                    .offset(y: proxy.size.height * 0.70)
 
-                Path { path in
-                    path.move(to: CGPoint(x: proxy.size.width * 0.51, y: proxy.size.height * 0.735))
-                    path.addLine(to: CGPoint(x: proxy.size.width * 0.51, y: proxy.size.height))
-                }
-                .stroke(
-                    Color.white.opacity(0.90),
-                    style: StrokeStyle(lineWidth: max(2.5, proxy.size.width * 0.008), lineCap: .round, dash: [14, 18], dashPhase: dashPhase)
-                )
-
-                Path { path in
-                    path.move(to: CGPoint(x: 0, y: proxy.size.height * 0.79))
-                    path.addLine(to: CGPoint(x: proxy.size.width, y: proxy.size.height * 0.79))
-                }
-                .stroke(Color.white.opacity(0.14), style: StrokeStyle(lineWidth: 1, dash: [4, 12]))
-
-                if animates {
-                    RoadReflectionStreaks(size: proxy.size, phase: phase)
-                }
+                PerspectiveLaneMarkings(size: proxy.size, scroll: scroll)
             }
         }
         .allowsHitTesting(false)
     }
 }
 
-private struct RoadReflectionStreaks: View {
+private struct PerspectiveLaneMarkings: View {
     var size: CGSize
-    var phase: TimeInterval
+    var scroll: CGFloat
 
     var body: some View {
-        ForEach(0..<8, id: \.self) { index in
-            let progress = (phase * 0.31 + Double(index) * 0.18).truncatingRemainder(dividingBy: 1)
-            Capsule()
-                .fill(Color.white.opacity(0.05 + Double(index % 3) * 0.018))
-                .frame(width: size.width * (0.025 + CGFloat(progress) * 0.06), height: 1.5)
-                .offset(x: size.width * (-0.46 + CGFloat(index % 4) * 0.31), y: size.height * (0.80 + CGFloat(progress) * 0.18))
+        ForEach(0..<3, id: \.self) { row in
+            let y = size.height * (0.785 + CGFloat(row) * 0.095)
+            let dashWidth = size.width * (0.060 + CGFloat(row) * 0.018)
+            let gap = size.width * (0.115 + CGFloat(row) * 0.025)
+
+            ForEach(0..<6, id: \.self) { column in
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(Color.white.opacity(0.82 - Double(row) * 0.06))
+                    .frame(width: dashWidth, height: max(3, size.height * (0.009 + CGFloat(row) * 0.003)))
+                    .position(
+                        x: -dashWidth + CGFloat(column) * (dashWidth + gap) - scroll * (1 + CGFloat(row) * 0.35),
+                        y: y
+                    )
+            }
         }
     }
 }
