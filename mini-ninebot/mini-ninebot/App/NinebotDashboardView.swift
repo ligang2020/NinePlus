@@ -1824,7 +1824,7 @@ private struct VehicleMotionScene: View {
     private var sceneAccessibilityLabel: String {
         switch mode {
         case .parked: return snapshot.state.isPoweredOn == true ? "车辆已停稳，已上电" : "车辆已停稳"
-        case .riding: return "车辆骑行中，骑行里程 \(snapshot.state.lastMileageText)，骑行时间 \(formatDuration(snapshot.state.rides.first?.durationMinutes))"
+        case .riding: return "车辆骑行中，骑行里程 \(snapshot.state.lastMileage.map { String(format: "%.1f km", $0) } ?? "-- km")，骑行时间 \(formatDuration(snapshot.state.rides.first?.durationMinutes))"
         case .charging: return "车辆充电中，电量 \(snapshot.state.batteryText)，充电功率 \(snapshot.state.chargingPowerText)"
         }
     }
