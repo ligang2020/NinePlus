@@ -1993,13 +1993,7 @@ private struct RoadPerspectiveLayer: View {
 
             ForEach(0..<3, id: \.self) { row in
                 ForEach(0..<6, id: \.self) { column in
-                    let dashWidth = size.width * (0.060 + CGFloat(row) * 0.022)
-                    let gap = size.width * (0.15 + CGFloat(row) * 0.025)
-                    let scroll = animates ? CGFloat((phase * 28).truncatingRemainder(dividingBy: 28)) : 0
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(Color.white.opacity(0.80 - Double(row) * 0.08))
-                        .frame(width: dashWidth, height: max(3, size.height * (0.008 + CGFloat(row) * 0.003)))
-                        .position(x: -dashWidth + CGFloat(column) * (dashWidth + gap) - scroll * (1 + CGFloat(row) * 0.35), y: size.height * (0.75 + CGFloat(row) * 0.09))
+                    PerspectiveDash(size: size, phase: phase, animates: animates, row: row, column: column)
                 }
             }
 
@@ -2013,6 +2007,27 @@ private struct RoadPerspectiveLayer: View {
             }
         }
         .allowsHitTesting(false)
+    }
+}
+
+private struct PerspectiveDash: View {
+    var size: CGSize
+    var phase: TimeInterval
+    var animates: Bool
+    var row: Int
+    var column: Int
+
+    var body: some View {
+        let dashWidth = size.width * (0.060 + CGFloat(row) * 0.022)
+        let gap = size.width * (0.15 + CGFloat(row) * 0.025)
+        let scroll = animates ? CGFloat((phase * 28).truncatingRemainder(dividingBy: 28)) : 0
+        return RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .fill(Color.white.opacity(0.80 - Double(row) * 0.08))
+            .frame(width: dashWidth, height: max(3, size.height * (0.008 + CGFloat(row) * 0.003)))
+            .position(
+                x: -dashWidth + CGFloat(column) * (dashWidth + gap) - scroll * (1 + CGFloat(row) * 0.35),
+                y: size.height * (0.75 + CGFloat(row) * 0.09)
+            )
     }
 }
 
