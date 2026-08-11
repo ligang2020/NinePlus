@@ -116,7 +116,8 @@ struct NinebotSharedStore {
         // Preserve a previously known odometer value when the live status or
         // current-month endpoint does not return it, instead of replacing it
         // with "-- km" on the home screen.
-        let dashboardWithPreservedTotals = preservingKnownTotals(in: dashboard)
+        let dashboardWithCachedVehicles = preservingCachedVehicles(in: dashboard)
+        let dashboardWithPreservedTotals = preservingKnownTotals(in: dashboardWithCachedVehicles)
         let archivedDashboard = dashboardWithArchivedInterfaceRides(dashboardWithPreservedTotals)
         guard let data = try? encoder.encode(archivedDashboard) else { return archivedDashboard }
         defaults.set(data, forKey: Key.dashboard)
@@ -259,6 +260,18 @@ struct NinebotSharedStore {
     private func saveRefreshEvent(_ event: NinebotRefreshEvent, key: String) {
         guard let data = try? encoder.encode(event) else { return }
         defaults.set(data, forKey: key)
+    }
+
+    private func preservingCachedVehicles(in dashboard: NinebotDashboard) -> NinebotDashboard {
+        // A proxy restart or an eventually-consistent account endpoint can
+        // briefly answer with an empty vehicles array. Keep the last verified
+        // dashboard on disk until a non-empty live answer replaces it.
+        guard dashboard.vehicles.isEmpty,
+              let previous = loadDashboard(),
+              !previous.vehicles.isEmpty else {
+            return dashboard
+        }
+        return previous
     }
 
     private func preservingKnownTotals(in dashboard: NinebotDashboard) -> NinebotDashboard {

@@ -115,6 +115,18 @@ struct NinebotProxyClient {
         _ = try await request(method: "POST", path: ["auth", "refresh"])
     }
 
+    /// Attempts to renew the per-installation session. The server may either
+    /// return a replacement token or refresh its cookie-backed session and
+    /// return an empty payload; both outcomes are useful to the caller.
+    func refreshNinebotSession() async throws -> String? {
+        let payload = try await request(
+            method: "POST",
+            path: ["auth", "refresh"],
+            allowSessionRecovery: false
+        )
+        return Self.loginResult(from: payload).sessionToken
+    }
+
     func ringBell(sn: String) async throws -> JSONValue {
         try await request(method: "POST", path: ["vehicles", sn, "bell"])
     }

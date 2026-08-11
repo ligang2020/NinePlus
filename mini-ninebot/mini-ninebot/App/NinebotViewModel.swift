@@ -162,6 +162,7 @@ final class NinebotViewModel: ObservableObject {
 
     private let store = NinebotSharedStore()
     private var lastAutomaticRefreshAt: Date?
+    private var isPerformingSilentDashboardRefresh = false
 
     init() {
         let configuration = store.loadConfiguration()
@@ -245,26 +246,52 @@ final class NinebotViewModel: ObservableObject {
     func refreshOnLaunchIfPossible() async {
         await syncPushDeviceTokenIfPossible()
         await refreshResolvedAddressesIfNeeded(for: dashboard)
-        await refreshAutomaticallyIfPossible()
+        await refreshAutomaticallyIfPossible(force: false)
     }
 
+    /// Called by ContentView whenever scenePhase returns to `.active`.
+    /// It reads the persisted dashboard immediately (during init) and then
+    /// updates it in the background without replacing it with an empty state.
     func refreshWhenActiveIfPossible() async {
         await syncPushDeviceTokenIfPossible()
         await refreshResolvedAddressesIfNeeded(for: dashboard)
-        await refreshAutomaticallyIfPossible()
+        await refreshAutomaticallyIfPossible(force: true)
     }
 
-    private func refreshAutomaticallyIfPossible() async {
+    private func refreshAutomaticallyIfPossible(force: Bool) async {
         guard hasConfiguration, hasOfficialNinebotAccount else { return }
-        guard !isLoading else { return }
+        guard !isLoading, !isPerformingSilentDashboardRefresh else { return }
 
         let now = Date()
-        if let lastAutomaticRefreshAt, now.timeIntervalSince(lastAutomaticRefreshAt) < 8 {
+        if !force, let lastAutomaticRefreshAt, now.timeIntervalSince(lastAutomaticRefreshAt) < 8 {
             return
         }
 
         lastAutomaticRefreshAt = now
-        await refreshDashboard()
+        await refreshDashboardSilently()
+    }
+
+    private func refreshDashboardSilently() async {
+        guard !isPerformingSilentDashboardRefresh else { return }
+        isPerformingSilentDashboardRefresh = true
+        defer { isPerformingSilentDashboardRefresh = false }
+
+        do {
+            let refreshedDashboard = try await fetchDashboardWithSessionRecovery(selectedSN: dashboard.selectedSN)
+            let archivedDashboard = saveDashboard(refreshedDashboard)
+            await cacheVehicleImages(for: archivedDashboard)
+            await refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            errorMessage = nil
+            statusMessage = "已静默更新 \(Self.timeFormatter.string(from: archivedDashboard.updatedAt))"
+            WidgetCenter.shared.reloadAllTimelines()
+        } catch {
+            // Keep cached vehicle data visible. A transient network/401 error
+            // must never turn a previously logged-in dashboard into an empty UI.
+            if dashboard.vehicles.isEmpty {
+                errorMessage = error.localizedDescription
+                store.saveLastError(error.localizedDescription)
+            }
+        }
     }
 
     func saveConfiguration() {
@@ -292,7 +319,7 @@ final class NinebotViewModel: ObservableObject {
             }
             self.saveConfiguration()
             let client = try self.makeClient()
-            let dashboard = try await client.fetchDashboard(selectedSN: self.dashboard.selectedSN)
+            let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
             await self.cacheVehicleImages(for: archivedDashboard)
             await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
@@ -323,7 +350,7 @@ final class NinebotViewModel: ObservableObject {
     func refreshDashboard() async {
         await runLoadingOperation(message: "正在刷新车况") {
             let client = try makeClient()
-            let dashboard = try await client.fetchDashboard(selectedSN: self.dashboard.selectedSN)
+            let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
             await self.cacheVehicleImages(for: archivedDashboard)
             await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
@@ -345,7 +372,7 @@ final class NinebotViewModel: ObservableObject {
             let page = try await client.syncTravelMonth(sn: vehicleSN, month: month, pageSize: 100)
             self.store.upsertInterfaceRideRecords(page.records, sn: vehicleSN)
 
-            let dashboard = try await client.fetchDashboard(selectedSN: vehicleSN)
+            let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: vehicleSN)
             let archivedDashboard = self.saveDashboard(dashboard)
             await self.cacheVehicleImages(for: archivedDashboard)
             await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
@@ -441,7 +468,7 @@ final class NinebotViewModel: ObservableObject {
             rememberLoginResult(result, fallbackAccount: account.trimmed)
             password = ""
 
-            let dashboard = try await makeClient().fetchDashboard(selectedSN: self.dashboard.selectedSN)
+            let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
             await self.cacheVehicleImages(for: archivedDashboard)
             await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
@@ -479,7 +506,7 @@ final class NinebotViewModel: ObservableObject {
             smsCode = ""
             await self.syncPushDeviceTokenIfPossible()
 
-            let dashboard = try await makeClient().fetchDashboard(selectedSN: self.dashboard.selectedSN)
+            let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
             await self.cacheVehicleImages(for: archivedDashboard)
             await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
@@ -519,7 +546,7 @@ final class NinebotViewModel: ObservableObject {
             self.statusMessage = action.resultTitle
             self.errorMessage = nil
 
-            let dashboard = try await client.fetchDashboard(selectedSN: sn)
+            let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: sn)
             let archivedDashboard = self.saveDashboard(dashboard)
             await self.cacheVehicleImages(for: archivedDashboard)
             await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
@@ -662,6 +689,41 @@ final class NinebotViewModel: ObservableObject {
         store.saveDataSourceMode(dataSourceMode)
         store.saveConfiguration(configuration)
         return NinebotProxyClient(configuration: configuration)
+    }
+
+    /// Equivalent to an HTTP interceptor for URLSession: a failed vehicle
+    /// request receives one refresh attempt and is replayed once. Credentials
+    /// are never persisted, so only the server-issued session is renewed.
+    private func fetchDashboardWithSessionRecovery(selectedSN: String?) async throws -> NinebotDashboard {
+        let client = try makeClient()
+        do {
+            return try await client.fetchDashboard(selectedSN: selectedSN)
+        } catch {
+            guard Self.isUnauthorized(error) else { throw error }
+
+            // The request client already performs a headerless fallback for a
+            // restarted server. If that still gets 401, ask the backend to
+            // refresh the user session once, save a returned replacement token,
+            // then replay the original dashboard request exactly once.
+            do {
+                let refreshedToken = try await client.refreshNinebotSession()
+                if let refreshedToken = refreshedToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !refreshedToken.isEmpty {
+                    updateSessionToken(refreshedToken)
+                }
+                return try await makeClient().fetchDashboard(selectedSN: selectedSN)
+            } catch {
+                throw error
+            }
+        }
+    }
+
+    private func updateSessionToken(_ token: String) {
+        guard var currentLogin = loginResult else { return }
+        currentLogin.sessionToken = token
+        loginResult = currentLogin
+        store.saveLoginResult(currentLogin)
+        store.saveConfiguration(currentConfiguration)
     }
 
     private func rideDetailKey(vehicleSN: String, rideID: String) -> String {
@@ -899,7 +961,7 @@ final class NinebotViewModel: ObservableObject {
             ))
         } catch {
             let message = error.localizedDescription
-            if Self.isExpiredPortalSession(error) {
+            if Self.requiresInteractiveLogin(error) {
                 clearNinePlusSession()
             }
             errorMessage = message
@@ -919,19 +981,29 @@ final class NinebotViewModel: ObservableObject {
         loadingMessage = nil
     }
 
-    private static func isExpiredPortalSession(_ error: Error) -> Bool {
+    private static func isUnauthorized(_ error: Error) -> Bool {
         guard let proxyError = error as? NinebotProxyError else { return false }
-        switch proxyError {
-        case .httpStatus(let statusCode, let message):
+        if case .httpStatus(let statusCode, _) = proxyError {
             return statusCode == 401
-                || message.contains("请先登录 NinePlus")
-                || message.contains("NinePlus 登录已过期")
-        case .server(let message):
-            return message.contains("请先登录 NinePlus")
-                || message.contains("NinePlus 登录已过期")
+        }
+        return false
+    }
+
+    /// Do not erase the local dashboard for a bare 401: it can be a server
+    /// restart or an expired short-lived access token. Only a clear server
+    /// instruction to sign in again may return the user to the login screen.
+    private static func requiresInteractiveLogin(_ error: Error) -> Bool {
+        guard let proxyError = error as? NinebotProxyError else { return false }
+        let message: String
+        switch proxyError {
+        case .httpStatus(_, let value), .server(let value):
+            message = value
         default:
             return false
         }
+        return message.contains("请重新登录")
+            || message.contains("账号已注销")
+            || message.contains("账户不存在")
     }
 
     private static func displayMonth(_ month: String) -> String {

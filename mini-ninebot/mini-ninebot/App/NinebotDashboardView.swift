@@ -76,8 +76,12 @@ struct NinebotDashboardView: View {
                             .buttonStyle(.plain)
                             .padding(.horizontal, 16)
                         } else {
-                            EmptyDashboardView(hasConfiguration: model.hasConfiguration)
-                                .padding(.horizontal, 16)
+                            EmptyDashboardView(
+                                hasConfiguration: model.hasConfiguration,
+                                isLoading: model.isLoading,
+                                onRetry: { Task { await model.refreshDashboard() } }
+                            )
+                            .padding(.horizontal, 16)
                         }
 
                         if model.dashboard.vehicles.count > 1 {
@@ -844,8 +848,12 @@ struct NinebotTripsTabView: View {
                 recordedRides: model.recordedRides(for: snapshot.vehicle.sn)
             )
         } else {
-            EmptyDashboardView(hasConfiguration: model.hasConfiguration)
-                .padding(.horizontal, 16)
+            EmptyDashboardView(
+                hasConfiguration: model.hasConfiguration,
+                isLoading: model.isLoading,
+                onRetry: { Task { await model.refreshDashboard() } }
+            )
+            .padding(.horizontal, 16)
                 .background(Color.teslaPageBackground.ignoresSafeArea())
                 .navigationTitle("行程")
                 .navigationBarTitleDisplayMode(.inline)
@@ -1296,18 +1304,7 @@ private struct VehicleControlHero: View {
                 )
             }
 
-            VStack(spacing: 6) {
-                Text(snapshot.state.localEstimatedMileageText)
-                    .font(.system(size: 44, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.teslaPrimaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-
-                Text("预计可行驶")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(Color.teslaSecondaryText)
-            }
+            VehicleRangeHeroCard(rangeText: snapshot.state.localEstimatedMileageText)
 
             VehicleMotionScene(snapshot: snapshot)
                 .frame(maxWidth: .infinity)
@@ -1342,6 +1339,46 @@ private struct VehicleControlHero: View {
             return nil
         }
         return value
+    }
+}
+
+private struct VehicleRangeHeroCard: View {
+    var rangeText: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "road.lanes")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(Color.teslaGreen)
+                .frame(width: 38, height: 38)
+                .background(Color.teslaGreen.opacity(0.14), in: Circle())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("预计可行驶")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.teslaSecondaryText)
+                Text(rangeText)
+                    .font(.system(size: 31, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.teslaPrimaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(Color.teslaCardBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.teslaHairline.opacity(0.9), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 14, x: 0, y: 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("预计可行驶 \(rangeText)")
     }
 }
 
@@ -1644,6 +1681,7 @@ private struct WeatherRainLayer: View {
 }
 private struct RideWeatherCard: View {
     var snapshot: RideWeatherSnapshot
+    var width: CGFloat = 148
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -1688,7 +1726,7 @@ private struct RideWeatherCard: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 13)
-        .frame(width: 148)
+        .frame(width: width)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
         .background(Color.black.opacity(0.20), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 19, style: .continuous).stroke(.white.opacity(0.18), lineWidth: 0.8))
@@ -1786,7 +1824,7 @@ private struct VehicleMotionScene: View {
     private var sceneAccessibilityLabel: String {
         switch mode {
         case .parked: return snapshot.state.isPoweredOn == true ? "车辆已停稳，已上电" : "车辆已停稳"
-        case .riding: return "车辆骑行中，当前速度 \(snapshot.state.currentSpeedText)，电量 \(snapshot.state.batteryText)"
+        case .riding: return "车辆骑行中，骑行里程 \(snapshot.state.lastMileageText)，骑行时间 \(formatDuration(snapshot.state.rides.first?.durationMinutes))"
         case .charging: return "车辆充电中，电量 \(snapshot.state.batteryText)，充电功率 \(snapshot.state.chargingPowerText)"
         }
     }
@@ -1838,9 +1876,11 @@ private struct UrbanPhotoBackdrop: View {
                 endPoint: .bottom
             )
 
-            if condition == .cloudy || condition == .partlyCloudy || condition.isWet {
+            // Decorative clouds are deliberately tied to the exact weather label
+            // "多云". 阴天、雨天等状态通过天空渐变/雨层表达，不再默认叠云。
+            if condition == .partlyCloudy {
                 CloudBank(size: size, phase: phase, isDay: isDay)
-                    .opacity(condition.isWet ? 0.78 : 0.48)
+                    .opacity(isDay ? 0.48 : 0.30)
             }
 
             WaterfrontGlow(size: size, isDay: isDay)
@@ -2017,12 +2057,17 @@ private struct PerspectiveDash: View {
     var body: some View {
         let dashWidth = size.width * (0.060 + CGFloat(row) * 0.022)
         let gap = size.width * (0.15 + CGFloat(row) * 0.025)
-        let scroll = animates ? CGFloat((phase * 28).truncatingRemainder(dividingBy: 28)) : 0
+        let trackWidth = dashWidth + gap
+        // TranslateX-equivalent, repeated by exactly one segment pitch so the
+        // road markings return to the same visual arrangement without a jump.
+        let scroll = animates
+            ? CGFloat((phase * 36).truncatingRemainder(dividingBy: Double(trackWidth)))
+            : 0
         return RoundedRectangle(cornerRadius: 2, style: .continuous)
             .fill(Color.white.opacity(0.80 - Double(row) * 0.08))
             .frame(width: dashWidth, height: max(3, size.height * (0.008 + CGFloat(row) * 0.003)))
             .position(
-                x: -dashWidth + CGFloat(column) * (dashWidth + gap) - scroll * (1 + CGFloat(row) * 0.35),
+                x: -trackWidth + CGFloat(column) * trackWidth + scroll,
                 y: size.height * (0.75 + CGFloat(row) * 0.09)
             )
     }
@@ -2233,45 +2278,55 @@ private struct VehicleRidingScene: View {
     private var ride: NinebotRideRecord? { snapshot.state.rides.first }
 
     var body: some View {
+        // State indication rather than decoration: small transform-only motion
+        // makes a moving vehicle legible without disturbing readable data.
         let bob = CGFloat(sin(phase * 6.2)) * 1.5
         let drift = CGFloat(sin(phase * 1.7)) * 2.0
 
         return ZStack(alignment: .topLeading) {
             VehicleSceneBackdrop(size: size, phase: phase, style: .riding, weather: weather)
+
             VehicleSceneHeader(title: "骑行中", subtitle: "实时车辆数据", tint: Color.teslaGreen)
                 .padding(.leading, 20)
                 .padding(.top, 18)
 
-            VStack(spacing: 8) {
-                VehicleMetricCard(title: "当前速度", value: snapshot.state.currentSpeedText, icon: "speedometer", accent: Color.teslaGreen)
-                VehicleMetricCard(title: "骑行里程", value: rideMileageText, icon: "point.topleft.down.to.point.bottomright.curvepath", accent: .white)
-                VehicleMetricCard(title: "骑行时间", value: formatDuration(ride?.durationMinutes), icon: "clock", accent: .white)
-                VehicleBatteryCard(state: snapshot.state)
-            }
-            .frame(width: min(size.width * 0.31, 132))
-            .padding(.leading, 15)
-            .padding(.top, 69)
-
-            RideWeatherCard(snapshot: weather)
+            // Weather deliberately occupies the upper-right corner after the
+            // three redundant side cards were removed.
+            RideWeatherCard(snapshot: weather, width: min(size.width * 0.43, 164))
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.top, 17)
-                .padding(.trailing, 15)
+                .padding(.trailing, 14)
 
             Ellipse()
                 .fill(Color.black.opacity(0.42))
-                .frame(width: size.width * 0.52, height: size.height * 0.06)
+                .frame(width: size.width * 0.55, height: size.height * 0.065)
                 .blur(radius: 8)
-                .offset(x: size.width * 0.24, y: size.height * 0.83)
+                .offset(x: size.width * 0.23, y: size.height * 0.83)
 
-            VehicleImage(urlString: snapshot.vehicle.imageURLString, sn: snapshot.vehicle.sn, size: min(size.width * 0.67, 272), showsBackground: false)
-                .shadow(color: .black.opacity(0.45), radius: 14, x: 0, y: 10)
-                .offset(x: size.width * 0.19 + drift, y: size.height * 0.28 + bob)
+            VehicleImage(
+                urlString: snapshot.vehicle.imageURLString,
+                sn: snapshot.vehicle.sn,
+                size: min(size.width * 0.69, 278),
+                showsBackground: false
+            )
+            .shadow(color: .black.opacity(0.45), radius: 14, x: 0, y: 10)
+            .offset(x: size.width * 0.17 + drift, y: size.height * 0.28 + bob)
 
-            VehicleRideRouteCard(phase: phase)
-                .frame(width: min(size.width * 0.29, 125))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .padding(.trailing, 15)
-                .padding(.bottom, 16)
+            HStack(spacing: 9) {
+                RideSceneMetricCard(
+                    title: "骑行里程",
+                    value: rideMileageText,
+                    systemImage: "point.topleft.down.to.point.bottomright.curvepath"
+                )
+                RideSceneMetricCard(
+                    title: "骑行时间",
+                    value: formatDuration(ride?.durationMinutes),
+                    systemImage: "clock"
+                )
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            .padding(.leading, 15)
+            .padding(.bottom, 16)
         }
         .frame(width: size.width, height: size.height)
     }
@@ -2282,33 +2337,27 @@ private struct VehicleRidingScene: View {
     }
 }
 
-private struct VehicleRideRouteCard: View {
-    var phase: TimeInterval
+private struct RideSceneMetricCard: View {
+    var title: String
+    var value: String
+    var systemImage: String
 
     var body: some View {
         VehicleGlassCard {
-            VStack(alignment: .leading, spacing: 7) {
-                Text("行驶轨迹")
+            VStack(alignment: .leading, spacing: 5) {
+                Label(title, systemImage: systemImage)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.white.opacity(0.72))
-                GeometryReader { proxy in
-                    Path { path in
-                        path.move(to: CGPoint(x: 3, y: proxy.size.height * 0.72))
-                        path.addCurve(to: CGPoint(x: proxy.size.width * 0.42, y: proxy.size.height * 0.36), control1: CGPoint(x: proxy.size.width * 0.16, y: proxy.size.height * 0.62), control2: CGPoint(x: proxy.size.width * 0.18, y: proxy.size.height * 0.84))
-                        path.addCurve(to: CGPoint(x: proxy.size.width - 4, y: proxy.size.height * 0.25), control1: CGPoint(x: proxy.size.width * 0.57, y: proxy.size.height * 0.10), control2: CGPoint(x: proxy.size.width * 0.66, y: proxy.size.height * 0.54))
-                    }
-                    .stroke(Color.teslaGreen, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                    .shadow(color: Color.teslaGreen.opacity(0.60), radius: 4)
-                    Circle()
-                        .fill(Color.white)
-                        .frame(width: 7, height: 7)
-                        .shadow(color: Color.teslaGreen, radius: 6)
-                        .position(x: proxy.size.width - 4, y: proxy.size.height * 0.25)
-                }
-                .frame(height: 42)
+                    .lineLimit(1)
+                Text(value)
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
             }
+            .frame(width: 104, alignment: .leading)
         }
-        .opacity(0.95 + 0.05 * sin(phase * 2.0))
     }
 }
 
@@ -5880,6 +5929,8 @@ private func friendlyRawFieldName(_ key: String) -> String {
 
 private struct EmptyDashboardView: View {
     var hasConfiguration: Bool
+    var isLoading: Bool = false
+    var onRetry: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 16) {
@@ -5890,13 +5941,31 @@ private struct EmptyDashboardView: View {
             Text(hasConfiguration ? "暂无车辆数据" : "未配置代理")
                 .font(.headline)
 
-            Text(hasConfiguration ? "刷新后会显示九号车辆状态" : "到“我的”填写代理地址并登录后即可读取车辆")
+            Text(hasConfiguration ? "将优先显示上次缓存，并在回到前台时自动刷新车辆状态" : "到“我的”填写代理地址并登录后即可读取车辆")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+
+            if hasConfiguration {
+                Button(action: onRetry) {
+                    HStack(spacing: 7) {
+                        if isLoading { ProgressView().tint(.white) }
+                        Image(systemName: "arrow.clockwise")
+                        Text(isLoading ? "正在刷新" : "点击重试")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 11)
+                    .background(Color.teslaGreen, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(isLoading)
+                .accessibilityHint("也支持在页面顶部下拉刷新")
+            }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 54)
+        .padding(.vertical, 42)
         .padding(.horizontal, 20)
         .background(Color.teslaCardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
