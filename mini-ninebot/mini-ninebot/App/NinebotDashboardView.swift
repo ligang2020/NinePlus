@@ -1418,7 +1418,7 @@ private enum RideWeatherCondition: String, Codable, Equatable {
         case .clear: return "sun.max.fill"
         case .partlyCloudy: return "cloud.sun.fill"
         case .cloudy: return "cloud.fill"
-        case .rain: return "cloud.rain.fill"
+        case .rain: return "cloud.heavyrain.fill"
         case .storm: return "cloud.bolt.rain.fill"
         case .snow: return "cloud.snow.fill"
         case .fog: return "cloud.fog.fill"
@@ -1687,8 +1687,13 @@ private struct RideWeatherCard: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
                 Image(systemName: snapshot.condition.systemImage)
-                    .font(.system(size: 16, weight: .semibold))
+                    .symbolRenderingMode(.multicolor)
+                    .font(.system(size: snapshot.condition.isWet ? 30 : 19, weight: .semibold))
                     .foregroundStyle(snapshot.condition.isWet ? Color.cyan : Color.white)
+                    .frame(
+                        width: snapshot.condition.isWet ? 38 : 25,
+                        height: snapshot.condition.isWet ? 36 : 25
+                    )
                 VStack(alignment: .leading, spacing: 1) {
                     Text("实时天气")
                         .font(.system(size: 10, weight: .medium))
@@ -1698,9 +1703,13 @@ private struct RideWeatherCard: View {
                         .foregroundStyle(.white)
                 }
                 Spacer(minLength: 8)
-                Image(systemName: snapshot.isDay ? "sun.max.fill" : "moon.fill")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(snapshot.isDay ? Color.yellow : Color.orange.opacity(0.9))
+                // Rain already carries the weather signal; do not pair it with a
+                // contradictory sun or moon icon.
+                if !snapshot.condition.isWet {
+                    Image(systemName: snapshot.isDay ? "sun.max.fill" : "moon.fill")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(snapshot.isDay ? Color.yellow : Color.orange.opacity(0.9))
+                }
             }
 
             Divider().overlay(.white.opacity(0.12))
@@ -1775,6 +1784,7 @@ private func aqiColor(_ value: Double?) -> Color {
 
 private struct VehicleMotionScene: View {
     var snapshot: NinebotVehicleSnapshot
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var weatherProvider = RideWeatherProvider()
 
     private var mode: VehicleMotionSceneMode {
@@ -1790,7 +1800,9 @@ private struct VehicleMotionScene: View {
     var body: some View {
         GeometryReader { proxy in
             TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-                scene(size: proxy.size, phase: timeline.date.timeIntervalSinceReferenceDate)
+                // Motion indicates an active ride. Respect the system setting by
+                // retaining the complete scene while freezing transform motion.
+                scene(size: proxy.size, phase: reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
@@ -1824,7 +1836,7 @@ private struct VehicleMotionScene: View {
     private var sceneAccessibilityLabel: String {
         switch mode {
         case .parked: return snapshot.state.isPoweredOn == true ? "车辆已停稳，已上电" : "车辆已停稳"
-        case .riding: return "车辆骑行中，骑行里程 \(snapshot.state.lastMileage.map { String(format: "%.1f km", $0) } ?? "-- km")，骑行时间 \(formatDuration(snapshot.state.rides.first?.durationMinutes))"
+        case .riding: return "车辆骑行中，实时车辆数据已更新"
         case .charging: return "车辆充电中，电量 \(snapshot.state.batteryText)，充电功率 \(snapshot.state.chargingPowerText)"
         }
     }
@@ -1849,6 +1861,7 @@ private struct VehicleSceneBackdrop: View {
             } else {
                 UrbanPhotoBackdrop(isDay: weather.isDay, condition: weather.condition, style: style, size: size, phase: phase)
                 RoadPerspectiveLayer(size: size, phase: phase, animates: style == .riding)
+                UrbanStreetLamp(size: size, isDay: weather.isDay)
             }
 
             if !weather.isDay && style != .charging { NightAtmosphere(size: size, phase: phase) }
@@ -1869,103 +1882,243 @@ private struct UrbanPhotoBackdrop: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             LinearGradient(
-                colors: isDay
-                    ? [Color(red: 0.34, green: 0.52, blue: 0.65), Color(red: 0.72, green: 0.78, blue: 0.77), Color(red: 0.22, green: 0.27, blue: 0.30)]
-                    : [Color(red: 0.005, green: 0.015, blue: 0.040), Color(red: 0.018, green: 0.075, blue: 0.145), Color(red: 0.09, green: 0.13, blue: 0.16)],
+                colors: skyColors,
                 startPoint: .top,
                 endPoint: .bottom
             )
 
-            // Decorative clouds are deliberately tied to the exact weather label
-            // "多云". 阴天、雨天等状态通过天空渐变/雨层表达，不再默认叠云。
+            // Cloud coverage is intentionally tied to the exact “多云” condition.
+            // Overcast and wet weather use a muted sky/rain layer instead.
             if condition == .partlyCloudy {
                 CloudBank(size: size, phase: phase, isDay: isDay)
-                    .opacity(isDay ? 0.48 : 0.30)
+                    .opacity(isDay ? 0.42 : 0.24)
             }
 
-            WaterfrontGlow(size: size, isDay: isDay)
-
-            HStack(alignment: .bottom, spacing: max(4, size.width * 0.014)) {
-                ForEach(0..<17, id: \.self) { index in
-                    PhotoBuilding(
-                        index: index,
-                        width: size.width * (0.045 + CGFloat(index % 3) * 0.014),
-                        height: size.height * (0.18 + CGFloat((index * 23) % 8) * 0.028),
-                        isDay: isDay,
-                        blur: style == .riding ? 2.2 : 0.8
-                    )
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .offset(x: style == .riding ? CGFloat(sin(phase * 0.26)) * 5 : 0, y: -size.height * 0.29)
+            CityHorizonGlow(size: size, isDay: isDay)
+            ModernCitySkyline(size: size, isDay: isDay, isRiding: style == .riding, phase: phase)
+                .offset(y: -size.height * 0.03)
 
             Rectangle()
-                .fill(LinearGradient(colors: [.clear, Color.black.opacity(isDay ? 0.28 : 0.68)], startPoint: .top, endPoint: .bottom))
-                .frame(height: size.height * 0.54)
+                .fill(
+                    LinearGradient(
+                        colors: [.clear, Color.black.opacity(isDay ? 0.16 : 0.52)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(height: size.height * 0.46)
         }
+    }
+
+    private var skyColors: [Color] {
+        if isDay {
+            switch condition {
+            case .cloudy, .fog:
+                return [Color(red: 0.48, green: 0.55, blue: 0.61), Color(red: 0.65, green: 0.69, blue: 0.70), Color(red: 0.31, green: 0.36, blue: 0.38)]
+            case .rain, .storm:
+                return [Color(red: 0.22, green: 0.30, blue: 0.38), Color(red: 0.38, green: 0.45, blue: 0.49), Color(red: 0.23, green: 0.28, blue: 0.30)]
+            default:
+                return [Color(red: 0.31, green: 0.55, blue: 0.77), Color(red: 0.68, green: 0.78, blue: 0.82), Color(red: 0.28, green: 0.35, blue: 0.38)]
+            }
+        }
+        return [Color(red: 0.004, green: 0.012, blue: 0.035), Color(red: 0.015, green: 0.055, blue: 0.115), Color(red: 0.055, green: 0.095, blue: 0.130)]
     }
 }
 
-private struct PhotoBuilding: View {
+/// A deliberately sparse office skyline. Six towers with different silhouettes
+/// read as a real business district while leaving negative space around the car.
+private struct ModernCitySkyline: View {
+    private struct Tower: Identifiable {
+        let id: Int
+        let x: CGFloat
+        let width: CGFloat
+        let height: CGFloat
+        let windowColumns: Int
+        let windowRows: Int
+        let crown: ModernOfficeTower.Crown
+    }
+
+    var size: CGSize
+    var isDay: Bool
+    var isRiding: Bool
+    var phase: TimeInterval
+
+    private let towers: [Tower] = [
+        Tower(id: 0, x: 0.08, width: 0.13, height: 0.23, windowColumns: 3, windowRows: 5, crown: .flat),
+        Tower(id: 1, x: 0.24, width: 0.17, height: 0.35, windowColumns: 4, windowRows: 8, crown: .stepped),
+        Tower(id: 2, x: 0.43, width: 0.15, height: 0.27, windowColumns: 3, windowRows: 6, crown: .sloped),
+        Tower(id: 3, x: 0.61, width: 0.20, height: 0.43, windowColumns: 5, windowRows: 10, crown: .flat),
+        Tower(id: 4, x: 0.80, width: 0.14, height: 0.30, windowColumns: 3, windowRows: 7, crown: .antenna),
+        Tower(id: 5, x: 0.94, width: 0.10, height: 0.20, windowColumns: 2, windowRows: 4, crown: .sloped)
+    ]
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(towers) { tower in
+                let towerHeight = size.height * tower.height
+                ModernOfficeTower(
+                    index: tower.id,
+                    isDay: isDay,
+                    width: size.width * tower.width,
+                    height: towerHeight,
+                    windowColumns: tower.windowColumns,
+                    windowRows: tower.windowRows,
+                    crown: tower.crown
+                )
+                .position(
+                    x: size.width * tower.x,
+                    y: size.height * 0.70 - towerHeight / 2
+                )
+            }
+        }
+        // The parallax is kept below one point: the scene reads as motion without
+        // smearing the window detail or competing with the live vehicle data.
+        .offset(x: isRiding ? CGFloat(sin(phase * 0.35)) * 0.8 : 0)
+        .allowsHitTesting(false)
+    }
+}
+
+private struct ModernOfficeTower: View {
+    enum Crown {
+        case flat
+        case stepped
+        case sloped
+        case antenna
+    }
+
     var index: Int
+    var isDay: Bool
     var width: CGFloat
     var height: CGFloat
-    var isDay: Bool
-    var blur: CGFloat
+    var windowColumns: Int
+    var windowRows: Int
+    var crown: Crown
 
     var body: some View {
         VStack(spacing: 0) {
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: isDay
-                            ? [Color(red: 0.25, green: 0.36, blue: 0.40).opacity(0.75), Color(red: 0.10, green: 0.17, blue: 0.21).opacity(0.92)]
-                            : [Color(red: 0.015, green: 0.035, blue: 0.064), Color(red: 0.006, green: 0.012, blue: 0.024)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+            crownView
+                .frame(height: crown == .flat ? 2 : max(7, height * 0.055))
+
+            RoundedRectangle(cornerRadius: min(5, width * 0.08), style: .continuous)
+                .fill(facade)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(.white.opacity(isDay ? 0.12 : 0.035))
+                        .frame(width: max(2, width * 0.08))
+                }
                 .overlay {
-                    VStack(spacing: max(4, height * 0.032)) {
-                        ForEach(0..<6, id: \.self) { row in
-                            HStack(spacing: max(3, width * 0.12)) {
-                                ForEach(0..<3, id: \.self) { column in
-                                    RoundedRectangle(cornerRadius: 0.8)
-                                        .fill(windowColor(row: row, column: column))
-                                        .frame(width: max(2, width * 0.085), height: max(1.5, height * 0.014))
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal, width * 0.13)
-                    .padding(.vertical, height * 0.06)
-                    .opacity(isDay ? 0.42 : 0.9)
+                    WindowGrid(
+                        index: index,
+                        isDay: isDay,
+                        columns: windowColumns,
+                        rows: windowRows,
+                        width: width,
+                        height: height
+                    )
+                    .padding(.horizontal, max(5, width * 0.12))
+                    .padding(.vertical, max(8, height * 0.065))
                 }
         }
-        .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
-        .blur(radius: blur)
-        .shadow(color: .black.opacity(isDay ? 0.10 : 0.48), radius: 8, x: 0, y: 5)
+        .frame(width: width, height: height, alignment: .bottom)
+        .clipShape(RoundedRectangle(cornerRadius: min(5, width * 0.08), style: .continuous))
+        .shadow(color: .black.opacity(isDay ? 0.14 : 0.46), radius: 8, x: 0, y: 5)
     }
 
-    private func windowColor(row: Int, column: Int) -> Color {
-        if isDay { return Color.white.opacity(((row + column + index) % 4 == 0) ? 0.62 : 0.18) }
-        return ((row * 3 + column + index) % 4 == 0) ? Color.orange.opacity(0.86) : Color.blue.opacity(0.22)
+    @ViewBuilder
+    private var crownView: some View {
+        switch crown {
+        case .flat:
+            Color.clear
+        case .stepped:
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(facade.opacity(0.93))
+                .frame(width: width * 0.62)
+        case .sloped:
+            Triangle()
+                .fill(facade.opacity(0.96))
+                .frame(width: width * 0.72)
+        case .antenna:
+            VStack(spacing: 0) {
+                Capsule().fill(.white.opacity(isDay ? 0.45 : 0.75)).frame(width: 1.5, height: max(5, height * 0.035))
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(facade.opacity(0.96))
+                    .frame(width: width * 0.48, height: max(3, height * 0.018))
+            }
+        }
+    }
+
+    private var facade: LinearGradient {
+        LinearGradient(
+            colors: isDay
+                ? [Color(red: 0.28, green: 0.40, blue: 0.48), Color(red: 0.12, green: 0.19, blue: 0.25)]
+                : [Color(red: 0.018, green: 0.040, blue: 0.075), Color(red: 0.004, green: 0.011, blue: 0.027)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 }
 
-private struct WaterfrontGlow: View {
+private struct WindowGrid: View {
+    var index: Int
+    var isDay: Bool
+    var columns: Int
+    var rows: Int
+    var width: CGFloat
+    var height: CGFloat
+
+    var body: some View {
+        GeometryReader { proxy in
+            let columnSpacing = max(2, width * 0.045)
+            let windowWidth = max(1.5, (proxy.size.width - columnSpacing * CGFloat(columns - 1)) / CGFloat(columns))
+            let rowSpacing = max(2.5, height * 0.014)
+
+            VStack(spacing: rowSpacing) {
+                ForEach(0..<rows, id: \.self) { row in
+                    HStack(spacing: columnSpacing) {
+                        ForEach(0..<columns, id: \.self) { column in
+                            RoundedRectangle(cornerRadius: 0.8, style: .continuous)
+                                .fill(windowColor(row: row, column: column))
+                                .frame(width: windowWidth, height: max(1.5, height * 0.010))
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+    }
+
+    private func windowColor(row: Int, column: Int) -> Color {
+        let pattern = (row * 7 + column * 3 + index * 5) % 9
+        if isDay {
+            return pattern == 0 ? Color.white.opacity(0.62) : Color(red: 0.57, green: 0.78, blue: 0.89).opacity(0.32)
+        }
+        return pattern == 0 || pattern == 4 ? Color(red: 1.0, green: 0.69, blue: 0.34).opacity(0.92) : Color(red: 0.33, green: 0.56, blue: 0.82).opacity(0.22)
+    }
+}
+
+private struct Triangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct CityHorizonGlow: View {
     var size: CGSize
     var isDay: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            Rectangle().fill(isDay ? Color.white.opacity(0.22) : Color.blue.opacity(0.10)).frame(height: 1)
-            Rectangle().fill(isDay ? Color.blue.opacity(0.22) : Color.blue.opacity(0.24)).frame(height: size.height * 0.09)
-            Rectangle().fill(isDay ? Color.black.opacity(0.10) : Color.black.opacity(0.35)).frame(height: size.height * 0.03)
+            Rectangle().fill(isDay ? Color.white.opacity(0.13) : Color.blue.opacity(0.08)).frame(height: 1)
+            Rectangle().fill(isDay ? Color(red: 0.19, green: 0.33, blue: 0.39).opacity(0.18) : Color.blue.opacity(0.16)).frame(height: size.height * 0.065)
+            Rectangle().fill(Color.black.opacity(isDay ? 0.10 : 0.28)).frame(height: size.height * 0.025)
         }
         .frame(maxWidth: .infinity)
-        .offset(y: -size.height * 0.28)
+        .offset(y: -size.height * 0.285)
     }
 }
 
@@ -2009,6 +2162,49 @@ private struct NightAtmosphere: View {
                 .frame(width: size.height * 0.075)
                 .offset(x: size.width * 0.34, y: -size.height * 0.34)
                 .scaleEffect(1 + CGFloat(sin(phase * 0.18)) * 0.02)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct UrbanStreetLamp: View {
+    var size: CGSize
+    var isDay: Bool
+
+    var body: some View {
+        let poleX = size.width * 0.88
+        let lampX = size.width * 0.80
+        let lampY = size.height * 0.43
+
+        ZStack {
+            if !isDay {
+                Circle()
+                    .fill(Color.orange.opacity(0.18))
+                    .frame(width: size.width * 0.19, height: size.height * 0.19)
+                    .blur(radius: 15)
+                    .position(x: lampX, y: lampY + 6)
+                Circle()
+                    .fill(Color.yellow.opacity(0.16))
+                    .frame(width: size.width * 0.10, height: size.height * 0.11)
+                    .blur(radius: 6)
+                    .position(x: lampX, y: lampY + 4)
+            }
+
+            Capsule()
+                .fill(LinearGradient(colors: [.black.opacity(0.84), .white.opacity(isDay ? 0.20 : 0.12), .black.opacity(0.82)], startPoint: .leading, endPoint: .trailing))
+                .frame(width: max(3, size.width * 0.009), height: size.height * 0.38)
+                .position(x: poleX, y: size.height * 0.61)
+
+            Capsule()
+                .fill(Color.black.opacity(0.82))
+                .frame(width: size.width * 0.105, height: max(3, size.height * 0.010))
+                .position(x: (poleX + lampX) / 2, y: lampY - 2)
+
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(isDay ? Color(red: 0.17, green: 0.20, blue: 0.21) : Color(red: 1.0, green: 0.72, blue: 0.31))
+                .frame(width: size.width * 0.052, height: max(6, size.height * 0.020))
+                .shadow(color: isDay ? .clear : Color.orange.opacity(0.95), radius: 7)
+                .position(x: lampX, y: lampY + 2)
         }
         .allowsHitTesting(false)
     }
@@ -2256,14 +2452,6 @@ private struct VehicleParkedScene: View {
                 .shadow(color: .black.opacity(0.42), radius: 15, x: 0, y: 10)
                 .position(x: size.width * 0.50, y: size.height * 0.70)
 
-            Text("实时数据 · \(snapshot.state.batteryText)")
-                .font(.system(size: 10, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.70))
-                .padding(.horizontal, 11)
-                .padding(.vertical, 7)
-                .background(.black.opacity(0.25), in: Capsule())
-                .overlay(Capsule().stroke(.white.opacity(0.13), lineWidth: 0.7))
-                .position(x: size.width * 0.17, y: size.height * 0.88)
         }
         .frame(width: size.width, height: size.height)
     }
@@ -2274,8 +2462,6 @@ private struct VehicleRidingScene: View {
     var weather: RideWeatherSnapshot
     var size: CGSize
     var phase: TimeInterval
-
-    private var ride: NinebotRideRecord? { snapshot.state.rides.first }
 
     var body: some View {
         // State indication rather than decoration: small transform-only motion
@@ -2311,53 +2497,8 @@ private struct VehicleRidingScene: View {
             )
             .shadow(color: .black.opacity(0.45), radius: 14, x: 0, y: 10)
             .offset(x: size.width * 0.17 + drift, y: size.height * 0.28 + bob)
-
-            HStack(spacing: 9) {
-                RideSceneMetricCard(
-                    title: "骑行里程",
-                    value: rideMileageText,
-                    systemImage: "point.topleft.down.to.point.bottomright.curvepath"
-                )
-                RideSceneMetricCard(
-                    title: "骑行时间",
-                    value: formatDuration(ride?.durationMinutes),
-                    systemImage: "clock"
-                )
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-            .padding(.leading, 15)
-            .padding(.bottom, 16)
         }
         .frame(width: size.width, height: size.height)
-    }
-
-    private var rideMileageText: String {
-        guard let mileage = ride?.mileage ?? snapshot.state.lastMileage else { return "-- km" }
-        return "\(String(format: "%.1f", mileage)) km"
-    }
-}
-
-private struct RideSceneMetricCard: View {
-    var title: String
-    var value: String
-    var systemImage: String
-
-    var body: some View {
-        VehicleGlassCard {
-            VStack(alignment: .leading, spacing: 5) {
-                Label(title, systemImage: systemImage)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.72))
-                    .lineLimit(1)
-                Text(value)
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-            .frame(width: 104, alignment: .leading)
-        }
     }
 }
 
