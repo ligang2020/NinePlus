@@ -2034,10 +2034,13 @@ private struct MotionStreak: View {
     var index: Int
 
     var body: some View {
-        let width = size.width * CGFloat(0.04 + (index % 4) * 0.018)
-        let opacity = 0.09 + Double(index % 3) * 0.04
-        let x = -size.width * 0.45 + CGFloat((index * 49) % 120) / 100 * size.width + CGFloat((phase * 44).truncatingRemainder(dividingBy: 80))
-        let y = size.height * (0.59 + CGFloat(index % 4) * 0.06)
+        let widthFactor: CGFloat = 0.04 + CGFloat(index % 4) * 0.018
+        let width: CGFloat = size.width * widthFactor
+        let opacity: Double = 0.09 + Double(index % 3) * 0.04
+        let normalizedIndex: CGFloat = CGFloat((index * 49) % 120) / 100.0
+        let phaseOffset: CGFloat = CGFloat((phase * 44).truncatingRemainder(dividingBy: 80))
+        let x: CGFloat = -size.width * 0.45 + normalizedIndex * size.width + phaseOffset
+        let y: CGFloat = size.height * (0.59 + CGFloat(index % 4) * 0.06)
         return Capsule()
             .fill(Color.white.opacity(opacity))
             .frame(width: width, height: 2)
