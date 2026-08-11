@@ -1999,10 +1999,7 @@ private struct RoadPerspectiveLayer: View {
 
             if animates {
                 ForEach(0..<8, id: \.self) { index in
-                    Capsule()
-                        .fill(Color.white.opacity(0.09 + Double(index % 3) * 0.04))
-                        .frame(width: size.width * CGFloat(0.04 + (index % 4) * 0.018), height: 2)
-                        .offset(x: -size.width * 0.45 + CGFloat((index * 49) % 120) / 100 * size.width + CGFloat((phase * 44).truncatingRemainder(dividingBy: 80)), y: size.height * (0.59 + CGFloat(index % 4) * 0.06))
+                    MotionStreak(size: size, phase: phase, index: index)
                 }
             }
         }
@@ -2028,6 +2025,23 @@ private struct PerspectiveDash: View {
                 x: -dashWidth + CGFloat(column) * (dashWidth + gap) - scroll * (1 + CGFloat(row) * 0.35),
                 y: size.height * (0.75 + CGFloat(row) * 0.09)
             )
+    }
+}
+
+private struct MotionStreak: View {
+    var size: CGSize
+    var phase: TimeInterval
+    var index: Int
+
+    var body: some View {
+        let width = size.width * CGFloat(0.04 + (index % 4) * 0.018)
+        let opacity = 0.09 + Double(index % 3) * 0.04
+        let x = -size.width * 0.45 + CGFloat((index * 49) % 120) / 100 * size.width + CGFloat((phase * 44).truncatingRemainder(dividingBy: 80))
+        let y = size.height * (0.59 + CGFloat(index % 4) * 0.06)
+        return Capsule()
+            .fill(Color.white.opacity(opacity))
+            .frame(width: width, height: 2)
+            .offset(x: x, y: y)
     }
 }
 
