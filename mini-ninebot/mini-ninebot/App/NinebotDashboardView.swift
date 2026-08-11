@@ -2027,20 +2027,43 @@ private struct PerspectiveLaneMarkings: View {
 
     var body: some View {
         ForEach(0..<3, id: \.self) { row in
-            let y = size.height * (0.785 + CGFloat(row) * 0.095)
-            let dashWidth = size.width * (0.060 + CGFloat(row) * 0.018)
-            let gap = size.width * (0.115 + CGFloat(row) * 0.025)
-
             ForEach(0..<6, id: \.self) { column in
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(Color.white.opacity(0.82 - Double(row) * 0.06))
-                    .frame(width: dashWidth, height: max(3, size.height * (0.009 + CGFloat(row) * 0.003)))
-                    .position(
-                        x: -dashWidth + CGFloat(column) * (dashWidth + gap) - scroll * (1 + CGFloat(row) * 0.35),
-                        y: y
-                    )
+                PerspectiveLaneDash(size: size, row: row, column: column, scroll: scroll)
             }
         }
+    }
+}
+
+private struct PerspectiveLaneDash: View {
+    var size: CGSize
+    var row: Int
+    var column: Int
+    var scroll: CGFloat
+
+    private var y: CGFloat {
+        size.height * (0.785 + CGFloat(row) * 0.095)
+    }
+
+    private var dashWidth: CGFloat {
+        size.width * (0.060 + CGFloat(row) * 0.018)
+    }
+
+    private var gap: CGFloat {
+        size.width * (0.115 + CGFloat(row) * 0.025)
+    }
+
+    private var dashHeight: CGFloat {
+        max(3, size.height * (0.009 + CGFloat(row) * 0.003))
+    }
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .fill(Color.white.opacity(0.82 - Double(row) * 0.06))
+            .frame(width: dashWidth, height: dashHeight)
+            .position(
+                x: -dashWidth + CGFloat(column) * (dashWidth + gap) - scroll * (1 + CGFloat(row) * 0.35),
+                y: y
+            )
     }
 }
 
