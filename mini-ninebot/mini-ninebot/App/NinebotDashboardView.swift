@@ -1311,7 +1311,7 @@ private struct VehicleControlHero: View {
 
             VehicleMotionScene(snapshot: snapshot)
                 .frame(maxWidth: .infinity)
-                .frame(height: 218)
+                .frame(height: 336)
 
             VStack(spacing: 12) {
                 BatteryProgressBar(value: snapshot.state.batteryFraction)
@@ -1396,6 +1396,7 @@ private struct RideWeatherSnapshot: Equatable {
     var temperatureC: Double?
     var windSpeedKmh: Double?
     var ultravioletIndex: Double?
+    var airQualityIndex: Double?
     var isDay: Bool
     var fetchedAt: Date
 
@@ -1406,6 +1407,7 @@ private struct RideWeatherSnapshot: Equatable {
             temperatureC: nil,
             windSpeedKmh: nil,
             ultravioletIndex: nil,
+            airQualityIndex: nil,
             isDay: (7...18).contains(hour),
             fetchedAt: Date()
         )
@@ -1527,9 +1529,40 @@ private final class RideWeatherProvider: NSObject, ObservableObject, CLLocationM
             temperatureC: current.temperature,
             windSpeedKmh: current.windSpeed,
             ultravioletIndex: current.uvIndex,
+            airQualityIndex: await fetchAirQuality(coordinate: coordinate),
             isDay: current.isDay == 1,
             fetchedAt: Date()
         )
+    }
+
+    private func fetchAirQuality(coordinate: CLLocationCoordinate2D) async -> Double? {
+        var components = URLComponents(string: "https://air-quality-api.open-meteo.com/v1/air-quality")!
+        components.queryItems = [
+            URLQueryItem(name: "latitude", value: String(format: "%.5f", coordinate.latitude)),
+            URLQueryItem(name: "longitude", value: String(format: "%.5f", coordinate.longitude)),
+            URLQueryItem(name: "current", value: "us_aqi"),
+            URLQueryItem(name: "timezone", value: "auto")
+        ]
+        guard let url = components.url else { return nil }
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode),
+              let payload = try? JSONDecoder().decode(OpenMeteoAirQualityResponse.self, from: data) else {
+            return nil
+        }
+        return payload.current.usAqi
+    }
+}
+
+private struct OpenMeteoAirQualityResponse: Decodable {
+    var current: Current
+
+    struct Current: Decodable {
+        var usAqi: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case usAqi = "us_aqi"
+        }
     }
 }
 
@@ -1613,31 +1646,92 @@ private struct RideWeatherCard: View {
     var snapshot: RideWeatherSnapshot
 
     var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: snapshot.condition.systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(snapshot.condition.isWet ? Color.cyan : Color.white)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(snapshot.condition.title)
-                    .font(.caption2.weight(.bold))
-                HStack(spacing: 5) {
-                    Text(snapshot.temperatureC.map { "\(Int($0.rounded()))°" } ?? "--°")
-                    Text("风 \(snapshot.windSpeedKmh.map { String(format: "%.0f", $0) } ?? "--")")
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Image(systemName: snapshot.condition.systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(snapshot.condition.isWet ? Color.cyan : Color.white)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("实时天气")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.66))
+                    Text(snapshot.condition.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
                 }
-                .font(.system(size: 9, weight: .medium, design: .rounded).monospacedDigit())
-                Text("UV \(snapshot.ultravioletIndex.map { String(format: "%.0f", $0) } ?? "--")")
-                    .font(.system(size: 9, weight: .medium, design: .rounded).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.72))
+                Spacer(minLength: 8)
+                Image(systemName: snapshot.isDay ? "sun.max.fill" : "moon.fill")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(snapshot.isDay ? Color.yellow : Color.orange.opacity(0.9))
             }
-            .foregroundStyle(.white)
+
+            Divider().overlay(.white.opacity(0.12))
+
+            weatherRow("thermometer.medium", "气温", snapshot.temperatureC.map { "\(Int($0.rounded()))°" } ?? "--")
+            weatherRow("wind", "风速", snapshot.windSpeedKmh.map { String(format: "%.0f km/h", $0) } ?? "--")
+            weatherRow("sun.max", "紫外线", snapshot.ultravioletIndex.map { String(format: "%.0f", $0) } ?? "--")
+
+            Divider().overlay(.white.opacity(0.12))
+
+            HStack(spacing: 8) {
+                Image(systemName: "aqi.medium")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.yellow)
+                Text("空气质量")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.78))
+                Spacer()
+                Text(snapshot.airQualityIndex.map { "\(aqiLabel($0)) \(Int($0.rounded()))" } ?? "--")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(aqiColor(snapshot.airQualityIndex))
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.14), lineWidth: 0.7))
-        .shadow(color: .black.opacity(0.30), radius: 14, x: 0, y: 5)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+        .frame(width: 148)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+        .background(Color.black.opacity(0.20), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 19, style: .continuous).stroke(.white.opacity(0.18), lineWidth: 0.8))
+        .shadow(color: .black.opacity(0.30), radius: 18, x: 0, y: 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("天气 \(snapshot.condition.title)，气温 \(snapshot.temperatureC.map { String(format: "%.0f", $0) } ?? "未知") 度，风速 \(snapshot.windSpeedKmh.map { String(format: "%.0f", $0) } ?? "未知") 公里每小时，紫外线 \(snapshot.ultravioletIndex.map { String(format: "%.0f", $0) } ?? "未知")")
+        .accessibilityLabel("天气 \(snapshot.condition.title)，气温 \(snapshot.temperatureC.map { String(format: "%.0f", $0) } ?? "未知") 度，风速 \(snapshot.windSpeedKmh.map { String(format: "%.0f", $0) } ?? "未知") 公里每小时，紫外线 \(snapshot.ultravioletIndex.map { String(format: "%.0f", $0) } ?? "未知")，空气质量 \(snapshot.airQualityIndex.map { String(format: "%.0f", $0) } ?? "未知")")
+    }
+
+    private func weatherRow(_ image: String, _ title: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: image)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.82))
+                .frame(width: 17)
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.72))
+            Spacer(minLength: 4)
+            Text(value)
+                .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundStyle(.white)
+        }
+    }
+}
+
+private func aqiLabel(_ value: Double) -> String {
+    switch value {
+    case ..<51: return "优"
+    case ..<101: return "良"
+    case ..<151: return "轻度"
+    case ..<201: return "中度"
+    case ..<301: return "重度"
+    default: return "严重"
+    }
+}
+
+private func aqiColor(_ value: Double?) -> Color {
+    guard let value else { return .white.opacity(0.75) }
+    switch value {
+    case ..<51: return Color.green
+    case ..<101: return Color.yellow
+    case ..<151: return Color.orange
+    default: return Color.red.opacity(0.88)
     }
 }
 
@@ -1646,22 +1740,12 @@ private struct VehicleMotionScene: View {
     @StateObject private var weatherProvider = RideWeatherProvider()
 
     private var mode: VehicleMotionSceneMode {
-        if snapshot.state.isCharging == true {
-            return .charging
-        }
-
+        if snapshot.state.isCharging == true { return .charging }
         if let rawStatus = snapshot.state.rawStatus {
             let movementKeys = ["isRiding", "riding", "isMoving", "moving", "inMotion", "driving"]
-            if movementKeys.contains(where: { rawStatus[$0]?.boolValue == true }) {
-                return .riding
-            }
+            if movementKeys.contains(where: { rawStatus[$0]?.boolValue == true }) { return .riding }
         }
-
-        // 九号接口经常没有实时速度字段；已上电且未锁定时视为当前骑行状态，
-        // 与主页的“滑动关锁”状态保持一致，避免错误地显示成纯静态卡片。
-        if snapshot.state.isPoweredOn == true && snapshot.state.isLocked != true {
-            return .riding
-        }
+        if snapshot.state.isPoweredOn == true && snapshot.state.isLocked != true { return .riding }
         return .parked
     }
 
@@ -1702,368 +1786,363 @@ private struct VehicleMotionScene: View {
     private var sceneAccessibilityLabel: String {
         switch mode {
         case .parked: return snapshot.state.isPoweredOn == true ? "车辆已停稳，已上电" : "车辆已停稳"
-        case .riding: return "车辆骑行画面"
-        case .charging: return "车辆充电画面"
+        case .riding: return "车辆骑行中，当前速度 \(snapshot.state.currentSpeedText)，电量 \(snapshot.state.batteryText)"
+        case .charging: return "车辆充电中，电量 \(snapshot.state.batteryText)，充电功率 \(snapshot.state.chargingPowerText)"
         }
     }
+}
+
+private enum VehicleSceneBackdropStyle: Equatable {
+    case parked
+    case riding
+    case charging
 }
 
 private struct VehicleSceneBackdrop: View {
     var size: CGSize
     var phase: TimeInterval
-    var animatesRoadAndCity: Bool
+    var style: VehicleSceneBackdropStyle
     var weather: RideWeatherSnapshot
 
     var body: some View {
         ZStack {
-            RideSkyGradient(isDay: weather.isDay, condition: weather.condition)
-
-            if !weather.isDay && weather.condition == .clear {
-                NightSkyDetails(size: size, phase: phase)
+            if style == .charging {
+                ChargingGarageBackdrop(isDay: weather.isDay, size: size)
+            } else {
+                UrbanPhotoBackdrop(isDay: weather.isDay, condition: weather.condition, style: style, size: size, phase: phase)
+                RoadPerspectiveLayer(size: size, phase: phase, animates: style == .riding)
             }
 
-            if weather.condition.isWet {
-                WeatherRainLayer(size: size, phase: phase)
-            }
-
-            RealisticBusinessDistrict(
-                size: size,
-                phase: phase,
-                isDay: weather.isDay,
-                animates: animatesRoadAndCity
-            )
-
-            RealisticAsphaltRoad(size: size, phase: phase, animates: animatesRoadAndCity)
-
-            VStack {
-                HStack {
-                    Spacer(minLength: 0)
-                    RideWeatherCard(snapshot: weather)
-                }
-                .padding(.top, 13)
-                .padding(.trailing, 12)
-                Spacer(minLength: 0)
-            }
+            if !weather.isDay && style != .charging { NightAtmosphere(size: size, phase: phase) }
+            if weather.condition.isWet { RainLayer(size: size, phase: phase) }
         }
         .frame(width: size.width, height: size.height)
         .clipped()
     }
 }
 
-private struct RideSkyGradient: View {
+private struct UrbanPhotoBackdrop: View {
     var isDay: Bool
     var condition: RideWeatherCondition
+    var style: VehicleSceneBackdropStyle
+    var size: CGSize
+    var phase: TimeInterval
 
     var body: some View {
-        let dayColors: [Color] = condition.isWet
-            ? [Color(red: 0.20, green: 0.27, blue: 0.34), Color(red: 0.39, green: 0.48, blue: 0.53), Color(red: 0.28, green: 0.31, blue: 0.32)]
-            : [Color(red: 0.14, green: 0.35, blue: 0.58), Color(red: 0.46, green: 0.66, blue: 0.78), Color(red: 0.70, green: 0.70, blue: 0.64)]
-        let nightColors: [Color] = condition.isWet
-            ? [Color(red: 0.008, green: 0.016, blue: 0.040), Color(red: 0.025, green: 0.060, blue: 0.115), Color(red: 0.11, green: 0.14, blue: 0.17)]
-            : [Color(red: 0.006, green: 0.014, blue: 0.042), Color(red: 0.018, green: 0.050, blue: 0.115), Color(red: 0.12, green: 0.15, blue: 0.19)]
+        ZStack(alignment: .bottom) {
+            LinearGradient(
+                colors: isDay
+                    ? [Color(red: 0.34, green: 0.52, blue: 0.65), Color(red: 0.72, green: 0.78, blue: 0.77), Color(red: 0.22, green: 0.27, blue: 0.30)]
+                    : [Color(red: 0.005, green: 0.015, blue: 0.040), Color(red: 0.018, green: 0.075, blue: 0.145), Color(red: 0.09, green: 0.13, blue: 0.16)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
 
-        LinearGradient(
-            colors: isDay ? dayColors : nightColors,
-            startPoint: .top,
-            endPoint: .bottom
-        )
+            if condition == .cloudy || condition == .partlyCloudy || condition.isWet {
+                CloudBank(size: size, phase: phase, isDay: isDay)
+                    .opacity(condition.isWet ? 0.78 : 0.48)
+            }
+
+            WaterfrontGlow(size: size, isDay: isDay)
+
+            HStack(alignment: .bottom, spacing: max(4, size.width * 0.014)) {
+                ForEach(0..<17, id: \.self) { index in
+                    PhotoBuilding(
+                        index: index,
+                        width: size.width * (0.045 + CGFloat(index % 3) * 0.014),
+                        height: size.height * (0.18 + CGFloat((index * 23) % 8) * 0.028),
+                        isDay: isDay,
+                        blur: style == .riding ? 2.2 : 0.8
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .offset(x: style == .riding ? CGFloat(sin(phase * 0.26)) * 5 : 0, y: -size.height * 0.29)
+
+            Rectangle()
+                .fill(LinearGradient(colors: [.clear, Color.black.opacity(isDay ? 0.28 : 0.68)], startPoint: .top, endPoint: .bottom))
+                .frame(height: size.height * 0.54)
+        }
     }
 }
 
-private struct NightSkyDetails: View {
+private struct PhotoBuilding: View {
+    var index: Int
+    var width: CGFloat
+    var height: CGFloat
+    var isDay: Bool
+    var blur: CGFloat
+
+    var body: some View {
+        VStack(spacing: 0) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: isDay
+                            ? [Color(red: 0.25, green: 0.36, blue: 0.40).opacity(0.75), Color(red: 0.10, green: 0.17, blue: 0.21).opacity(0.92)]
+                            : [Color(red: 0.015, green: 0.035, blue: 0.064), Color(red: 0.006, green: 0.012, blue: 0.024)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay {
+                    VStack(spacing: max(4, height * 0.032)) {
+                        ForEach(0..<6, id: \.self) { row in
+                            HStack(spacing: max(3, width * 0.12)) {
+                                ForEach(0..<3, id: \.self) { column in
+                                    RoundedRectangle(cornerRadius: 0.8)
+                                        .fill(windowColor(row: row, column: column))
+                                        .frame(width: max(2, width * 0.085), height: max(1.5, height * 0.014))
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, width * 0.13)
+                    .padding(.vertical, height * 0.06)
+                    .opacity(isDay ? 0.42 : 0.9)
+                }
+        }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+        .blur(radius: blur)
+        .shadow(color: .black.opacity(isDay ? 0.10 : 0.48), radius: 8, x: 0, y: 5)
+    }
+
+    private func windowColor(row: Int, column: Int) -> Color {
+        if isDay { return Color.white.opacity(((row + column + index) % 4 == 0) ? 0.62 : 0.18) }
+        return ((row * 3 + column + index) % 4 == 0) ? Color.orange.opacity(0.86) : Color.blue.opacity(0.22)
+    }
+}
+
+private struct WaterfrontGlow: View {
+    var size: CGSize
+    var isDay: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(isDay ? Color.white.opacity(0.22) : Color.blue.opacity(0.10)).frame(height: 1)
+            Rectangle().fill(isDay ? Color.blue.opacity(0.22) : Color.blue.opacity(0.24)).frame(height: size.height * 0.09)
+            Rectangle().fill(isDay ? Color.black.opacity(0.10) : Color.black.opacity(0.35)).frame(height: size.height * 0.03)
+        }
+        .frame(maxWidth: .infinity)
+        .offset(y: -size.height * 0.28)
+    }
+}
+
+private struct CloudBank: View {
+    var size: CGSize
+    var phase: TimeInterval
+    var isDay: Bool
+
+    var body: some View {
+        HStack(spacing: -size.width * 0.06) {
+            ForEach(0..<5, id: \.self) { index in
+                Ellipse()
+                    .fill(isDay ? Color.white.opacity(0.16) : Color.white.opacity(0.05))
+                    .frame(width: size.width * (0.18 + CGFloat(index % 2) * 0.08), height: size.height * (0.08 + CGFloat(index % 3) * 0.018))
+                    .blur(radius: 10)
+            }
+        }
+        .offset(x: CGFloat(sin(phase * 0.08)) * 14, y: -size.height * 0.68)
+    }
+}
+
+private struct NightAtmosphere: View {
     var size: CGSize
     var phase: TimeInterval
 
     var body: some View {
         ZStack {
-            ForEach(0..<12, id: \.self) { index in
+            ForEach(0..<14, id: \.self) { index in
                 Circle()
-                    .fill(Color.white.opacity(0.30 + Double(index % 3) * 0.10))
-                    .frame(width: index % 4 == 0 ? 2.4 : 1.4, height: index % 4 == 0 ? 2.4 : 1.4)
-                    .position(
-                        x: size.width * (0.06 + CGFloat((index * 17) % 88) / 100),
-                        y: size.height * (0.08 + CGFloat((index * 13) % 32) / 100)
-                    )
+                    .fill(Color.white.opacity(0.20 + Double(index % 3) * 0.08))
+                    .frame(width: index % 4 == 0 ? 2.4 : 1.3, height: index % 4 == 0 ? 2.4 : 1.3)
+                    .position(x: size.width * (0.04 + CGFloat((index * 17) % 92) / 100), y: size.height * (0.06 + CGFloat((index * 13) % 40) / 100))
             }
-
             Circle()
-                .fill(Color.white.opacity(0.13))
-                .frame(width: size.height * 0.20)
-                .blur(radius: 14)
-                .offset(x: size.width * 0.33, y: -size.height * 0.27)
-
+                .fill(Color.orange.opacity(0.30))
+                .frame(width: size.height * 0.11)
+                .blur(radius: 13)
+                .offset(x: size.width * 0.34, y: -size.height * 0.34)
             Circle()
-                .fill(Color(red: 0.86, green: 0.91, blue: 0.98).opacity(0.92))
-                .frame(width: size.height * 0.12)
-                .overlay(Circle().fill(Color.white.opacity(0.22)).blur(radius: 2))
-                .offset(x: size.width * 0.33, y: -size.height * 0.27)
-                .scaleEffect(1 + CGFloat(sin(phase * 0.18)) * 0.015)
+                .fill(Color(red: 0.90, green: 0.93, blue: 0.98).opacity(0.88))
+                .frame(width: size.height * 0.075)
+                .offset(x: size.width * 0.34, y: -size.height * 0.34)
+                .scaleEffect(1 + CGFloat(sin(phase * 0.18)) * 0.02)
         }
         .allowsHitTesting(false)
     }
 }
 
-private struct RealisticBusinessDistrict: View {
+private struct RoadPerspectiveLayer: View {
     var size: CGSize
     var phase: TimeInterval
-    var isDay: Bool
     var animates: Bool
 
     var body: some View {
-        GeometryReader { proxy in
-            let drift = animates ? CGFloat(sin(phase * 0.24)) * 2.0 : 0
-
-            ZStack(alignment: .bottom) {
-                HStack(alignment: .bottom, spacing: proxy.size.width * 0.018) {
-                    ForEach(0..<11, id: \.self) { index in
-                        GlassOfficeTower(
-                            index: index,
-                            width: max(25, proxy.size.width * (0.068 + CGFloat(index % 3) * 0.012)),
-                            height: proxy.size.height * (0.18 + CGFloat((index * 19) % 7) * 0.020),
-                            isDay: isDay,
-                            distant: true
-                        )
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .offset(x: drift * 0.35, y: -proxy.size.height * 0.33)
-
-                HStack(alignment: .bottom, spacing: proxy.size.width * 0.025) {
-                    ForEach(0..<7, id: \.self) { index in
-                        GlassOfficeTower(
-                            index: index + 11,
-                            width: max(42, proxy.size.width * (0.115 + CGFloat(index % 2) * 0.018)),
-                            height: proxy.size.height * (0.26 + CGFloat((index * 13) % 5) * 0.030),
-                            isDay: isDay,
-                            distant: false
-                        )
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .offset(x: drift, y: -proxy.size.height * 0.185)
-
-                UrbanLandscape(size: proxy.size, isDay: isDay)
-                StreetLampRow(size: proxy.size, phase: phase, isDay: isDay)
-            }
-        }
-        .allowsHitTesting(false)
-    }
-}
-
-private struct GlassOfficeTower: View {
-    let index: Int
-    let width: CGFloat
-    let height: CGFloat
-    let isDay: Bool
-    let distant: Bool
-
-    var body: some View {
-        let glass = isDay
-            ? LinearGradient(
-                colors: [Color(red: 0.08, green: 0.16, blue: 0.22).opacity(distant ? 0.58 : 0.94), Color(red: 0.43, green: 0.62, blue: 0.70).opacity(distant ? 0.44 : 0.78), Color(red: 0.06, green: 0.12, blue: 0.18).opacity(distant ? 0.62 : 0.92)],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            : LinearGradient(
-                colors: [Color(red: 0.008, green: 0.020, blue: 0.045), Color(red: 0.045, green: 0.085, blue: 0.135), Color(red: 0.008, green: 0.018, blue: 0.042)],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-
-        VStack(spacing: 0) {
+        ZStack(alignment: .top) {
             Rectangle()
-                .fill(Color.white.opacity(isDay ? 0.13 : 0.05))
-                .frame(height: max(1.5, height * 0.014))
+                .fill(LinearGradient(colors: [Color(red: 0.06, green: 0.075, blue: 0.09), Color.black.opacity(0.96)], startPoint: .top, endPoint: .bottom))
+                .frame(height: size.height * 0.38)
+                .offset(y: size.height * 0.67)
 
-            ZStack {
-                RoundedRectangle(cornerRadius: distant ? 2 : 3, style: .continuous)
-                    .fill(glass)
+            Rectangle()
+                .fill(Color.white.opacity(0.14))
+                .frame(height: 1)
+                .offset(y: size.height * 0.67)
 
-                HStack(spacing: max(6, width * 0.075)) {
-                    ForEach(0..<3, id: \.self) { _ in
-                        Rectangle()
-                            .fill(Color.white.opacity(isDay ? 0.12 : 0.07))
-                            .frame(width: 0.8)
-                    }
+            ForEach(0..<3, id: \.self) { row in
+                ForEach(0..<6, id: \.self) { column in
+                    let dashWidth = size.width * (0.060 + CGFloat(row) * 0.022)
+                    let gap = size.width * (0.15 + CGFloat(row) * 0.025)
+                    let scroll = animates ? CGFloat((phase * 28).truncatingRemainder(dividingBy: 28)) : 0
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Color.white.opacity(0.80 - Double(row) * 0.08))
+                        .frame(width: dashWidth, height: max(3, size.height * (0.008 + CGFloat(row) * 0.003)))
+                        .position(x: -dashWidth + CGFloat(column) * (dashWidth + gap) - scroll * (1 + CGFloat(row) * 0.35), y: size.height * (0.75 + CGFloat(row) * 0.09))
                 }
-                .padding(.horizontal, width * 0.08)
-
-                VStack(spacing: max(4, height * 0.034)) {
-                    ForEach(0..<7, id: \.self) { row in
-                        HStack(spacing: max(3, width * 0.055)) {
-                            ForEach(0..<4, id: \.self) { column in
-                                Rectangle()
-                                    .fill(windowColor(row: row, column: column))
-                                    .frame(width: max(3, width * (distant ? 0.052 : 0.061)), height: max(2, height * 0.020))
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, width * 0.10)
-                .padding(.vertical, height * 0.05)
             }
-            .frame(height: height * 0.94)
-        }
-        .frame(width: width, height: height, alignment: .bottom)
-        .clipShape(RoundedRectangle(cornerRadius: distant ? 2 : 3, style: .continuous))
-        .shadow(color: .black.opacity(isDay ? 0.15 : 0.40), radius: distant ? 2 : 4, x: 0, y: 3)
-    }
 
-    private func windowColor(row: Int, column: Int) -> Color {
-        if !isDay {
-            return ((row * 3 + column + index) % 5 == 0)
-                ? Color(red: 1.0, green: 0.68, blue: 0.25).opacity(0.88)
-                : Color(red: 0.22, green: 0.39, blue: 0.50).opacity(0.34)
-        }
-        return ((row + column + index) % 4 == 0)
-            ? Color.white.opacity(0.40)
-            : Color(red: 0.70, green: 0.86, blue: 0.91).opacity(0.28)
-    }
-}
-
-private struct UrbanLandscape: View {
-    var size: CGSize
-    var isDay: Bool
-
-    var body: some View {
-        HStack(alignment: .bottom, spacing: size.width * 0.075) {
-            ForEach(0..<8, id: \.self) { index in
-                ZStack(alignment: .bottom) {
+            if animates {
+                ForEach(0..<8, id: \.self) { index in
                     Capsule()
-                        .fill(Color(red: 0.13, green: 0.09, blue: 0.06).opacity(0.85))
-                        .frame(width: 2, height: size.height * (0.055 + CGFloat(index % 3) * 0.012))
-                    Ellipse()
-                        .fill(isDay ? Color(red: 0.06, green: 0.18, blue: 0.11).opacity(0.90) : Color(red: 0.018, green: 0.055, blue: 0.038).opacity(0.95))
-                        .frame(width: size.width * (0.060 + CGFloat(index % 2) * 0.014), height: size.height * 0.10)
-                        .offset(y: -size.height * 0.035)
+                        .fill(Color.white.opacity(0.09 + Double(index % 3) * 0.04))
+                        .frame(width: size.width * CGFloat(0.04 + (index % 4) * 0.018), height: 2)
+                        .offset(x: -size.width * 0.45 + CGFloat((index * 49) % 120) / 100 * size.width + CGFloat((phase * 44).truncatingRemainder(dividingBy: 80)), y: size.height * (0.59 + CGFloat(index % 4) * 0.06))
                 }
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-        .padding(.leading, size.width * 0.04)
-        .padding(.bottom, size.height * 0.18)
-    }
-}
-
-private struct StreetLampRow: View {
-    var size: CGSize
-    var phase: TimeInterval
-    var isDay: Bool
-
-    var body: some View {
-        HStack {
-            StreetLamp(size: size, isDay: isDay, phase: phase)
-                .offset(x: size.width * 0.07)
-            Spacer()
-            StreetLamp(size: size, isDay: isDay, phase: phase)
-                .scaleEffect(0.78)
-                .offset(x: -size.width * 0.14)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .padding(.bottom, size.height * 0.205)
-    }
-}
-
-private struct StreetLamp: View {
-    var size: CGSize
-    var isDay: Bool
-    var phase: TimeInterval
-
-    var body: some View {
-        let lightOpacity = isDay ? 0.16 : 0.82 + 0.06 * sin(phase * 2.0)
-
-        ZStack(alignment: .topLeading) {
-            Capsule()
-                .fill(Color.black.opacity(isDay ? 0.52 : 0.76))
-                .frame(width: 2.5, height: size.height * 0.23)
-            Capsule()
-                .fill(Color.black.opacity(isDay ? 0.52 : 0.76))
-                .frame(width: size.width * 0.070, height: 2.5)
-                .offset(x: size.width * 0.035, y: -size.height * 0.112)
-            Circle()
-                .fill(isDay ? Color.white.opacity(0.10) : Color.orange.opacity(lightOpacity))
-                .frame(width: isDay ? 4 : 7, height: isDay ? 4 : 7)
-                .blur(radius: isDay ? 0 : 4)
-                .offset(x: size.width * 0.068, y: -size.height * 0.108)
-        }
-    }
-}
-
-private struct RealisticAsphaltRoad: View {
-    var size: CGSize
-    var phase: TimeInterval
-    var animates: Bool
-
-    var body: some View {
-        GeometryReader { proxy in
-            let scroll = animates ? CGFloat((phase * 26).truncatingRemainder(dividingBy: 26)) : 0
-            ZStack(alignment: .top) {
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color(red: 0.045, green: 0.050, blue: 0.057), Color(red: 0.008, green: 0.010, blue: 0.014)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .frame(height: proxy.size.height * 0.34)
-                    .offset(y: proxy.size.height * 0.70)
-
-                Rectangle()
-                    .fill(Color.white.opacity(0.13))
-                    .frame(height: 1)
-                    .offset(y: proxy.size.height * 0.70)
-
-                PerspectiveLaneMarkings(size: proxy.size, scroll: scroll)
             }
         }
         .allowsHitTesting(false)
     }
 }
 
-private struct PerspectiveLaneMarkings: View {
+private struct RainLayer: View {
     var size: CGSize
-    var scroll: CGFloat
+    var phase: TimeInterval
 
     var body: some View {
-        ForEach(0..<3, id: \.self) { row in
-            ForEach(0..<6, id: \.self) { column in
-                PerspectiveLaneDash(size: size, row: row, column: column, scroll: scroll)
+        ForEach(0..<26, id: \.self) { index in
+            let progress = (phase * 0.72 + Double(index) * 0.17).truncatingRemainder(dividingBy: 1)
+            Capsule()
+                .fill(Color.white.opacity(0.12))
+                .frame(width: 1, height: size.height * 0.035)
+                .rotationEffect(.degrees(14))
+                .position(x: size.width * (0.02 + CGFloat((index * 29) % 96) / 100), y: -size.height * 0.05 + size.height * CGFloat(progress) * 0.8)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct VehicleGlassCard<Content: View>: View {
+    var content: Content
+
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    var body: some View {
+        content
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+            .background(Color.black.opacity(0.20), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).stroke(.white.opacity(0.17), lineWidth: 0.8))
+            .shadow(color: .black.opacity(0.22), radius: 14, x: 0, y: 8)
+    }
+}
+
+private struct VehicleSceneHeader: View {
+    var title: String
+    var subtitle: String?
+    var tint: Color = .white
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 9) {
+                Text(title)
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                Circle()
+                    .fill(tint)
+                    .frame(width: 8, height: 8)
+                    .shadow(color: tint.opacity(0.9), radius: 7)
+            }
+            if let subtitle {
+                Text(subtitle)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.67))
+            }
+            Capsule()
+                .fill(tint)
+                .frame(width: 42, height: 4)
+                .shadow(color: tint.opacity(0.55), radius: 5)
+        }
+    }
+}
+
+private struct VehicleMetricCard: View {
+    var title: String
+    var value: String
+    var icon: String
+    var accent: Color = .white
+
+    var body: some View {
+        VehicleGlassCard {
+            HStack(spacing: 11) {
+                Image(systemName: icon)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(accent)
+                    .frame(width: 29)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.68))
+                    Text(value)
+                        .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
             }
         }
     }
 }
 
-private struct PerspectiveLaneDash: View {
-    var size: CGSize
-    var row: Int
-    var column: Int
-    var scroll: CGFloat
-
-    private var y: CGFloat {
-        size.height * (0.785 + CGFloat(row) * 0.095)
-    }
-
-    private var dashWidth: CGFloat {
-        size.width * (0.060 + CGFloat(row) * 0.018)
-    }
-
-    private var gap: CGFloat {
-        size.width * (0.115 + CGFloat(row) * 0.025)
-    }
-
-    private var dashHeight: CGFloat {
-        max(3, size.height * (0.009 + CGFloat(row) * 0.003))
-    }
+private struct VehicleBatteryCard: View {
+    var state: NinebotVehicleState
+    var title: String = "剩余电量"
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 2, style: .continuous)
-            .fill(Color.white.opacity(0.82 - Double(row) * 0.06))
-            .frame(width: dashWidth, height: dashHeight)
-            .position(
-                x: -dashWidth + CGFloat(column) * (dashWidth + gap) - scroll * (1 + CGFloat(row) * 0.35),
-                y: y
-            )
+        VehicleGlassCard {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle().stroke(Color.white.opacity(0.18), lineWidth: 5)
+                        Circle()
+                            .trim(from: 0, to: state.batteryFraction)
+                            .stroke(Color.teslaGreen, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color.teslaGreen)
+                    }
+                    .frame(width: 35, height: 35)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.68))
+                        Text(state.batteryText)
+                            .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(.white)
+                    }
+                }
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.white.opacity(0.18))
+                        Capsule().fill(Color.teslaGreen).frame(width: proxy.size.width * state.batteryFraction)
+                    }
+                }
+                .frame(height: 5)
+            }
+        }
     }
 }
 
@@ -2074,25 +2153,40 @@ private struct VehicleParkedScene: View {
     var phase: TimeInterval
 
     var body: some View {
-        ZStack {
-            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: false, weather: weather)
+        ZStack(alignment: .topLeading) {
+            VehicleSceneBackdrop(size: size, phase: phase, style: .parked, weather: weather)
+
+            VehicleSceneHeader(
+                title: snapshot.state.isPoweredOn == true ? "车辆已停稳" : "车辆已停稳",
+                subtitle: snapshot.state.isPoweredOn == true ? "已上电 · 车辆状态正常" : "已锁定 · 等待下一次刷新",
+                tint: snapshot.state.isPoweredOn == true ? Color.teslaGreen : .white
+            )
+            .padding(.leading, 20)
+            .padding(.top, 22)
+
+            RideWeatherCard(snapshot: weather)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.top, 17)
+                .padding(.trailing, 15)
 
             Ellipse()
-                .fill(Color.black.opacity(0.28))
-                .frame(width: size.width * 0.55, height: size.height * 0.06)
-                .blur(radius: 7)
-                .offset(x: size.width * 0.03, y: size.height * 0.30)
+                .fill(Color.black.opacity(0.38))
+                .frame(width: size.width * 0.56, height: size.height * 0.065)
+                .blur(radius: 9)
+                .offset(x: size.width * 0.12, y: size.height * 0.82)
 
-            VehicleImage(urlString: snapshot.vehicle.imageURLString, sn: snapshot.vehicle.sn, size: min(size.width * 0.76, 270), showsBackground: false)
-                .shadow(color: .black.opacity(0.30), radius: 12, x: 0, y: 8)
-                .offset(x: size.width * 0.03, y: size.height * 0.03)
+            VehicleImage(urlString: snapshot.vehicle.imageURLString, sn: snapshot.vehicle.sn, size: min(size.width * 0.76, 285), showsBackground: false)
+                .shadow(color: .black.opacity(0.42), radius: 15, x: 0, y: 10)
+                .position(x: size.width * 0.50, y: size.height * 0.70)
 
-            VehicleSceneBadge(
-                title: snapshot.state.isPoweredOn == true ? "车辆已停稳 · 已上电" : "车辆已停稳",
-                icon: snapshot.state.isPoweredOn == true ? "power" : "lock.fill",
-                tint: snapshot.state.isPoweredOn == true ? .orange : .white
-            )
-            .position(x: size.width * 0.22, y: size.height * 0.14)
+            Text("实时数据 · \(snapshot.state.batteryText)")
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.70))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(.black.opacity(0.25), in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.13), lineWidth: 0.7))
+                .position(x: size.width * 0.17, y: size.height * 0.88)
         }
         .frame(width: size.width, height: size.height)
     }
@@ -2104,67 +2198,85 @@ private struct VehicleRidingScene: View {
     var size: CGSize
     var phase: TimeInterval
 
-    var body: some View {
-        let bob = CGFloat(sin(phase * 6.4)) * 1.1
-        let drift = CGFloat(sin(phase * 1.8)) * 1.5
+    private var ride: NinebotRideRecord? { snapshot.state.rides.first }
 
-        return ZStack {
-            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: true, weather: weather)
-            VehicleMotionStreaks(size: size, phase: phase)
-            WindRibbonLayer(size: size, phase: phase)
+    var body: some View {
+        let bob = CGFloat(sin(phase * 6.2)) * 1.5
+        let drift = CGFloat(sin(phase * 1.7)) * 2.0
+
+        return ZStack(alignment: .topLeading) {
+            VehicleSceneBackdrop(size: size, phase: phase, style: .riding, weather: weather)
+            VehicleSceneHeader(title: "骑行中", subtitle: "实时车辆数据", tint: Color.teslaGreen)
+                .padding(.leading, 20)
+                .padding(.top, 18)
+
+            VStack(spacing: 8) {
+                VehicleMetricCard(title: "当前速度", value: snapshot.state.currentSpeedText, icon: "speedometer", accent: Color.teslaGreen)
+                VehicleMetricCard(title: "骑行里程", value: rideMileageText, icon: "point.topleft.down.to.point.bottomright.curvepath", accent: .white)
+                VehicleMetricCard(title: "骑行时间", value: formatDuration(ride?.durationMinutes), icon: "clock", accent: .white)
+                VehicleBatteryCard(state: snapshot.state)
+            }
+            .frame(width: min(size.width * 0.31, 132))
+            .padding(.leading, 15)
+            .padding(.top, 69)
+
+            RideWeatherCard(snapshot: weather)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.top, 17)
+                .padding(.trailing, 15)
 
             Ellipse()
-                .fill(Color.black.opacity(0.34))
+                .fill(Color.black.opacity(0.42))
                 .frame(width: size.width * 0.52, height: size.height * 0.06)
-                .blur(radius: 6)
-                .offset(x: size.width * 0.05, y: size.height * 0.30)
+                .blur(radius: 8)
+                .offset(x: size.width * 0.24, y: size.height * 0.83)
 
-            VehicleImage(urlString: snapshot.vehicle.imageURLString, sn: snapshot.vehicle.sn, size: min(size.width * 0.76, 270), showsBackground: false)
-                .shadow(color: .black.opacity(0.36), radius: 11, x: 0, y: 7)
-                .offset(x: size.width * 0.05 + drift, y: size.height * 0.025 + bob)
+            VehicleImage(urlString: snapshot.vehicle.imageURLString, sn: snapshot.vehicle.sn, size: min(size.width * 0.67, 272), showsBackground: false)
+                .shadow(color: .black.opacity(0.45), radius: 14, x: 0, y: 10)
+                .offset(x: size.width * 0.19 + drift, y: size.height * 0.28 + bob)
 
-            VehicleSceneBadge(title: "骑行中", icon: "figure.outdoor.cycle", tint: Color.white)
-                .position(x: size.width * 0.16, y: size.height * 0.14)
+            VehicleRideRouteCard(phase: phase)
+                .frame(width: min(size.width * 0.29, 125))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .padding(.trailing, 15)
+                .padding(.bottom, 16)
         }
         .frame(width: size.width, height: size.height)
     }
-}
 
-private struct VehicleMotionStreaks: View {
-    var size: CGSize
-    var phase: TimeInterval
-
-    var body: some View {
-        ForEach(0..<9, id: \.self) { index in
-            let progress = (phase * 0.42 + Double(index) * 0.13).truncatingRemainder(dividingBy: 1)
-            Capsule()
-                .fill(Color.white.opacity(0.12 + Double(index % 2) * 0.08))
-                .frame(width: size.width * (0.025 + CGFloat(progress) * 0.045), height: 2)
-                .rotationEffect(.degrees(-8))
-                .offset(x: size.width * (-0.42 + CGFloat(index % 4) * 0.23), y: size.height * (0.53 + CGFloat(progress) * 0.25))
-        }
+    private var rideMileageText: String {
+        guard let mileage = ride?.mileage ?? snapshot.state.lastMileage else { return "-- km" }
+        return "\(String(format: "%.1f", mileage)) km"
     }
 }
 
-private struct WindRibbonLayer: View {
-    var size: CGSize
+private struct VehicleRideRouteCard: View {
     var phase: TimeInterval
 
     var body: some View {
-        ForEach(0..<4, id: \.self) { index in
-            Path { path in
-                let y = size.height * (0.33 + CGFloat(index) * 0.075)
-                path.move(to: CGPoint(x: size.width * 0.03, y: y))
-                path.addCurve(
-                    to: CGPoint(x: size.width * 0.30, y: y - 3),
-                    control1: CGPoint(x: size.width * 0.11, y: y - 12),
-                    control2: CGPoint(x: size.width * 0.20, y: y + 9)
-                )
+        VehicleGlassCard {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("行驶轨迹")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.72))
+                GeometryReader { proxy in
+                    Path { path in
+                        path.move(to: CGPoint(x: 3, y: proxy.size.height * 0.72))
+                        path.addCurve(to: CGPoint(x: proxy.size.width * 0.42, y: proxy.size.height * 0.36), control1: CGPoint(x: proxy.size.width * 0.16, y: proxy.size.height * 0.62), control2: CGPoint(x: proxy.size.width * 0.18, y: proxy.size.height * 0.84))
+                        path.addCurve(to: CGPoint(x: proxy.size.width - 4, y: proxy.size.height * 0.25), control1: CGPoint(x: proxy.size.width * 0.57, y: proxy.size.height * 0.10), control2: CGPoint(x: proxy.size.width * 0.66, y: proxy.size.height * 0.54))
+                    }
+                    .stroke(Color.teslaGreen, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    .shadow(color: Color.teslaGreen.opacity(0.60), radius: 4)
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 7, height: 7)
+                        .shadow(color: Color.teslaGreen, radius: 6)
+                        .position(x: proxy.size.width - 4, y: proxy.size.height * 0.25)
+                }
+                .frame(height: 42)
             }
-            .trim(from: max(0, (phase * 0.22 + Double(index) * 0.18).truncatingRemainder(dividingBy: 1) - 0.25), to: 1)
-            .stroke(.white.opacity(0.18), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
         }
-        .allowsHitTesting(false)
+        .opacity(0.95 + 0.05 * sin(phase * 2.0))
     }
 }
 
@@ -2175,79 +2287,105 @@ private struct VehicleChargingScene: View {
     var phase: TimeInterval
 
     var body: some View {
-        let pulse = 0.78 + 0.22 * (0.5 + 0.5 * sin(phase * 4.0))
+        let pulse = 0.76 + 0.24 * (0.5 + 0.5 * sin(phase * 4.2))
 
-        return ZStack {
-            VehicleSceneBackdrop(size: size, phase: phase, animatesRoadAndCity: false, weather: weather)
+        return ZStack(alignment: .topLeading) {
+            VehicleSceneBackdrop(size: size, phase: phase, style: .charging, weather: weather)
+
+            VehicleSceneHeader(title: snapshot.state.isFullyCharged ? "充电完成" : "正在充电", subtitle: "充电中 · 预计 \(snapshot.state.estimatedFullChargeTimeText) 后充满", tint: Color.teslaGreen)
+                .padding(.leading, 20)
+                .padding(.top, 18)
+
+            VStack(spacing: 8) {
+                VehicleBatteryCard(state: snapshot.state, title: "当前电量")
+                VehicleMetricCard(title: "预计充满", value: snapshot.state.estimatedFullChargeClockText, icon: "clock.badge.checkmark", accent: Color.teslaGreen)
+                VehicleMetricCard(title: "充电功率", value: snapshot.state.chargingPowerText, icon: "waveform.path.ecg", accent: Color.teslaGreen)
+                VehicleMetricCard(title: "电池温度", value: snapshot.state.batteryTemperatureText, icon: "thermometer.medium", accent: Color.teslaGreen)
+            }
+            .frame(width: min(size.width * 0.31, 132))
+            .padding(.leading, 15)
+            .padding(.top, 70)
 
             Ellipse()
-                .fill(Color.black.opacity(0.31))
-                .frame(width: size.width * 0.53, height: size.height * 0.06)
-                .blur(radius: 7)
-                .offset(x: -size.width * 0.02, y: size.height * 0.30)
+                .fill(Color.black.opacity(0.36))
+                .frame(width: size.width * 0.54, height: size.height * 0.07)
+                .blur(radius: 8)
+                .offset(x: size.width * 0.27, y: size.height * 0.82)
+
+            VehicleImage(urlString: snapshot.vehicle.imageURLString, sn: snapshot.vehicle.sn, size: min(size.width * 0.60, 250), showsBackground: false)
+                .shadow(color: .black.opacity(0.44), radius: 14, x: 0, y: 9)
+                .position(x: size.width * 0.53, y: size.height * 0.67)
 
             VehicleChargingCable(size: size, phase: phase)
+                .opacity(pulse)
 
-            VehicleImage(urlString: snapshot.vehicle.imageURLString, sn: snapshot.vehicle.sn, size: min(size.width * 0.70, 256), showsBackground: false)
-                .shadow(color: .black.opacity(0.34), radius: 12, x: 0, y: 8)
-                .offset(x: -size.width * 0.07, y: size.height * 0.03)
+            VehicleChargePillar(pulse: pulse)
+                .frame(width: size.width * 0.13, height: size.height * 0.48)
+                .position(x: size.width * 0.84, y: size.height * 0.45)
 
-            VehicleChargePillar(isAnimating: true, pulse: pulse)
-                .frame(width: size.width * 0.16, height: size.height * 0.60)
-                .position(x: size.width * 0.84, y: size.height * 0.62)
-
-            VehicleSceneBadge(title: snapshot.state.isFullyCharged ? "已充满" : "充电中", icon: "bolt.fill", tint: Color.teslaGreen)
-                .position(x: size.width * 0.17, y: size.height * 0.14)
+            ChargingSteps(active: snapshot.state.isFullyCharged ? 3 : 2)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .padding(.horizontal, 15)
+                .padding(.bottom, 12)
         }
         .frame(width: size.width, height: size.height)
     }
 }
 
-private struct VehicleSceneBadge: View {
-    var title: String
-    var icon: String
-    var tint: Color
+private struct ChargingGarageBackdrop: View {
+    var isDay: Bool
+    var size: CGSize
 
     var body: some View {
-        Label(title, systemImage: icon)
-            .font(.system(size: 11, weight: .semibold, design: .rounded))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background(.black.opacity(0.28), in: Capsule())
-            .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.7))
+        ZStack {
+            LinearGradient(colors: isDay ? [Color(red: 0.78, green: 0.80, blue: 0.78), Color(red: 0.38, green: 0.42, blue: 0.44)] : [Color(red: 0.025, green: 0.055, blue: 0.11), Color(red: 0.18, green: 0.20, blue: 0.22)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(isDay ? Color.blue.opacity(0.22) : Color.blue.opacity(0.38))
+                    .frame(width: size.width * 0.43)
+                    .overlay(alignment: .bottom) {
+                        Rectangle().fill(isDay ? Color.green.opacity(0.20) : Color.black.opacity(0.50)).frame(height: size.height * 0.30)
+                    }
+                Rectangle()
+                    .fill(isDay ? Color.white.opacity(0.08) : Color.black.opacity(0.16))
+            }
+            Rectangle()
+                .fill(LinearGradient(colors: [.clear, Color.black.opacity(isDay ? 0.18 : 0.40)], startPoint: .top, endPoint: .bottom))
+            VStack(spacing: 0) {
+                Rectangle().fill(isDay ? Color.white.opacity(0.72) : Color.orange.opacity(0.55)).frame(height: 3)
+                    .shadow(color: isDay ? .white.opacity(0.4) : .orange.opacity(0.7), radius: 8)
+                Spacer()
+            }
+            .padding(.top, size.height * 0.12)
+            Rectangle()
+                .fill(LinearGradient(colors: [Color.black.opacity(0.02), Color.black.opacity(isDay ? 0.17 : 0.38)], startPoint: .top, endPoint: .bottom))
+                .frame(height: size.height * 0.38)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+        }
     }
 }
 
 private struct VehicleChargePillar: View {
-    var isAnimating: Bool
     var pulse: Double
 
     var body: some View {
         VStack(spacing: 5) {
             ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color.black.opacity(0.84))
-                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Color.white.opacity(0.18), lineWidth: 1))
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 15, weight: .black))
-                    .foregroundStyle(Color.teslaGreen)
-                    .opacity(pulse)
-                    .shadow(color: Color.teslaGreen.opacity(0.85), radius: 6)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.black.opacity(0.80))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.18), lineWidth: 1))
+                Capsule()
+                    .fill(Color.teslaGreen.opacity(pulse))
+                    .frame(width: 4, height: 20)
+                    .shadow(color: Color.teslaGreen, radius: 7)
             }
-            .frame(height: 34)
-
+            .frame(height: 50)
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(LinearGradient(colors: [.black.opacity(0.86), .black.opacity(0.55)], startPoint: .top, endPoint: .bottom))
-                .overlay(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.22)).frame(width: 1).padding(.vertical, 7).padding(.leading, 4)
-                }
-
-            Capsule()
-                .fill(Color.black.opacity(0.55))
-                .frame(width: 34, height: 5)
+                .fill(LinearGradient(colors: [.black.opacity(0.84), .black.opacity(0.48)], startPoint: .top, endPoint: .bottom))
+                .overlay(alignment: .leading) { Capsule().fill(Color.teslaGreen.opacity(pulse)).frame(width: 3, height: 19).padding(.leading, 5) }
+            Capsule().fill(Color.black.opacity(0.56)).frame(width: 34, height: 5)
         }
-        .shadow(color: .black.opacity(0.28), radius: 8, x: -3, y: 6)
+        .shadow(color: .black.opacity(0.32), radius: 10, x: -3, y: 6)
     }
 }
 
@@ -2256,24 +2394,59 @@ private struct VehicleChargingCable: View {
     var phase: TimeInterval
 
     var body: some View {
-        let chargerPort = CGPoint(x: size.width * 0.82, y: size.height * 0.48)
-        let batteryPort = CGPoint(x: size.width * 0.57, y: size.height * 0.63)
-        let control1 = CGPoint(x: size.width * 0.75, y: size.height * 0.82)
+        let chargerPort = CGPoint(x: size.width * 0.83, y: size.height * 0.34)
+        let batteryPort = CGPoint(x: size.width * 0.58, y: size.height * 0.67)
+        let control1 = CGPoint(x: size.width * 0.73, y: size.height * 0.80)
         let control2 = CGPoint(x: size.width * 0.64, y: size.height * 0.51)
         return ZStack {
             Path { path in
                 path.move(to: chargerPort)
                 path.addCurve(to: batteryPort, control1: control1, control2: control2)
             }
-            .stroke(.black.opacity(0.66), style: StrokeStyle(lineWidth: 3.2, lineCap: .round))
-
+            .stroke(.black.opacity(0.72), style: StrokeStyle(lineWidth: 4, lineCap: .round))
             Path { path in
                 path.move(to: chargerPort)
                 path.addCurve(to: batteryPort, control1: control1, control2: control2)
             }
-            .stroke(Color.teslaGreen.opacity(0.42), style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: [2, 10], dashPhase: phase * -28))
-            .shadow(color: Color.teslaGreen.opacity(0.65), radius: 3)
+            .stroke(Color.teslaGreen.opacity(0.86), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, dash: [2, 10], dashPhase: phase * -34))
+            .shadow(color: Color.teslaGreen.opacity(0.85), radius: 5)
         }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct ChargingSteps: View {
+    var active: Int
+
+    var body: some View {
+        HStack(spacing: 0) {
+            step(icon: "powerplug.fill", title: "连接电源", index: 1)
+            Divider().frame(height: 42).overlay(.white.opacity(0.14))
+            step(icon: "bolt.fill", title: "开始充电", index: 2)
+            Divider().frame(height: 42).overlay(.white.opacity(0.14))
+            step(icon: "battery.75percent", title: "充电中", index: 3)
+            Divider().frame(height: 42).overlay(.white.opacity(0.14))
+            step(icon: "checkmark", title: "充电完成", index: 4)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .background(Color.black.opacity(0.24), in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.8))
+    }
+
+    private func step(icon: String, title: String, index: Int) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(index <= active ? Color.teslaGreen : .white.opacity(0.45))
+            Text(title)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(index <= active ? Color.teslaGreen : .white.opacity(0.48))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

@@ -1023,6 +1023,25 @@ struct NinebotVehicleState: Codable, Equatable {
         return "\(Self.numberText(chargingPower, maximumFractionDigits: 0)) W"
     }
 
+    /// Current speed reported by the live status payload when the cloud interface provides it.
+    var currentSpeedKmh: Double? {
+        let keys = ["speed", "spd", "speed_kmh", "speedKmh", "velocity", "current_speed", "currentSpeed"]
+        for source in [rawStatus, rawTravel, rawBattery] {
+            guard let source else { continue }
+            for key in keys {
+                if let value = source[key]?.doubleValue, value.isFinite, value >= 0, value <= 120 {
+                    return value
+                }
+            }
+        }
+        return nil
+    }
+
+    var currentSpeedText: String {
+        guard let currentSpeedKmh else { return "接口未返回" }
+        return "\(Self.numberText(currentSpeedKmh, maximumFractionDigits: 0)) km/h"
+    }
+
     var enduranceText: String {
         guard let endurance else { return "-- km" }
         return "\(Self.decimalFormatter.string(from: NSNumber(value: endurance)) ?? "--") km"
