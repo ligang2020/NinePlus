@@ -1,6 +1,6 @@
 # mini-ninebot
 
-NineBot+ iOS app, version **1.2.64** (build **63**).
+NineBot+ iOS app, version **1.2.65** (build **65**).
 
 The app's first screen is the Ninebot account login. The service URL is
 built in, and no NinePlus installation access token or token secret is required.
