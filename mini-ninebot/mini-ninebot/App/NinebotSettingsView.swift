@@ -122,7 +122,7 @@ private struct ServerConnectionCard: View {
     @ObservedObject var model: NinebotViewModel
 
     private var canUseAddress: Bool {
-        model.hasConfiguration && !model.isLoading
+        !model.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !model.isLoading
     }
 
     var body: some View {
