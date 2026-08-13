@@ -334,9 +334,13 @@ final class NinebotViewModel: ObservableObject {
     func testConnection() async {
         await runLoadingOperation(message: "正在测试连接") {
             let client = try makeClient()
-            try await client.healthCheck()
+            let health = try await client.healthCheck()
+            let bearerRequired = health.objectValue?["bearer_token_required"]?.boolValue == true
+            let tokenState = bearerRequired
+                ? (self.bearerToken.trimmed.isEmpty ? "，服务器要求 Bearer Token，请填写后再登录" : "，Bearer Token 已随请求发送")
+                : "，服务器未开启 Bearer Token"
             self.errorMessage = nil
-            self.statusMessage = "\(self.dataSourceMode.shortTitle)连接正常"
+            self.statusMessage = "\(self.dataSourceMode.shortTitle)连接正常\(tokenState)"
         }
     }
 

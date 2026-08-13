@@ -27,8 +27,8 @@ struct NinebotProxyClient {
     var configuration: NinebotProxyConfiguration
     var session: URLSession = .shared
 
-    func healthCheck() async throws {
-        _ = try await request(method: "GET", path: ["healthz"])
+    func healthCheck() async throws -> JSONValue {
+        try await request(method: "GET", path: ["healthz"])
     }
 
     func loginToNinePlus(username: String, password: String) async throws -> NinePlusPortalLoginResult {

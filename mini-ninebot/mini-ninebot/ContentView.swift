@@ -93,6 +93,7 @@ struct ContentView: View {
 }
 
 private enum NinebotCloudLoginField: Hashable {
+    case serverAddress
     case account
     case password
     case bearerToken
@@ -103,7 +104,14 @@ struct NinebotCloudLoginView: View {
     @FocusState private var focusedField: NinebotCloudLoginField?
 
     private var canLogin: Bool {
-        !model.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !model.portalPassword.isEmpty && !model.isLoading
+        model.hasConfiguration
+            && !model.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !model.portalPassword.isEmpty
+            && !model.isLoading
+    }
+
+    private var canTestConnection: Bool {
+        model.hasConfiguration && !model.isLoading
     }
 
     var body: some View {
@@ -137,6 +145,21 @@ struct NinebotCloudLoginView: View {
                     }
 
                     VStack(spacing: 14) {
+                        CloudLoginField(
+                            title: "服务器地址",
+                            placeholder: "http://192.168.1.100:8765",
+                            systemImage: "server.rack",
+                            text: $model.baseURLString,
+                            focusedField: $focusedField,
+                            field: .serverAddress,
+                            keyboardType: .URL,
+                            textContentType: .URL
+                        )
+                        Text("填写运行 NinePlus 后端的地址。局域网示例：http://192.168.1.100:8765；使用域名时请填写 https://域名。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
                         CloudLoginField(
                             title: "手机号 / 邮箱",
                             placeholder: "请输入 NinePlus 账号",
@@ -182,23 +205,40 @@ struct NinebotCloudLoginView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    Button {
-                        focusedField = nil
-                        Task { await model.loginToNinePlus() }
-                    } label: {
-                        HStack(spacing: 8) {
-                            if model.isLoading { ProgressView().tint(.white) }
-                            Text(model.isLoading ? "正在登录…" : "登录并进入控制台")
-                                .font(.headline.weight(.semibold))
+                    HStack(spacing: 10) {
+                        Button {
+                            focusedField = nil
+                            Task { await model.testConnection() }
+                        } label: {
+                            HStack(spacing: 7) {
+                                Image(systemName: "bolt.horizontal.circle")
+                                Text("测试连接")
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
                         }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 54)
-                        .foregroundStyle(.white)
-                        .background(canLogin ? Color(red: 0.13, green: 0.72, blue: 0.24) : Color.gray.opacity(0.35))
-                        .clipShape(Capsule())
+                        .buttonStyle(.bordered)
+                        .disabled(!canTestConnection)
+
+                        Button {
+                            focusedField = nil
+                            Task { await model.loginToNinePlus() }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if model.isLoading { ProgressView().tint(.white) }
+                                Text(model.isLoading ? "正在登录…" : "登录并进入控制台")
+                                    .font(.headline.weight(.semibold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 54)
+                            .foregroundStyle(.white)
+                            .background(canLogin ? Color(red: 0.13, green: 0.72, blue: 0.24) : Color.gray.opacity(0.35))
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canLogin)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!canLogin)
 
                     Text("NinePlus 密码仅用于建立当前登录会话；如服务器设置了 NINEPLUS_APP_BEARER_TOKEN，请先填写相同的服务保护 Token。九号云端凭据保存在服务器，不会写入本设备。")
                         .font(.caption)

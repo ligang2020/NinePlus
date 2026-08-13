@@ -29,6 +29,11 @@ struct NinebotSettingsView: View {
                 .padding(16)
                 .ninePlusCard(cornerRadius: 28)
 
+                ServerConnectionCard(model: model)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .ninePlusCard(cornerRadius: 24)
+
                 if model.errorMessage != nil || model.statusMessage != nil {
                     SettingsStatusBanner(
                         errorMessage: model.errorMessage,
@@ -112,6 +117,86 @@ struct NinebotSettingsView: View {
 
 }
 
+
+private struct ServerConnectionCard: View {
+    @ObservedObject var model: NinebotViewModel
+
+    private var canUseAddress: Bool {
+        model.hasConfiguration && !model.isLoading
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "server.rack")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(Color.teslaGreen)
+                    .frame(width: 34, height: 34)
+                    .background(Color.teslaGreen.opacity(0.13), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("服务器连接")
+                        .font(.headline.weight(.semibold))
+                    Text("App 的请求会自动携带 Bearer Token")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("服务器地址")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Image(systemName: "link")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22)
+                    TextField("http://192.168.1.100:8765", text: $model.baseURLString)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .textContentType(.URL)
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 50)
+                .background(Color.teslaControlBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            }
+
+            Text("局域网填写 http://服务器IP:8765；如果使用域名或反向代理，请填写完整的 https://地址。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Button {
+                    Task { await model.testConnection() }
+                } label: {
+                    SettingsCompactButtonLabel(title: "测试连接", systemImage: "bolt.horizontal.circle")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canUseAddress)
+
+                Button {
+                    Task { await model.connectToService() }
+                } label: {
+                    SettingsCompactButtonLabel(title: "保存并连接", systemImage: "checkmark.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canUseAddress)
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: model.bearerToken.trimmed.isEmpty ? "key.slash" : "key.fill")
+                    .foregroundStyle(model.bearerToken.trimmed.isEmpty ? .secondary : Color.teslaGreen)
+                Text(model.bearerToken.trimmed.isEmpty ? "Bearer Token：未填写" : "Bearer Token：已配置（不会显示完整内容）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
 
 private struct DeviceNotificationsCard: View {
     @ObservedObject var model: NinebotViewModel
