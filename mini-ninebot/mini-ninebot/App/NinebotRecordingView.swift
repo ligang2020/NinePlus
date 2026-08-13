@@ -1107,7 +1107,7 @@ private struct RecordedRideDetailMetrics: View {
             RecordingDetailMetric(title: "开始", value: formatRecordingDate(record.startedAt), systemImage: "play.fill", tint: Color.teslaGreen)
             RecordingDetailMetric(title: "结束", value: formatRecordingDate(record.endedAt), systemImage: "stop.fill", tint: .red)
             RecordingDetailMetric(title: "时长", value: formatRecordingDuration(record.durationSeconds), systemImage: "timer", tint: Color.teslaSecondaryText)
-            RecordingDetailMetric(title: "均速", value: formatRecordingSpeed(record.averageSpeedKmh), systemImage: "speedometer", tint: Color.teslaGreen)
+            RecordingDetailMetric(title: "最高速度", value: formatRecordingSpeed(record.maxSpeedKmh), systemImage: "speedometer", tint: Color.teslaGreen)
             RecordingDetailMetric(title: "最快", value: formatRecordingSpeed(record.maxSpeedKmh), systemImage: "gauge.with.dots.needle.67percent", tint: .yellow)
             RecordingDetailMetric(title: "最大 G", value: formatRecordingG(record.maxAccelerationG), systemImage: "bolt.circle.fill", tint: .red)
             RecordingDetailMetric(title: "轨迹点", value: "\(record.points.count) 个", systemImage: "point.3.connected.trianglepath.dotted", tint: Color.teslaGreen)

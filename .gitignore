@@ -34,3 +34,8 @@ __pycache__/
 
 # NinePlus server runtime credentials/session state
 server/persistent-sessions/
+# Front-end build output
+web/dist/
+
+# Local Xcode MCP session configuration
+.xcodebuildmcp/

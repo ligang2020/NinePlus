@@ -54,6 +54,7 @@ const unwrapArray = (value, keys = []) => {
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
+    cache: 'no-store',
     ...options,
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
   });
@@ -81,19 +82,25 @@ function setAuthenticated(authenticated) {
 }
 
 function showOfficialBinding() {
+  // This path is only for the first server-side cloud setup. Once the
+  // persistent binding exists, every other device skips it entirely.
   $('#loginForm').hidden = true;
-  $('#bindForm').hidden = false;
+  if ($('#bindForm')) $('#bindForm').hidden = false;
+  if ($('#cloudReadyNotice')) $('#cloudReadyNotice').hidden = true;
 }
 
 function showPortalLogin() {
   $('#loginForm').hidden = false;
-  $('#bindForm').hidden = true;
+  if ($('#bindForm')) $('#bindForm').hidden = true;
+  if ($('#cloudReadyNotice')) $('#cloudReadyNotice').hidden = false;
 }
 
 function setBusy(button, busy, label) {
   button.disabled = busy;
-  if (!button.dataset.label) button.dataset.label = button.textContent;
-  button.textContent = busy ? label : button.dataset.label;
+  if (!button.dataset.label) button.dataset.label = button.querySelector('span')?.textContent || button.textContent;
+  const labelElement = button.querySelector('span');
+  if (labelElement) labelElement.textContent = busy ? label : button.dataset.label;
+  else button.textContent = busy ? label : button.dataset.label;
 }
 
 function vehicleSN(vehicle) {
@@ -133,13 +140,15 @@ function booleanValue(value) {
 function coordinateFrom(value) {
   if (!value) return null;
   if (Array.isArray(value) && value.length >= 2) {
-    const lat = numberValue(value[0]);
-    const lng = numberValue(value[1]);
-    return lat !== null && lng !== null ? [lat, lng] : null;
+    const first = numberValue(value[0]);
+    const second = numberValue(value[1]);
+    if (first === null || second === null) return null;
+    return Math.abs(first) > 90 && Math.abs(second) <= 90 ? [second, first] : [first, second];
   }
   if (typeof value === 'string') {
-    const parts = value.split(/[ ,;|]+/).map(numberValue);
-    return parts.length >= 2 && parts[0] !== null && parts[1] !== null ? [parts[0], parts[1]] : null;
+    const parts = value.split(/[,;|\s]+/).map(numberValue).filter((part) => part !== null);
+    if (parts.length < 2) return null;
+    return Math.abs(parts[0]) > 90 && Math.abs(parts[1]) <= 90 ? [parts[1], parts[0]] : [parts[0], parts[1]];
   }
   if (typeof value !== 'object') return null;
   const lat = numberValue(fields(value, ['lat', 'latitude', 'y', 'gcj02_lat', 'gcj02Lat']));
@@ -149,7 +158,7 @@ function coordinateFrom(value) {
 
 function statusCoordinate(status) {
   const direct = coordinateFrom(fields(status, [
-    'location', 'loc', 'position', 'coordinates', 'coordinate',
+    'location_coordinate', 'locationCoordinate', 'location', 'loc', 'position', 'coordinates', 'coordinate',
   ]));
   if (direct) return direct;
   const lat = fields(status, ['lat', 'latitude', 'loc.lat', 'loc.latitude', 'location.lat', 'location.latitude', 'position.lat']);
@@ -181,8 +190,10 @@ function travelCoordinate(travel, kind) {
 
 function travelTrack(travel) {
   const raw = fields(travel, ['track', 'trajectory', 'points', 'path', 'route', 'locations']);
-  if (!Array.isArray(raw)) return [];
-  return raw.map(coordinateFrom).filter(Boolean);
+  if (Array.isArray(raw)) return raw.map(coordinateFrom).filter(Boolean);
+  const trail = fields(travel, ['trail', 'Trail']);
+  if (typeof trail !== 'string') return [];
+  return trail.split(/[;|\n]+/).map((segment) => coordinateFrom(segment)).filter(Boolean);
 }
 
 function coordinateText(point) {
@@ -297,8 +308,15 @@ function renderDashboard() {
 
   $('#vehicleName').textContent = vehicleName(vehicle);
   $('#vehicleModel').textContent = fields(vehicle, ['vehicle_name_en', 'vehicle_name', 'model'], 'NINEBOT');
+  const batteryText = number(batteryPercent, '%');
   $('#updatedAt').textContent = `更新于 ${new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date())}`;
-  $('#batteryValue').textContent = number(batteryPercent, '%');
+  $('#topbarDate').textContent = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date());
+  $('#batteryValue').textContent = batteryText;
+  $('#batteryRingValue').textContent = batteryText;
+  $('#batteryCopyValue').textContent = batteryText;
+  const batteryNumber = numberValue(batteryPercent);
+  document.documentElement.style.setProperty('--battery-pct', `${Math.max(0, Math.min(100, batteryNumber ?? 0))}%`);
+  $('#batteryBar').style.width = `${Math.max(0, Math.min(100, batteryNumber ?? 0))}%`;
   $('#rangeValue').textContent = number(range, ' km', 1);
   $('#mileageValue').textContent = number(mileage, ' km', 1);
   $('#mileageLabel').textContent = totalMileage == null && monthMileage != null ? '本月里程' : '总里程';
@@ -336,8 +354,9 @@ function renderTravelRows(rows) {
     return;
   }
   travelList.replaceChildren(...rows.map((travel, index) => {
-    const start = travelCoordinate(travel, 'start');
-    const end = travelCoordinate(travel, 'end');
+    const track = travelTrack(travel);
+    const start = travelCoordinate(travel, 'start') || track[0] || null;
+    const end = travelCoordinate(travel, 'end') || track[track.length - 1] || null;
     const startTime = fields(travel, ['start_time', 'startTime', 'start_at', 'startAt', 'begin_time', 'beginTime', 'create_time', 'createTime', 'date', 'timestamp']);
     const endTime = fields(travel, ['end_time', 'endTime', 'end_at', 'endAt', 'finish_time', 'finishTime', 'stop_time', 'stopTime', 'end_timestamp']);
     const distance = fields(travel, ['mileages', 'distance', 'mileage', 'ride_distance', 'rideDistance', 'distance_km', 'distanceKm']);
@@ -422,8 +441,9 @@ function renderMaps() {
   const vehiclePoint = statusCoordinate(state.status || {});
   createLeafletMap($('#vehicleMap'), vehiclePoint ? [vehiclePoint] : [], [], true);
   travelRows(state.travels).forEach((travel, index) => {
-    const points = [travelCoordinate(travel, 'start'), travelCoordinate(travel, 'end')].filter(Boolean);
-    createLeafletMap(document.querySelector(`#travel-map-${index}`), points, travelTrack(travel));
+    const track = travelTrack(travel);
+    const points = [travelCoordinate(travel, 'start') || track[0], travelCoordinate(travel, 'end') || track[track.length - 1]].filter(Boolean);
+    createLeafletMap(document.querySelector(`#travel-map-${index}`), points, track);
   });
 }
 
@@ -515,13 +535,19 @@ $('#loginForm').addEventListener('submit', async (event) => {
   const button = $('#loginButton');
   setBusy(button, true, '正在登录…');
   try {
-    await api('/auth/login', {
+    const session = await api('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username: $('#portalUsername').value.trim(), password: $('#portalPassword').value }),
     });
     $('#portalPassword').value = '';
-    showOfficialBinding();
-    toast('NinePlus 登录成功，请绑定九号官方账号');
+    if (session.cloud_ready) {
+      setAuthenticated(true);
+      toast('NinePlus 登录成功，正在同步车辆');
+      await loadVehicles();
+    } else {
+      showOfficialBinding();
+      toast('请先在服务器完成一次九号云端设置');
+    }
   } catch (error) {
     toast(error.message);
   } finally {
@@ -532,7 +558,7 @@ $('#loginForm').addEventListener('submit', async (event) => {
 $('#bindForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const button = $('#bindButton');
-  setBusy(button, true, '正在绑定…');
+  setBusy(button, true, '正在设置…');
   try {
     await api('/ninebot/login', {
       method: 'POST',
@@ -540,6 +566,7 @@ $('#bindForm').addEventListener('submit', async (event) => {
     });
     $('#password').value = '';
     setAuthenticated(true);
+    toast('九号云端设置成功，正在同步车辆');
     await loadVehicles();
   } catch (error) {
     toast(error.message);
@@ -573,12 +600,15 @@ $('#confirmDialog').addEventListener('close', () => {
 const now = new Date();
 $('#monthPicker').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 api('/auth/me').then((session) => {
-  if (session && session.official_account_bound) {
+  if (session && session.cloud_ready) {
     setAuthenticated(true);
     loadVehicles();
-  } else {
+  } else if (session) {
     setAuthenticated(false);
     showOfficialBinding();
+  } else {
+    setAuthenticated(false);
+    showPortalLogin();
   }
 }).catch(() => {
   setAuthenticated(false);

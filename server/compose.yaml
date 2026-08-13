@@ -1,24 +1,32 @@
 services:
   nineplus:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nineplus:latest
     container_name: nineplus
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "8765:8765"
+    env_file:
+      - .env
     environment:
       NINEPLUS_SESSION_ROOT: /run/nineplus/sessions
-      NINEPLUS_SESSION_TTL: "2592000"
-      NINEPLUS_CLI_TIMEOUT: "45"
-      # Short per-login caches avoid starting ninecli repeatedly while the
-      # home screen, widgets, and manual refresh overlap.
-      NINEPLUS_CACHE_TTL_VEHICLES: "30"
-      NINEPLUS_CACHE_TTL_STATUS: "8"
-      NINEPLUS_CACHE_TTL_BATTERY: "15"
-      NINEPLUS_CACHE_TTL_TRAVEL: "60"
-      NINEPLUS_COOKIE_SECURE: "auto"
+      NINEPLUS_SESSION_TTL: "${NINEPLUS_SESSION_TTL:-2592000}"
+      NINEPLUS_CLI_TIMEOUT: "${NINEPLUS_CLI_TIMEOUT:-45}"
+      NINEPLUS_CACHE_TTL_VEHICLES: "${NINEPLUS_CACHE_TTL_VEHICLES:-30}"
+      NINEPLUS_CACHE_TTL_STATUS: "${NINEPLUS_CACHE_TTL_STATUS:-8}"
+      NINEPLUS_CACHE_TTL_BATTERY: "${NINEPLUS_CACHE_TTL_BATTERY:-15}"
+      NINEPLUS_CACHE_TTL_TRAVEL: "${NINEPLUS_CACHE_TTL_TRAVEL:-60}"
+      NINEPLUS_COOKIE_SECURE: "${NINEPLUS_COOKIE_SECURE:-auto}"
       NINEPLUS_DEVICE_ID: "${NINEPLUS_DEVICE_ID:-}"
-      # NinePlus 自有门户账号；密码只放在 server/.env，不要提交到 Git。
-      NINEPLUS_PORTAL_USERNAME: "${NINEPLUS_PORTAL_USERNAME:-gang}"
+      NINEPLUS_PORTAL_USERNAME: "${NINEPLUS_PORTAL_USERNAME:-admin}"
       NINEPLUS_PORTAL_PASSWORD: "${NINEPLUS_PORTAL_PASSWORD:?请在 server/.env 中设置 NinePlus 登录密码}"
     volumes:
-      # Keep the ninecli official-account token across container restarts.
       - ./persistent-sessions:/run/nineplus/sessions
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

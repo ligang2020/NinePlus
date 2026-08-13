@@ -188,12 +188,14 @@ final class NinebotViewModel: ObservableObject {
         currentConfiguration.isUsable
     }
 
-    /// A session is considered active only after the Ninebot account has
-    /// authenticated and the app has a cloud session token or cached vehicles.
-    /// The endpoint and installation token are build-time values, not user UI.
+    /// NinePlus is the only interactive login on a device. The official
+    /// Ninebot cloud binding belongs to the server installation and is
+    /// reported by the portal session, so a new device does not need the
+    /// official account password.
     var hasConnectionSession: Bool {
-        hasConfiguration && (loginResult?.sessionToken?.trimmed.isEmpty == false)
-            && (hasVehicles || dashboard.updatedAt != .distantPast)
+        hasConfiguration
+            && activeSessionToken?.trimmed.isEmpty == false
+            && hasOfficialNinebotAccount
     }
 
     var isConnectionInputComplete: Bool {
@@ -223,14 +225,19 @@ final class NinebotViewModel: ObservableObject {
         if dashboard.vehicles.count > 1 {
             return "已连接 \(dashboard.vehicles.count) 辆车辆"
         }
-        return "尚未登录九号账号"
+        if let username = portalLoginResult?.username, !username.trimmed.isEmpty {
+            return "NinePlus · \(username)"
+        }
+        return "NinePlus 用户"
     }
 
     // Compatibility names retained for widgets and older views.
     var isNinePlusAuthenticated: Bool { hasConfiguration }
 
     var hasOfficialNinebotAccount: Bool {
-        loginResult?.sessionToken?.trimmed.isEmpty == false
+        // Compatibility name retained for widgets and older views. It now
+        // reflects server readiness, never a device-local Ninebot session.
+        portalLoginResult?.officialAccountBound == true
     }
 
     var hasLoginAccount: Bool { hasConnectionSession }
@@ -442,15 +449,29 @@ final class NinebotViewModel: ObservableObject {
         await runLoadingOperation(message: "正在登录 NinePlus") {
             guard !portalUsername.trimmed.isEmpty else { throw NinebotInputError.missingAccount }
             guard !portalPassword.isEmpty else { throw NinebotInputError.missingPassword }
-            saveConfiguration()
+            guard self.hasConfiguration else {
+                throw NinebotProxyError.server("NinePlus 服务地址无效，请检查服务配置")
+            }
+
+            self.saveConfiguration()
             let client = try makeClient()
             let result = try await client.loginToNinePlus(username: portalUsername.trimmed, password: portalPassword)
             portalLoginResult = result
             store.savePortalLoginResult(result)
-            store.saveConfiguration(currentConfiguration)
             portalPassword = ""
+
+            guard result.officialAccountBound else {
+                throw NinebotProxyError.server("NinePlus 已登录，但服务器尚未完成九号云端设置，请先在服务器网页完成一次设置")
+            }
+
+            let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
+            let archivedDashboard = self.saveDashboard(dashboard)
+            await self.cacheVehicleImages(for: archivedDashboard)
+            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            store.saveConfiguration(currentConfiguration)
             errorMessage = nil
-            statusMessage = result.officialAccountBound ? "NinePlus 登录成功" : "NinePlus 登录成功，请绑定九号官方账号"
+            statusMessage = archivedDashboard.vehicles.isEmpty ? "NinePlus 登录成功，但未找到车辆" : "NinePlus 登录成功，已获取车辆信息"
+            WidgetCenter.shared.reloadAllTimelines()
         }
     }
 
@@ -635,10 +656,10 @@ final class NinebotViewModel: ObservableObject {
         store.saveConfiguration(NinebotProxyConfiguration(
             baseURLString: baseURLString,
             bearerToken: bearerToken,
-            appSessionToken: loginResult?.sessionToken
+            appSessionToken: nil
         ))
         errorMessage = nil
-        statusMessage = "九号登录状态已失效，请重新登录"
+        statusMessage = "NinePlus 登录状态已失效，请重新登录 NinePlus 账号"
     }
 
     func diagnosticsSnapshot() -> NinebotDiagnosticsSnapshot {
@@ -669,11 +690,15 @@ final class NinebotViewModel: ObservableObject {
         )
     }
 
+    private var activeSessionToken: String? {
+        portalLoginResult?.sessionToken?.trimmed
+    }
+
     private var currentConfiguration: NinebotProxyConfiguration {
         NinebotProxyConfiguration(
             baseURLString: baseURLString,
             bearerToken: bearerToken,
-            appSessionToken: loginResult?.sessionToken
+            appSessionToken: activeSessionToken
         )
     }
 
@@ -719,10 +744,10 @@ final class NinebotViewModel: ObservableObject {
     }
 
     private func updateSessionToken(_ token: String) {
-        guard var currentLogin = loginResult else { return }
-        currentLogin.sessionToken = token
-        loginResult = currentLogin
-        store.saveLoginResult(currentLogin)
+        guard var currentPortal = portalLoginResult else { return }
+        currentPortal.sessionToken = token
+        portalLoginResult = currentPortal
+        store.savePortalLoginResult(currentPortal)
         store.saveConfiguration(currentConfiguration)
     }
 

@@ -1,96 +1,58 @@
-# NinePlus Server
+# NinePlus · 飞牛 NAS 部署
 
-NinePlus Server is a standalone FastAPI web console for the current `ninecli`
-Ninebot client. It provides an Apple-inspired responsive interface for vehicle
-status, battery details, location, ride history, and confirmed remote controls.
+NinePlus 是一个 FastAPI + Docker Web 控制台：首次在服务器完成九号云端绑定后，所有设备只需登录 NinePlus 账号即可查看车辆、电池、位置、骑行记录，并执行已确认的远程控制。九号官方账号凭据保存在服务器持久化目录，不会要求每台手机或浏览器重复输入。
 
-> **Important:** `ninecli` is a community client for the user-facing Ninebot
-> cloud service. This project does not contain or claim an official public
-> Ninebot developer API. Ninebot can change the service at any time.
+> 上游使用社区 `ninecli` 调用九号用户云服务，不是九号官方公开开发者 API。云端接口或账号策略变化时，控制台会明确显示错误，不会把失败误报为成功。
 
-## Run with Docker Compose
+## 在飞牛 fnOS 上部署（推荐）
+
+1. 将仓库放到飞牛共享文件夹，例如 `/vol1/1000/docker/NinePlus`。
+2. 进入 `server` 目录，复制环境模板并修改密码：
+
+   ```bash
+   cp .env.example .env
+   chmod 600 .env
+   vi .env
+   ```
+
+   至少修改 `NINEPLUS_PORTAL_PASSWORD`。不要把 `.env` 提交到 Git。
+
+首次部署仍需要管理员在服务器端完成一次九号云端绑定；绑定成功后，其他设备只登录 NinePlus 即可。
+3. 在飞牛「Docker / 项目」中新建项目：
+   - 项目目录：`.../NinePlus/server`
+   - Compose 文件：`compose.yaml`
+   - 构建并启动：开启
+4. 或在 SSH 中执行：
+
+   ```bash
+   cd /vol1/1000/docker/NinePlus/server
+   docker compose up -d --build
+   docker compose ps
+   curl http://127.0.0.1:8765/healthz
+   ```
+5. 浏览器打开 `http://飞牛IP:8765`。如使用飞牛反向代理，请将上游指向 `127.0.0.1:8765`，并把 `NINEPLUS_COOKIE_SECURE=true`。
+
+项目使用普通端口映射而不是 host 网络，适配飞牛项目编排和端口管理；九号云端绑定、会话和推送设备数据持久化在 `server/persistent-sessions`。同一 NinePlus 用户从不同设备登录时，会自动复用服务器上的九号云端绑定。
+
+## 常用维护
 
 ```bash
-cd server
+docker compose logs -f --tail=200
+docker compose restart
+docker compose pull  # 仅在改为远程镜像时使用
 docker compose up -d --build
+docker compose down   # 不会删除 persistent-sessions
 ```
 
-The service listens on `8765`. The authenticated CLI token directories live on the persistent session
-volume, while no account password is persisted to the host. Restarting or
-recreating the container restores the official binding but expires app
-sessions according to `NINEPLUS_SESSION_TTL`.
+升级前建议备份 `persistent-sessions`。不要删除该目录，否则九号云绑定会丢失，需要在服务器端重新绑定；删除浏览器 Cookie 或更换设备不会影响绑定。
 
-Open `http://NAS_IP:8765` on the trusted LAN for the web console. The iOS
-release has the service URL built in and asks only for the Ninebot account.
-OpenAPI documentation is at
-`/api/docs` and the health probe is at `/healthz`.
+## 端点与检查
 
-## Configuration
+- Web 控制台：`/`
+- 健康检查：`/healthz`
+- OpenAPI：`/api/docs`
+- 车辆数据：`/dashboard`、`/vehicles/{sn}/status`、`/vehicles/{sn}/battery`
+- 行程：`/vehicles/{sn}/travel`
+- 远程控制：`POST /vehicles/{sn}/control`，必须提交 `confirm: true`
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `NINEPLUS_SESSION_TTL` | `2592000` | Browser session lifetime in seconds |
-| `NINEPLUS_CLI_TIMEOUT` | `45` | Timeout for a ninecli operation |
-| `NINEPLUS_CACHE_TTL_VEHICLES` | `30` | Per-session vehicle-list cache in seconds |
-| `NINEPLUS_CACHE_TTL_STATUS` | `8` | Per-session vehicle-status cache in seconds |
-| `NINEPLUS_CACHE_TTL_BATTERY` | `15` | Per-session battery cache in seconds |
-| `NINEPLUS_CACHE_TTL_TRAVEL` | `60` | Per-session travel cache in seconds |
-| `NINEPLUS_SESSION_ROOT` | `/run/nineplus/sessions` | Ephemeral token directory |
-| `NINEPLUS_COOKIE_SECURE` | `auto` | `true` for HTTPS-only cookie, `false` for plain LAN HTTP |
-| `NINEPLUS_LOG_LEVEL` | `INFO` | Server log level |
-| `NINEPLUS_NINECLI_BIN` | `ninecli` | CLI executable override |
-| `NINEPLUS_DEVICE_ID` | generated | 32-character device ID used by the cloud login client |
-| `NINEPLUS_PORTAL_USERNAME` | `gang` | NinePlus 自有登录用户名 |
-| `NINEPLUS_PORTAL_PASSWORD` | required | NinePlus 自有登录密码，只放在 `server/.env` |
-
-For an HTTPS reverse proxy, set `NINEPLUS_COOKIE_SECURE=true`.
-
-## API envelope
-
-Successful responses use:
-
-```json
-{"ok": true, "data": {}}
-```
-
-Errors use:
-
-```json
-{"ok": false, "error": {"code": "...", "message": "..."}}
-```
-
-`POST /vehicles/{sn}/control` requires `{ "action": "bell", "confirm": true }`.
-The supported actions are `bell`, `buck`, `engine_start`, and `engine_stop`.
-
-`GET /dashboard` returns the home-screen vehicle list, current status,
-battery, and current-month travel data in one response. It is the preferred
-endpoint for the iOS dashboard; the underlying reads are protected by a
-per-login short-lived cache and identical in-flight requests are coalesced.
-`GET /vehicles/{sn}/travel` accepts `month=YYYY-MM` (or `YYYYMM`), `page`, and
-`page_size`. Vehicle serial numbers and travel IDs are validated
-before they are passed to `ninecli`. The server creates a per-installation
-client config with a non-placeholder device ID; set `NINEPLUS_DEVICE_ID` to a
-real captured value when the upstream service requires device binding. Expired
-in-memory sessions are removed
-periodically, and their ephemeral token directories are deleted at the same
-time.
-
-## Update on the NAS
-
-```bash
-git pull --ff-only
-docker compose -f server/compose.yaml up -d --build
-docker compose -f server/compose.yaml ps
-curl http://127.0.0.1:8765/healthz
-```
-
-## iOS 登录流程
-
-v1.2.62 iOS App 直接调用服务端的 `POST /ninebot/login`，不再发送
-`NINEPLUS_ACCESS_TOKEN`。服务端按九号账号登录创建每次安装的会话，
-再把手机号/邮箱和密码交给 `ninecli`；返回的会话令牌随后用于
-`/dashboard`、车辆状态、电池、行程和控制接口。
-
-网页控制台仍然保留独立的两步登录：先 `POST /auth/login` 登录本地门户，
-再调用 `POST /ninebot/login` 绑定九号官方账号。两种入口共享持久化的云端绑定，
-但不会把九号密码写入响应或日志。
+所有 API 成功响应统一为 `{"ok": true, "data": ...}`；错误响应统一为 `{"ok": false, "error": ...}`。九号密码不会写入日志，也不会返回到浏览器响应。

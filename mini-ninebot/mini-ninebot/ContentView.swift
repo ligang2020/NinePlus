@@ -10,6 +10,7 @@ private enum NinebotRootTab: Hashable {
     case dashboard
     case trips
     case recording
+    case security
     case settings
 }
 
@@ -69,6 +70,16 @@ struct ContentView: View {
             .tag(NinebotRootTab.recording)
 
             NavigationStack {
+                NinebotSecurityView(model: model)
+                    .navigationTitle("安全")
+                    .toolbar(.visible, for: .navigationBar)
+            }
+            .tabItem {
+                Label("安全", systemImage: "shield.lefthalf.filled")
+            }
+            .tag(NinebotRootTab.security)
+
+            NavigationStack {
                 NinebotSettingsView(model: model)
                     .navigationTitle("我的")
                     .toolbar(.visible, for: .navigationBar)
@@ -91,7 +102,7 @@ struct NinebotCloudLoginView: View {
     @FocusState private var focusedField: NinebotCloudLoginField?
 
     private var canLogin: Bool {
-        !model.account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !model.password.isEmpty && !model.isLoading
+        !model.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !model.portalPassword.isEmpty && !model.isLoading
     }
 
     var body: some View {
@@ -116,9 +127,9 @@ struct NinebotCloudLoginView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("登录九号账号")
+                        Text("登录 NinePlus")
                             .font(.largeTitle.weight(.bold))
-                        Text("使用九号官方账号登录，直接获取你的车辆、车况和电量信息。")
+                        Text("登录 NinePlus 账号即可进入。九号官方账号由服务器统一管理，不需要在每台设备重复登录。")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -127,9 +138,9 @@ struct NinebotCloudLoginView: View {
                     VStack(spacing: 14) {
                         CloudLoginField(
                             title: "手机号 / 邮箱",
-                            placeholder: "请输入九号账号",
+                            placeholder: "请输入 NinePlus 账号",
                             systemImage: "person.fill",
-                            text: $model.account,
+                            text: $model.portalUsername,
                             focusedField: $focusedField,
                             field: .account,
                             keyboardType: .emailAddress,
@@ -137,9 +148,9 @@ struct NinebotCloudLoginView: View {
                         )
                         CloudLoginField(
                             title: "密码",
-                            placeholder: "请输入九号账号密码",
+                            placeholder: "请输入 NinePlus 密码",
                             systemImage: "lock.fill",
-                            text: $model.password,
+                            text: $model.portalPassword,
                             focusedField: $focusedField,
                             field: .password,
                             isSecure: true,
@@ -162,11 +173,11 @@ struct NinebotCloudLoginView: View {
 
                     Button {
                         focusedField = nil
-                        Task { await model.loginWithPassword() }
+                        Task { await model.loginToNinePlus() }
                     } label: {
                         HStack(spacing: 8) {
                             if model.isLoading { ProgressView().tint(.white) }
-                            Text(model.isLoading ? "正在登录…" : "登录并获取车辆")
+                            Text(model.isLoading ? "正在登录…" : "登录并进入控制台")
                                 .font(.headline.weight(.semibold))
                         }
                         .frame(maxWidth: .infinity)
@@ -178,7 +189,7 @@ struct NinebotCloudLoginView: View {
                     .buttonStyle(.plain)
                     .disabled(!canLogin)
 
-                    Text("账号密码仅用于本次九号云登录，登录完成后不会保存密码。")
+                    Text("NinePlus 密码仅用于建立当前登录会话；九号云端凭据保存在服务器，不会写入本设备。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -193,7 +204,7 @@ struct NinebotCloudLoginView: View {
         }
         .onSubmit {
             guard canLogin else { return }
-            Task { await model.loginWithPassword() }
+            Task { await model.loginToNinePlus() }
         }
     }
 }

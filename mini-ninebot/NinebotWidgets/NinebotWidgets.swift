@@ -737,7 +737,7 @@ private struct LargeStatusWidget: View {
 
                 HStack(spacing: 8) {
                     WidgetInfoTile(title: "本月日均", value: primary.state.dailyAverageMileageText, systemImage: "calendar")
-                    WidgetInfoTile(title: "行程均速", value: primary.state.averageSpeedText, systemImage: "speedometer")
+                    WidgetInfoTile(title: "行程最高速度", value: primary.state.maximumSpeedText, systemImage: "speedometer")
                     WidgetInfoTile(title: "最近骑行", value: primary.state.lastRideSummaryText, systemImage: "point.topleft.down.curvedto.point.bottomright.up")
                 }
                 .frame(height: 60)

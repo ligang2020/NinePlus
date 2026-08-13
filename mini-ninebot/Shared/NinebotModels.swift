@@ -105,6 +105,10 @@ struct NinePlusPortalLoginResult: Codable, Equatable {
     var expiresAt: Double?
     var officialAccountBound: Bool
     var officialAccount: String?
+
+    // Server readiness is represented by officialAccountBound for backward
+    // compatibility with older app builds. The cloud account itself is not
+    // a device login anymore.
 }
 
 struct NinebotRefreshEvent: Codable, Equatable {

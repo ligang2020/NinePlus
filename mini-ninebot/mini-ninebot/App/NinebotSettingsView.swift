@@ -44,7 +44,12 @@ struct NinebotSettingsView: View {
                     .padding(16)
                     .ninePlusCard(cornerRadius: 24)
 
-                VehicleEventsCard(events: model.vehicleEvents)
+                AlarmRecordsCard(events: model.vehicleEvents)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .ninePlusCard(cornerRadius: 24)
+
+                ChargingRecordsCard(events: model.vehicleEvents)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
                     .ninePlusCard(cornerRadius: 24)
@@ -113,33 +118,27 @@ struct NinebotSettingsView: View {
 }
 
 
-private struct VehicleEventsCard: View {
+private struct AlarmRecordsCard: View {
     var events: [NinebotVehicleEvent]
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("车辆事件记录")
-                        .font(.headline.weight(.semibold))
-                    Text(events.isEmpty ? "刷新车况后自动记录报警和充电状态变化" : "按时间倒序展示本机已记录的车辆事件")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: "list.bullet.clipboard.fill")
-                    .foregroundStyle(Color.teslaGreen)
-            }
+    private var alarms: [NinebotVehicleEvent] {
+        events.filter { $0.type == .alarm }.sorted { $0.occurredAt > $1.occurredAt }
+    }
 
-            if events.isEmpty {
-                Label("暂无事件，下一次刷新检测到变化后会自动加入列表", systemImage: "clock.arrow.circlepath")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
+    var body: some View {
+        SettingsRecordCard(
+            title: "车辆报警记录",
+            subtitle: alarms.isEmpty ? "暂无报警记录" : "共记录 \(alarms.count) 条报警",
+            systemImage: "exclamationmark.triangle.fill",
+            tint: .orange,
+            badge: alarms.isEmpty ? nil : "\(alarms.count)"
+        ) {
+            if alarms.isEmpty {
+                EmptySettingsRecord(message: "刷新车况后，检测到新的报警会自动记录。", systemImage: "checkmark.shield")
             } else {
-                LazyVStack(spacing: 10) {
-                    ForEach(events) { event in
-                        VehicleEventRow(event: event)
+                LazyVStack(spacing: 12) {
+                    ForEach(alarms) { event in
+                        AlarmRecordRow(event: event)
                     }
                 }
             }
@@ -147,77 +146,148 @@ private struct VehicleEventsCard: View {
     }
 }
 
-private struct VehicleEventRow: View {
+private struct ChargingRecordsCard: View {
+    var events: [NinebotVehicleEvent]
+
+    private var chargeEnds: [NinebotVehicleEvent] {
+        events.filter { $0.type == .chargeEnded }.sorted { $0.occurredAt > $1.occurredAt }
+    }
+
+    var body: some View {
+        SettingsRecordCard(
+            title: "充电记录",
+            subtitle: chargeEnds.isEmpty ? "暂无完整充电周期" : "记录开始、结束与电池状态",
+            systemImage: "bolt.batteryblock.fill",
+            tint: Color.teslaGreen,
+            badge: nil
+        ) {
+            if chargeEnds.isEmpty {
+                EmptySettingsRecord(message: "下一次检测到充电结束后，会自动生成完整充电记录。", systemImage: "bolt.slash")
+            } else {
+                LazyVStack(spacing: 12) {
+                    ForEach(chargeEnds) { endEvent in
+                        ChargingRecordRow(endEvent: endEvent, startEvent: matchingStart(for: endEvent))
+                    }
+                }
+            }
+        }
+    }
+
+    private func matchingStart(for endEvent: NinebotVehicleEvent) -> NinebotVehicleEvent? {
+        events
+            .filter {
+                $0.vehicleSN == endEvent.vehicleSN
+                    && $0.type == .chargeStarted
+                    && $0.occurredAt <= endEvent.occurredAt
+            }
+            .sorted { $0.occurredAt > $1.occurredAt }
+            .first
+    }
+}
+
+private struct SettingsRecordCard<Content: View>: View {
+    var title: String
+    var subtitle: String
+    var systemImage: String
+    var tint: Color
+    var badge: String?
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(tint)
+                    .frame(width: 34, height: 34)
+                    .background(tint.opacity(0.13), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.headline.weight(.semibold))
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if let badge {
+                    Text(badge)
+                        .font(.caption2.monospacedDigit().weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(minWidth: 22, minHeight: 22)
+                        .background(.red, in: Circle())
+                        .accessibilityLabel("\(badge) 条")
+                }
+            }
+            content()
+        }
+    }
+}
+
+private struct EmptySettingsRecord: View {
+    var message: String
+    var systemImage: String
+
+    var body: some View {
+        Label(message, systemImage: systemImage)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .padding(.vertical, 4)
+    }
+}
+
+private struct AlarmRecordRow: View {
     var event: NinebotVehicleEvent
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: event.type.systemImage)
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(tint)
-                    .frame(width: 30, height: 30)
-                    .background(tint.opacity(0.14), in: Circle())
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(event.title)
-                        .font(.subheadline.weight(.semibold))
-                    Text(event.vehicleName.isEmpty ? event.vehicleSN : event.vehicleName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(Self.dateFormatter.string(from: event.occurredAt))
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
+            RecordHeader(event: event, tint: .orange)
             Text(event.detail)
-                .font(.caption)
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            EventLocationMap(event: event, tint: .orange)
+        }
+        .padding(12)
+        .background(Color.teslaControlBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
 
-            if event.hasCoordinate, let latitude = event.latitude, let longitude = event.longitude {
-                Map(position: .constant(.region(Self.region(latitude: latitude, longitude: longitude)))) {
-                    Marker(event.title, systemImage: event.type.systemImage, coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude))
-                        .tint(tint)
-                }
-                .frame(height: 116)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .allowsHitTesting(false)
-            } else {
-                Label("接口未返回事件坐标", systemImage: "location.slash")
-                    .font(.caption2)
+private struct ChargingRecordRow: View {
+    var endEvent: NinebotVehicleEvent
+    var startEvent: NinebotVehicleEvent?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            RecordHeader(event: endEvent, tint: Color.teslaGreen)
+
+            HStack(spacing: 8) {
+                ChargingTimePill(title: "开始", value: startEvent.map { Self.dateFormatter.string(from: $0.occurredAt) } ?? "未返回", systemImage: "play.fill")
+                ChargingTimePill(title: "结束", value: Self.dateFormatter.string(from: endEvent.occurredAt), systemImage: "checkmark")
+            }
+
+            if let detail = startEvent?.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                if let durationMinutes = event.durationMinutes {
-                    EventValuePill(title: "充电耗时", value: Self.durationText(durationMinutes), systemImage: "timer")
+                if let durationMinutes = endEvent.durationMinutes {
+                    EventValuePill(title: "总耗时", value: Self.durationText(durationMinutes), systemImage: "timer")
                 }
-                if let chargingPower = event.chargingPower {
-                    EventValuePill(title: "充电功率", value: "\(Int(chargingPower.rounded())) W", systemImage: "bolt.fill")
+                if let power = endEvent.chargingPower ?? startEvent?.chargingPower {
+                    EventValuePill(title: "充电功率", value: "\(Int(power.rounded())) W", systemImage: "bolt.fill")
                 }
-                if let batteryTemperature = event.batteryTemperature {
-                    EventValuePill(title: "电池温度", value: "\(String(format: "%.1f", batteryTemperature)) °C", systemImage: "thermometer.medium")
+                if let temperature = endEvent.batteryTemperature ?? startEvent?.batteryTemperature {
+                    EventValuePill(title: "电池温度", value: String(format: "%.1f °C", temperature), systemImage: "thermometer.medium")
                 }
-                if let voltage = event.voltage {
-                    EventValuePill(title: "电压", value: "\(String(format: "%.1f", voltage)) V", systemImage: "gauge.with.dots.needle.67percent")
+                if let voltage = endEvent.voltage {
+                    EventValuePill(title: "结束电压", value: String(format: "%.1f V", voltage), systemImage: "gauge.with.dots.needle.67percent")
                 }
             }
+
+            EventLocationMap(event: endEvent, tint: Color.teslaGreen)
         }
         .padding(12)
-        .background(Color.teslaControlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(tint.opacity(0.14), lineWidth: 1))
-    }
-
-    private var tint: Color {
-        switch event.type {
-        case .alarm: return .orange
-        case .chargeStarted: return .blue
-        case .chargeEnded: return Color.teslaGreen
-        }
+        .background(Color.teslaControlBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -230,15 +300,93 @@ private struct VehicleEventRow: View {
         let total = max(Int(minutes.rounded()), 0)
         let hours = total / 60
         let remaining = total % 60
-        if hours > 0 { return "\(hours)小时\(remaining)分" }
-        return "\(remaining)分钟"
+        return hours > 0 ? "\(hours)小时\(remaining)分" : "\(remaining)分钟"
+    }
+}
+
+private struct RecordHeader: View {
+    var event: NinebotVehicleEvent
+    var tint: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: event.type.systemImage)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(tint.opacity(0.14), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(event.title).font(.subheadline.weight(.semibold))
+                Text(event.vehicleName.isEmpty ? event.vehicleSN : event.vehicleName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Text(Self.dateFormatter.string(from: event.occurredAt))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter
+    }()
+}
+
+private struct ChargingTimePill: View {
+    var title: String
+    var value: String
+    var systemImage: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage).font(.caption2.weight(.bold)).foregroundStyle(Color.teslaGreen)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.caption2).foregroundStyle(.secondary)
+                Text(value).font(.caption.monospacedDigit().weight(.semibold)).lineLimit(1).minimumScaleFactor(0.72)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(9)
+        .background(Color.teslaPageBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct EventLocationMap: View {
+    var event: NinebotVehicleEvent
+    var tint: Color
+
+    var body: some View {
+        if event.hasCoordinate, let latitude = event.latitude, let longitude = event.longitude {
+            Map(position: .constant(.region(Self.region(latitude: latitude, longitude: longitude)))) {
+                Marker(event.title, systemImage: event.type.systemImage, coordinate: NinebotCoordinateTransform.mapKitCoordinate(latitude: latitude, longitude: longitude))
+                    .tint(tint)
+            }
+            .frame(height: 116)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .allowsHitTesting(false)
+            .overlay(alignment: .bottomLeading) {
+                Label("事件位置", systemImage: "location.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(8)
+            }
+        } else {
+            Label("接口未返回事件坐标", systemImage: "location.slash")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private static func region(latitude: Double, longitude: Double) -> MKCoordinateRegion {
-        MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
-            span: MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)
-        )
+        let coordinate = NinebotCoordinateTransform.mapKitCoordinate(latitude: latitude, longitude: longitude)
+        return MKCoordinateRegion(center: coordinate, span: MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012))
     }
 }
 
@@ -933,7 +1081,7 @@ private struct AccountSummaryRow: View {
             .frame(width: 42, height: 42)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(hasAccount ? "当前九号账号" : "绑定九号账号")
+                Text(hasAccount ? "服务器九号云端" : "NinePlus 登录状态")
                     .font(.subheadline.weight(.semibold))
                 Text(summaryText)
                     .font(.caption)
@@ -956,7 +1104,7 @@ private struct AccountSummaryRow: View {
         if hasAccount {
             return accountText
         }
-        return dataSourceMode == .platform ? "绑定后自动刷新车辆数据" : "代理模式下直接登录当前代理"
+        return dataSourceMode == .platform ? "由服务器统一管理，当前设备无需重复登录九号账号" : "当前服务会话状态"
     }
 
     private var detailText: String? {

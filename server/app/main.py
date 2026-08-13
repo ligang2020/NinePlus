@@ -5,12 +5,15 @@ import copy
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import secrets
 import shutil
 import sys
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Literal
 
@@ -37,9 +40,10 @@ SN_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 TRAVEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 MONTH_PATTERN = re.compile(r"^(?:\d{4}-?\d{2})$")
 SESSION_ROOT = Path(os.getenv("NINEPLUS_SESSION_ROOT", "/run/nineplus/sessions"))
-# Keep the official ninecli token/config on the persistent session volume. The
-# portal cookie is intentionally still short-lived/in-memory, but a new portal
-# login will automatically re-attach this already-bound official account.
+# Keep the official ninecli token/config on the persistent session volume.
+# NinePlus credentials authenticate a user session; the official cloud binding
+# belongs to the server installation and is reused by every device that logs
+# into that NinePlus account.
 PERSISTENT_CLOUD_DIR = SESSION_ROOT / "official"
 PERSISTENT_CLOUD_META = SESSION_ROOT / "official-account.json"
 TOTAL_MILEAGE_CACHE = SESSION_ROOT / "total-mileage.json"
@@ -58,7 +62,7 @@ logging.basicConfig(level=os.getenv("NINEPLUS_LOG_LEVEL", "INFO"))
 
 app = FastAPI(
     title="NinePlus",
-    version="1.2.62",
+    version="1.2.63",
     description=(
         "Unofficial personal Ninebot web console. The backend invokes the "
         "community ninecli command-line client against the user-facing cloud service."
@@ -179,6 +183,148 @@ def cli_available() -> bool:
         return False
 
 
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(str(value).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _coordinate_pair(value: Any) -> list[float] | None:
+    """Normalize Ninebot coordinates to [latitude, longitude].
+
+    Ninebot's official travel detail uses ``longitude,latitude,speed,...``
+    while status uses an object with ``lat``/``lon``.  The API exposes a
+    single unambiguous shape to web and iOS clients, while retaining the raw
+    cloud response alongside it.
+    """
+    if isinstance(value, str):
+        parts = [_number(part) for part in re.split(r"[,;|\s]+", value.strip()) if part]
+        if len(parts) < 2 or parts[0] is None or parts[1] is None:
+            return None
+        first, second = parts[0], parts[1]
+    elif isinstance(value, (list, tuple)) and len(value) >= 2:
+        first, second = _number(value[0]), _number(value[1])
+        if first is None or second is None:
+            return None
+    elif isinstance(value, dict):
+        lat = next((_number(value.get(key)) for key in ("lat", "latitude", "gcj02_lat", "gcj02Lat", "y") if value.get(key) is not None), None)
+        lon = next((_number(value.get(key)) for key in ("lon", "lng", "longitude", "gcj02_lon", "gcj02Lng", "gcj02_lng", "x") if value.get(key) is not None), None)
+        if lat is None or lon is None:
+            return None
+        first, second = lat, lon
+    else:
+        return None
+
+    if abs(first) > 90 and abs(second) <= 90:
+        latitude, longitude = second, first
+    else:
+        latitude, longitude = first, second
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return None
+    return [latitude, longitude]
+
+
+def wgs84_to_gcj02(latitude: float, longitude: float) -> list[float]:
+    """Convert official Ninebot WGS-84 GPS coordinates for AMap tiles.
+
+    Ninebot status/travel payloads use WGS-84.  高德地图 (the web map's
+    primary tile source) is GCJ-02, so plotting raw values visibly shifts a
+    marker by several hundred metres in mainland China.
+    """
+    if not (72.004 < longitude < 137.8347 and 0.8293 < latitude < 55.8271):
+        return [latitude, longitude]
+    x = longitude - 105.0
+    y = latitude - 35.0
+    latitude_delta = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * math.sqrt(abs(x))
+    latitude_delta += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    latitude_delta += (20.0 * math.sin(y * math.pi) + 40.0 * math.sin(y / 3.0 * math.pi)) * 2.0 / 3.0
+    latitude_delta += (160.0 * math.sin(y / 12.0 * math.pi) + 320.0 * math.sin(y * math.pi / 30.0)) * 2.0 / 3.0
+    longitude_delta = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * math.sqrt(abs(x))
+    longitude_delta += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    longitude_delta += (20.0 * math.sin(x * math.pi) + 40.0 * math.sin(x / 3.0 * math.pi)) * 2.0 / 3.0
+    longitude_delta += (150.0 * math.sin(x / 12.0 * math.pi) + 300.0 * math.sin(x / 30.0 * math.pi)) * 2.0 / 3.0
+    eccentricity = 0.00669342162296594323
+    radians = latitude / 180.0 * math.pi
+    magic = 1.0 - eccentricity * math.sin(radians) ** 2
+    sqrt_magic = math.sqrt(magic)
+    latitude_delta = (latitude_delta * 180.0) / ((6378245.0 * (1.0 - eccentricity)) / (magic * sqrt_magic) * math.pi)
+    longitude_delta = (longitude_delta * 180.0) / (6378245.0 / sqrt_magic * math.cos(radians) * math.pi)
+    return [latitude + latitude_delta, longitude + longitude_delta]
+
+
+def _track_from_trail(value: Any) -> list[list[float]]:
+    if not isinstance(value, str):
+        return []
+    points: list[list[float]] = []
+    for segment in re.split(r"[;|\n]+", value):
+        point = _coordinate_pair(segment)
+        if point and (not points or point != points[-1]):
+            points.append(point)
+    return points
+
+
+def _find_trail(value: Any) -> str | None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).lower() == "trail" and isinstance(child, str) and child.strip():
+                return child
+            found = _find_trail(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_trail(child)
+            if found:
+                return found
+    return None
+
+
+def normalize_travel_detail(payload: Any) -> Any:
+    """Add stable route fields without altering the upstream response."""
+    if not isinstance(payload, dict):
+        return payload
+    detail = copy.deepcopy(payload)
+    trail = _find_trail(detail)
+    track = _track_from_trail(trail) if trail else []
+    if len(track) >= 2:
+        map_track = [wgs84_to_gcj02(latitude, longitude) for latitude, longitude in track]
+        detail["track"] = map_track
+        detail["start_coordinate"] = map_track[0]
+        detail["end_coordinate"] = map_track[-1]
+        detail["coordinate_system"] = "gcj02"
+        detail["source_coordinate_system"] = "wgs84"
+        detail["track_point_count"] = len(track)
+    return detail
+
+
+def normalize_status_location(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    location = payload.get("loc") or payload.get("location") or payload.get("position")
+    coordinate = _coordinate_pair(location)
+    if not coordinate:
+        coordinate = _coordinate_pair({"lat": payload.get("lat"), "lon": payload.get("lon")})
+    if not coordinate:
+        return payload
+    result = copy.deepcopy(payload)
+    map_coordinate = wgs84_to_gcj02(coordinate[0], coordinate[1])
+    result["location_coordinate"] = map_coordinate
+    result["location_coordinate_system"] = "gcj02"
+    result["source_coordinate_system"] = "wgs84"
+    # Keep both coordinate spaces explicit for native clients: the web map
+    # consumes the GCJ-02 pair, while weather/geofencing can still use the
+    # original WGS-84 fix without a lossy reverse conversion.
+    result["source_latitude"] = coordinate[0]
+    result["source_longitude"] = coordinate[1]
+    result["latitude"] = map_coordinate[0]
+    result["longitude"] = map_coordinate[1]
+    return result
+
+
 def parse_cli_json(stdout: bytes) -> Any:
     text = stdout.decode("utf-8", errors="replace").strip()
     if not text:
@@ -236,20 +382,48 @@ def cleanup_session(session: CloudSession | None) -> None:
 
 
 def restore_persistent_cloud() -> CloudSession | None:
-    """Restore the previously bound official account after a process restart."""
-    if not PERSISTENT_CLOUD_DIR.is_dir() or not (PERSISTENT_CLOUD_DIR / "config.json").is_file():
-        return None
-    account = ""
+    """Return the installation-wide official cloud session.
+
+    The binding is deliberately independent from a browser or phone session.
+    This is what makes a second device work after it logs into NinePlus: it
+    receives a new portal session, then reuses the same persisted ninecli
+    credentials instead of asking for the official account again.
+
+    NAS bind mounts can contain files created by an older root container. Treat
+    unreadable legacy state as unavailable instead of turning a valid portal
+    login into an unhandled 500 response.
+    """
+    # Reuse the in-memory object when another device/session already attached
+    # the shared config. Besides avoiding duplicate locks, this also preserves
+    # its short-lived response cache across device logins.
+    for existing in sessions.values():
+        cloud = existing.cloud
+        if is_persistent_cloud(cloud):
+            cloud.expires_at = max(cloud.expires_at, time.time() + SESSION_TTL)
+            return cloud
+
     try:
+        if not PERSISTENT_CLOUD_DIR.is_dir() or not (PERSISTENT_CLOUD_DIR / "config.json").is_file():
+            return None
         metadata = json.loads(PERSISTENT_CLOUD_META.read_text(encoding="utf-8"))
-        account = str(metadata.get("account") or "").strip()
-    except (OSError, ValueError, TypeError):
-        logger.warning("persistent official account metadata is unreadable")
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning("persistent official account binding is unavailable: %s", exc)
+        return None
+    account = str(metadata.get("account") or "").strip() if isinstance(metadata, dict) else ""
     if not account:
         logger.warning("persistent official config found without account metadata; ignoring it")
         return None
     logger.info("restored persistent official account binding for %s", account)
     return CloudSession(account, PERSISTENT_CLOUD_DIR, time.time() + SESSION_TTL)
+
+
+def attach_persistent_cloud(portal: PortalSession) -> CloudSession | None:
+    """Attach the server-wide cloud binding to a freshly authenticated user."""
+    if portal.cloud is None:
+        portal.cloud = restore_persistent_cloud()
+    if portal.cloud is not None:
+        portal.cloud.expires_at = portal.expires_at
+    return portal.cloud
 
 
 def persist_official_account(account: str) -> None:
@@ -281,20 +455,34 @@ def _session_payload() -> dict[str, Any]:
 
 
 def persist_portal_sessions() -> None:
-    """Persist portal tokens without storing either account password."""
+    """Persist portal tokens without storing either account password.
+
+    A legacy NAS deployment may leave root-owned state files in the bind mount.
+    Persistence is best-effort: a permission problem must never turn a valid
+    login into an HTTP 500 because the active session is already in memory.
+    """
     try:
         SESSION_ROOT.mkdir(parents=True, exist_ok=True)
-        SESSION_ROOT.chmod(0o700)
+        try:
+            SESSION_ROOT.chmod(0o700)
+        except OSError as exc:
+            logger.warning("could not chmod session root %s: %s", SESSION_ROOT, exc)
         temporary = PORTAL_SESSIONS_FILE.with_suffix(".json.tmp")
         temporary.write_text(
             json.dumps(_session_payload(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        temporary.chmod(0o600)
+        try:
+            temporary.chmod(0o600)
+        except OSError as exc:
+            logger.warning("could not chmod temporary session file: %s", exc)
         os.replace(temporary, PORTAL_SESSIONS_FILE)
-        PORTAL_SESSIONS_FILE.chmod(0o600)
+        try:
+            PORTAL_SESSIONS_FILE.chmod(0o600)
+        except OSError as exc:
+            logger.warning("could not chmod session file: %s", exc)
     except OSError as exc:
-        logger.error("could not persist NinePlus sessions: %s", exc)
+        logger.warning("could not persist NinePlus sessions; keeping session in memory: %s", exc)
 
 
 def restore_portal_sessions() -> None:
@@ -309,6 +497,7 @@ def restore_portal_sessions() -> None:
 
     now = time.time()
     restored = 0
+    shared_cloud: CloudSession | None = None
     for token, record in records.items():
         if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{20,256}", token):
             continue
@@ -323,10 +512,11 @@ def restore_portal_sessions() -> None:
 
         portal = PortalSession(username, float(expires_at))
         if record.get("official_account_bound"):
-            cloud = restore_persistent_cloud()
-            if cloud is not None:
-                cloud.expires_at = portal.expires_at
-                portal.cloud = cloud
+            if shared_cloud is None:
+                shared_cloud = restore_persistent_cloud()
+            if shared_cloud is not None:
+                shared_cloud.expires_at = max(shared_cloud.expires_at, portal.expires_at)
+                portal.cloud = shared_cloud
         sessions[token] = portal
         restored += 1
 
@@ -422,7 +612,7 @@ def get_session(
     del authorization
     token = x_session or cookie_session
     if not token or token not in sessions:
-        error(401, "not_authenticated", "请先登录九号账号")
+        error(401, "not_authenticated", "请先登录 NinePlus 账号")
     session = sessions[token]
 
     now = time.time()
@@ -452,9 +642,11 @@ def portal_from_request(request: Request, cookie: str | None) -> tuple[str, Port
 
 def auth_from_request(request: Request, cookie: str | None) -> tuple[str, CloudSession]:
     token, portal = portal_from_request(request, cookie)
-    if portal.cloud is None:
-        error(409, "cloud_account_required", "请先绑定九号官方账号")
-    return token, portal.cloud
+    cloud = attach_persistent_cloud(portal)
+    if cloud is None:
+        error(409, "cloud_account_not_configured", "NinePlus 已登录，但服务器尚未完成九号云端绑定")
+    persist_portal_sessions()
+    return token, cloud
 
 
 async def run_cli(
@@ -564,7 +756,12 @@ async def cloud_call(
 async def startup() -> None:
     global session_reaper_task
     SESSION_ROOT.mkdir(parents=True, exist_ok=True)
-    SESSION_ROOT.chmod(0o700)
+    try:
+        SESSION_ROOT.chmod(0o700)
+    except OSError as exc:
+        # Some NAS bind mounts reject chmod even though the mounted directory
+        # is already private and writable by the container user.
+        logger.warning("could not chmod session root %s: %s", SESSION_ROOT, exc)
     restore_portal_sessions()
     session_reaper_task = asyncio.create_task(session_reaper())
     if not cli_available():
@@ -582,7 +779,8 @@ async def shutdown() -> None:
             pass
         session_reaper_task = None
     # Keep the mounted official-account config and portal sessions across
-    # normal container shutdown/recreation. Explicit logout still removes them.
+    # normal container shutdown/recreation. Logging out only ends the current
+    # NinePlus session; it must not remove the installation-wide cloud binding.
     persist_portal_sessions()
     sessions.clear()
 
@@ -617,7 +815,8 @@ async def index():
 
 
 @app.get("/healthz")
-async def healthz():
+async def healthz(response: Response):
+    response.headers["Cache-Control"] = "no-store"
     return ok({
         "service": "nineplus",
         "version": app.version,
@@ -625,6 +824,7 @@ async def healthz():
         "ninecli": cli_available(),
         "uptime_seconds": int(time.time() - BOOT_TIME),
         "active_sessions": len(sessions),
+        "server_time": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
     })
 
 
@@ -648,8 +848,12 @@ def portal_login_result(session: PortalSession, token: str) -> dict[str, Any]:
         "username": session.username,
         "session_token": token,
         "expires_at": session.expires_at,
+        # Kept for older clients. It describes server readiness, not a second
+        # login step required on the current device.
         "official_account_bound": cloud is not None,
         "official_account": cloud.account if cloud is not None else None,
+        "login_ready": True,
+        "cloud_ready": cloud is not None,
     }
 
 
@@ -670,9 +874,10 @@ async def perform_portal_login(body: PortalLoginBody, request: Request, response
 
     token = secrets.token_urlsafe(32)
     portal = PortalSession(username, time.time() + SESSION_TTL)
-    # Re-attach the saved official account so users do not need to enter the
-    # Ninebot cloud credentials after every container restart or portal login.
-    portal.cloud = restore_persistent_cloud()
+    # The official cloud binding is installation-wide. A new browser, phone,
+    # or tablet gets a fresh NinePlus session but never needs the official
+    # account credentials again.
+    attach_persistent_cloud(portal)
     sessions[token] = portal
     persist_portal_sessions()
     set_session_cookie(request, response, token)
@@ -680,17 +885,10 @@ async def perform_portal_login(body: PortalLoginBody, request: Request, response
 
 
 async def perform_official_login(body: OfficialLoginBody, request: Request, response: Response) -> dict[str, Any]:
-    # The mobile app intentionally has no NinePlus portal-login screen. Start
-    # an anonymous per-device portal session on the official-account login
-    # endpoint, then bind the supplied Ninebot account to that session.
-    try:
-        token, portal = portal_from_request(request, request.cookies.get("nineplus_session"))
-    except HTTPException as exc:
-        if exc.status_code != 401:
-            raise
-        token = secrets.token_urlsafe(32)
-        portal = PortalSession("official-app", time.time() + SESSION_TTL)
-        sessions[token] = portal
+    # The official Ninebot account is only a one-time server configuration.
+    # It must never create an anonymous session or become an alternative
+    # login path: every device first authenticates with NinePlus.
+    token, portal = portal_from_request(request, request.cookies.get("nineplus_session"))
 
     if not cli_available():
         error(503, "dependency_missing", "ninecli 未安装")
@@ -789,6 +987,8 @@ async def logout(request: Request, response: Response, nineplus_session: str | N
 @app.get("/auth/me")
 async def me(request: Request, nineplus_session: str | None = Cookie(default=None)):
     token, session = portal_from_request(request, nineplus_session)
+    attach_persistent_cloud(session)
+    persist_portal_sessions()
     return ok(portal_login_result(session, token))
 
 
@@ -796,6 +996,7 @@ async def me(request: Request, nineplus_session: str | None = Cookie(default=Non
 async def refresh_auth(request: Request, response: Response, nineplus_session: str | None = Cookie(default=None)):
     token, session = portal_from_request(request, nineplus_session)
     session.expires_at = time.time() + SESSION_TTL
+    attach_persistent_cloud(session)
     if session.cloud is not None:
         session.cloud.expires_at = session.expires_at
     persist_portal_sessions()
@@ -851,9 +1052,6 @@ def enrich_status_for_legacy_clients(sn: str, payload: Any) -> Any:
 def current_month_string() -> str:
     # ninecli expects YYYYMM; use China time because the app displays China
     # calendar months even when the container host uses another timezone.
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
     return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m")
 
 
@@ -903,6 +1101,7 @@ async def dashboard(
             continue
         sn = validate_sn(sn_value)
         status = await dashboard_read(session, ("status", sn), CACHE_TTL_STATUS)
+        status = normalize_status_location(status)
         battery = await dashboard_read(session, ("battery", sn), CACHE_TTL_BATTERY)
         travel = await dashboard_read(
             session,
@@ -925,7 +1124,25 @@ async def vehicle_status(sn: str, request: Request, nineplus_session: str | None
     _, session = auth_from_request(request, nineplus_session)
     normalized_sn = validate_sn(sn)
     payload = await cloud_call(session, "status", normalized_sn, cache_ttl=CACHE_TTL_STATUS)
-    return ok(enrich_status_for_legacy_clients(normalized_sn, payload))
+    payload = enrich_status_for_legacy_clients(normalized_sn, payload)
+    return ok(normalize_status_location(payload))
+
+
+@app.get("/vehicles/{sn}/location")
+async def vehicle_location(sn: str, request: Request, nineplus_session: str | None = Cookie(default=None)):
+    _, session = auth_from_request(request, nineplus_session)
+    payload = await cloud_call(session, "status", validate_sn(sn), cache_ttl=CACHE_TTL_STATUS)
+    normalized = normalize_status_location(payload)
+    if not isinstance(normalized, dict) or "location_coordinate" not in normalized:
+        error(404, "location_unavailable", "九号云暂未返回有效定位数据")
+    coordinate = normalized["location_coordinate"]
+    return ok({
+        "latitude": coordinate[0],
+        "longitude": coordinate[1],
+        "coordinate_system": "gcj02",
+        "accuracy_meters": _number((normalized.get("loc") or {}).get("acc")) if isinstance(normalized.get("loc"), dict) else None,
+        "updated_at": time.time(),
+    })
 
 
 @app.get("/vehicles/{sn}/battery")
@@ -973,7 +1190,46 @@ async def travel_detail(
     nineplus_session: str | None = Cookie(default=None),
 ):
     _, session = auth_from_request(request, nineplus_session)
-    return ok(await cloud_call(session, "travel", validate_sn(sn), "--detail", validate_travel_id(travel_id)))
+    payload = await cloud_call(session, "travel", validate_sn(sn), "--detail", validate_travel_id(travel_id))
+    return ok(normalize_travel_detail(payload))
+
+
+@app.post("/vehicles/{sn}/travel-sync")
+async def travel_sync(
+    sn: str,
+    request: Request,
+    month: str = "",
+    page_size: int = 20,
+    nineplus_session: str | None = Cookie(default=None),
+):
+    if page_size < 1 or page_size > 100:
+        error(400, "invalid_pagination", "分页参数超出范围")
+    _, session = auth_from_request(request, nineplus_session)
+    normalized_month = normalize_month(month) or current_month_string()
+    payload = await cloud_call(
+        session, "travel", validate_sn(sn), "--month", normalized_month,
+        cache_ttl=CACHE_TTL_TRAVEL,
+    )
+    if isinstance(payload, list):
+        all_rows = payload
+        upstream_total = None
+    elif isinstance(payload, dict):
+        all_rows = payload.get("list") or payload.get("rows") or payload.get("records") or payload.get("travels") or []
+        upstream_total = _number(payload.get("times") or payload.get("total"))
+    else:
+        all_rows = []
+        upstream_total = None
+    rows = all_rows[:page_size] if isinstance(all_rows, list) else []
+    total = int(upstream_total) if upstream_total is not None else len(all_rows)
+    return ok({
+        "month": normalized_month,
+        "page": 1,
+        "page_size": page_size,
+        "total": total,
+        "items": rows,
+        "records": rows,
+        "has_more": total > len(rows),
+    })
 
 
 CONTROL_COMMANDS = {
