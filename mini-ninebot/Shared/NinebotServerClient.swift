@@ -654,11 +654,11 @@ private extension NinebotServerClient {
             lastUsedElectricity: lastRide?.usedElectricity,
             rideRecords: rideRecords.isEmpty ? nil : rideRecords,
             dailyMileageRecords: dailyMileageRecords.isEmpty ? nil : dailyMileageRecords,
+            serverPrediction: prediction,
             updatedAt: updatedAt,
             rawStatus: statusRoot.isEmpty ? nil : statusRoot,
             rawTravel: travelObject.isEmpty ? nil : travelObject,
-            rawBattery: batteryRoot.isEmpty ? nil : batteryRoot,
-            serverPrediction: prediction
+            rawBattery: batteryRoot.isEmpty ? nil : batteryRoot
         )
     }
 
