@@ -4981,6 +4981,7 @@ private struct NinebotRideDetailView: View {
                         points: localRecord.speedTrackPoints,
                         startedAt: localRecord.startedAt,
                         endedAt: localRecord.endedAt,
+                        speedEstimationDurationSeconds: localRecord.durationSeconds,
                         distanceText: formatDistance(localRecord.distanceKilometers)
                     )
                 } else if !interfaceTrackPoints.isEmpty {
@@ -4990,6 +4991,7 @@ private struct NinebotRideDetailView: View {
                         points: interfaceTrackSpeedPoints,
                         startedAt: effectiveRecord.startedAt,
                         endedAt: effectiveRecord.endedAt,
+                        speedEstimationDurationSeconds: interfaceTrackDurationSeconds,
                         distanceText: formatDistance(effectiveRecord.mileage)
                     )
                 }
@@ -5044,6 +5046,15 @@ private struct NinebotRideDetailView: View {
                 speedKmh: point.speedKmh
             )
         }
+    }
+
+    private var interfaceTrackDurationSeconds: TimeInterval? {
+        if let durationMinutes = effectiveRecord.durationMinutes, durationMinutes > 0 {
+            return durationMinutes * 60
+        }
+        guard let startedAt = effectiveRecord.startedAt, let endedAt = effectiveRecord.endedAt else { return nil }
+        let duration = endedAt.timeIntervalSince(startedAt)
+        return duration > 0 ? duration : nil
     }
 
     private func loadRemoteDetailIfNeeded() async {
@@ -5144,6 +5155,7 @@ private struct RideTrackExperiencePanel: View {
     var points: [TrackSpeedPoint]
     var startedAt: Date?
     var endedAt: Date?
+    var speedEstimationDurationSeconds: TimeInterval?
     var distanceText: String?
 
     @State private var cameraPosition: MapCameraPosition
@@ -5161,6 +5173,7 @@ private struct RideTrackExperiencePanel: View {
         points: [TrackSpeedPoint],
         startedAt: Date?,
         endedAt: Date?,
+        speedEstimationDurationSeconds: TimeInterval? = nil,
         distanceText: String? = nil
     ) {
         self.title = title
@@ -5168,6 +5181,7 @@ private struct RideTrackExperiencePanel: View {
         self.points = points
         self.startedAt = startedAt
         self.endedAt = endedAt
+        self.speedEstimationDurationSeconds = speedEstimationDurationSeconds
         self.distanceText = distanceText
         _cameraPosition = State(initialValue: .region(Self.region(for: points.map(\.coordinate))))
     }
@@ -5208,11 +5222,11 @@ private struct RideTrackExperiencePanel: View {
                         }
                     }
 
-                    if let firstPoint = points.first {
+                    if let firstPoint = renderedPoints.first {
                         Marker("起点", systemImage: "flag.fill", coordinate: firstPoint.coordinate)
                             .tint(.green)
                     }
-                    if let lastPoint = points.last, points.count > 1 {
+                    if let lastPoint = renderedPoints.last, renderedPoints.count > 1 {
                         Marker("终点", systemImage: "flag.checkered", coordinate: lastPoint.coordinate)
                             .tint(.red)
                     }
@@ -5247,15 +5261,13 @@ private struct RideTrackExperiencePanel: View {
             }
 
             TrackSpeedLegend()
-            Text(hasPointSpeeds
-                 ? "路线根据车辆逐点速度着色；回放时会高亮已骑行的路段。"
-                 : "接口未返回逐点速度，路线以默认绿色显示。")
+            Text(speedColorDescription)
                 .font(.caption2)
                 .foregroundStyle(Color.teslaSecondaryText)
 
             RideEndpointAddressSection(
-                startAddress: startAddress ?? fallbackAddress(for: points.first?.coordinate),
-                endAddress: endAddress ?? fallbackAddress(for: points.last?.coordinate),
+                startAddress: startAddress ?? fallbackAddress(for: renderedPoints.first?.coordinate),
+                endAddress: endAddress ?? fallbackAddress(for: renderedPoints.last?.coordinate),
                 startedAt: startedAt,
                 endedAt: endedAt,
                 isResolving: isResolvingAddresses
@@ -5277,24 +5289,47 @@ private struct RideTrackExperiencePanel: View {
         }
     }
 
-    private var speedSegments: [TrackSpeedSegment] {
-        makeSpeedTrackSegments(from: points)
+    private var renderedPoints: [TrackSpeedPoint] {
+        guard !hasSourcePointSpeeds,
+              let speedEstimationDurationSeconds,
+              speedEstimationDurationSeconds > 1 else {
+            return points
+        }
+        return estimatedTrackSpeedPoints(from: points, durationSeconds: speedEstimationDurationSeconds) ?? points
     }
 
-    private var maxSpeedPoint: TrackSpeedPoint? {
-        bestSpeedTrackPoint(from: points)
-    }
-
-    private var hasPointSpeeds: Bool {
+    private var hasSourcePointSpeeds: Bool {
         points.contains { $0.speedKmh != nil }
     }
 
+    private var hasEstimatedPointSpeeds: Bool {
+        !hasSourcePointSpeeds && renderedPoints.contains { $0.speedKmh != nil }
+    }
+
+    private var speedColorDescription: String {
+        if hasSourcePointSpeeds {
+            return "路线根据九号云返回的逐点速度着色；回放时会高亮已骑行的路段。"
+        }
+        if hasEstimatedPointSpeeds {
+            return "九号云未提供逐点速度，已按定位点间距和行程时长估算速度颜色。"
+        }
+        return "本次行程没有可用于估算的速度或时长数据，路线以默认绿色显示。"
+    }
+
+    private var speedSegments: [TrackSpeedSegment] {
+        makeSpeedTrackSegments(from: renderedPoints)
+    }
+
+    private var maxSpeedPoint: TrackSpeedPoint? {
+        bestSpeedTrackPoint(from: renderedPoints)
+    }
+
     private var canPlayback: Bool {
-        points.count > 1
+        renderedPoints.count > 1
     }
 
     private var endpointLookupKey: String {
-        guard let first = points.first?.coordinate, let last = points.last?.coordinate else {
+        guard let first = renderedPoints.first?.coordinate, let last = renderedPoints.last?.coordinate else {
             return "no-endpoints"
         }
         return String(format: "%.5f,%.5f|%.5f,%.5f", first.latitude, first.longitude, last.latitude, last.longitude)
@@ -5309,9 +5344,13 @@ private struct RideTrackExperiencePanel: View {
 
                 Spacer()
 
-                Text(playbackSpeed.map(formatSpeed) ?? "-- km/h")
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(Color.teslaSecondaryText)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(playbackSpeedLabel)
+                        .font(.caption2)
+                    Text(playbackSpeed.map(formatSpeed) ?? "-- km/h")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                }
+                .foregroundStyle(Color.teslaSecondaryText)
             }
 
             HStack(spacing: 10) {
@@ -5359,33 +5398,37 @@ private struct RideTrackExperiencePanel: View {
     }
 
     private var playbackCoordinate: CLLocationCoordinate2D? {
-        guard points.count > 1 else { return points.first?.coordinate }
-        let rawIndex = Double(points.count - 1) * playbackProgress
-        let lowerIndex = min(max(Int(rawIndex.rounded(.down)), 0), points.count - 2)
+        guard renderedPoints.count > 1 else { return renderedPoints.first?.coordinate }
+        let rawIndex = Double(renderedPoints.count - 1) * playbackProgress
+        let lowerIndex = min(max(Int(rawIndex.rounded(.down)), 0), renderedPoints.count - 2)
         let progressWithinSegment = rawIndex - Double(lowerIndex)
         return interpolate(
-            from: points[lowerIndex].coordinate,
-            to: points[lowerIndex + 1].coordinate,
+            from: renderedPoints[lowerIndex].coordinate,
+            to: renderedPoints[lowerIndex + 1].coordinate,
             progress: progressWithinSegment
         )
     }
 
     private var playbackSpeed: Double? {
-        guard !points.isEmpty else { return nil }
-        let index = min(max(Int((Double(points.count - 1) * playbackProgress).rounded()), 0), points.count - 1)
-        return points[index].speedKmh
+        guard !renderedPoints.isEmpty else { return nil }
+        let index = min(max(Int((Double(renderedPoints.count - 1) * playbackProgress).rounded()), 0), renderedPoints.count - 1)
+        return renderedPoints[index].speedKmh
+    }
+
+    private var playbackSpeedLabel: String {
+        hasEstimatedPointSpeeds ? "估算速度" : "当前速度"
     }
 
     private var playedSpeedSegments: [TrackSpeedSegment] {
-        guard showsPlaybackVehicle, points.count > 1, let playbackCoordinate else { return [] }
-        let rawIndex = Double(points.count - 1) * playbackProgress
-        let fullSegmentCount = min(max(Int(rawIndex.rounded(.down)), 0), points.count - 1)
-        var playedPoints = Array(points.prefix(fullSegmentCount + 1))
+        guard showsPlaybackVehicle, renderedPoints.count > 1, let playbackCoordinate else { return [] }
+        let rawIndex = Double(renderedPoints.count - 1) * playbackProgress
+        let fullSegmentCount = min(max(Int(rawIndex.rounded(.down)), 0), renderedPoints.count - 1)
+        var playedPoints = Array(renderedPoints.prefix(fullSegmentCount + 1))
 
-        if fullSegmentCount < points.count - 1,
+        if fullSegmentCount < renderedPoints.count - 1,
            playbackProgress > 0,
            !coordinatesMatch(playedPoints.last?.coordinate, playbackCoordinate) {
-            let source = points[fullSegmentCount]
+            let source = renderedPoints[fullSegmentCount]
             playedPoints.append(
                 TrackSpeedPoint(
                     id: "playback-\(fullSegmentCount)",
@@ -5445,7 +5488,7 @@ private struct RideTrackExperiencePanel: View {
     }
 
     private func resolveEndpointAddresses() async {
-        guard let first = points.first?.coordinate, let last = points.last?.coordinate else { return }
+        guard let first = renderedPoints.first?.coordinate, let last = renderedPoints.last?.coordinate else { return }
         isResolvingAddresses = true
         defer { isResolvingAddresses = false }
 
@@ -5737,6 +5780,37 @@ private extension NinebotRecordedRide {
 
     var maxSpeedTrackPoint: TrackSpeedPoint? {
         bestSpeedTrackPoint(from: speedTrackPoints)
+    }
+}
+
+private func estimatedTrackSpeedPoints(
+    from points: [TrackSpeedPoint],
+    durationSeconds: TimeInterval
+) -> [TrackSpeedPoint]? {
+    guard points.count > 1, durationSeconds > 1 else { return nil }
+    let sampleInterval = durationSeconds / Double(points.count - 1)
+    guard sampleInterval > 0 else { return nil }
+
+    let segmentSpeeds = zip(points, points.dropFirst()).map { start, end -> Double in
+        let distance = CLLocation(latitude: start.coordinate.latitude, longitude: start.coordinate.longitude)
+            .distance(from: CLLocation(latitude: end.coordinate.latitude, longitude: end.coordinate.longitude))
+        // A point stream sampled at roughly even intervals can provide a useful
+        // fallback for route colours when Ninebot omits raw point speeds.
+        return min(max(distance / sampleInterval * 3.6, 0), 160)
+    }
+    guard segmentSpeeds.contains(where: { $0 > 0.05 }) else { return nil }
+
+    return points.enumerated().map { index, point in
+        let speed: Double
+        switch index {
+        case 0:
+            speed = segmentSpeeds[0]
+        case points.count - 1:
+            speed = segmentSpeeds[segmentSpeeds.count - 1]
+        default:
+            speed = (segmentSpeeds[index - 1] + segmentSpeeds[index]) / 2
+        }
+        return TrackSpeedPoint(id: point.id, coordinate: point.coordinate, speedKmh: speed)
     }
 }
 
