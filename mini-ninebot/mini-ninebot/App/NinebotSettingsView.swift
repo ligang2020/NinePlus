@@ -188,9 +188,9 @@ private struct ServerConnectionCard: View {
             }
 
             HStack(spacing: 8) {
-                Image(systemName: model.bearerToken.trimmed.isEmpty ? "key.slash" : "key.fill")
-                    .foregroundStyle(model.bearerToken.trimmed.isEmpty ? .secondary : Color.teslaGreen)
-                Text(model.bearerToken.trimmed.isEmpty ? "Bearer Token：未填写" : "Bearer Token：已配置（不会显示完整内容）")
+                Image(systemName: model.bearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "key.slash" : "key.fill")
+                    .foregroundStyle(model.bearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .secondary : Color.teslaGreen)
+                Text(model.bearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Bearer Token：未填写" : "Bearer Token：已配置（不会显示完整内容）")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
