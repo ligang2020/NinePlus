@@ -165,7 +165,7 @@ final class NinebotViewModel: ObservableObject {
         let portalLoginResult = store.loadPortalLoginResult()
         self.dataSourceMode = store.loadDataSourceMode()
         self.baseURLString = configuration?.baseURLString ?? NinebotAppRuntimeConfiguration.baseURL
-        self.bearerToken = ""
+        self.bearerToken = configuration?.bearerToken ?? ""
         self.portalLoginResult = portalLoginResult
         self.portalUsername = portalLoginResult?.username ?? ""
         // Old builds persisted a device-local official-account session. It is
@@ -191,7 +191,6 @@ final class NinebotViewModel: ObservableObject {
     var hasConnectionSession: Bool {
         hasConfiguration
             && activeSessionToken?.trimmed.isEmpty == false
-            && hasOfficialNinebotAccount
     }
 
     var isConnectionInputComplete: Bool {
@@ -262,7 +261,7 @@ final class NinebotViewModel: ObservableObject {
     }
 
     private func refreshAutomaticallyIfPossible(force: Bool) async {
-        guard hasConfiguration, hasOfficialNinebotAccount else { return }
+        guard hasConfiguration, activeSessionToken?.trimmed.isEmpty == false else { return }
         guard !isLoading, !isPerformingSilentDashboardRefresh else { return }
 
         let now = Date()
@@ -402,31 +401,33 @@ final class NinebotViewModel: ObservableObject {
     }
 
     func enableChargingNotifications() async {
-        await runLoadingOperation(message: "正在开启充电通知") {
-            guard self.dataSourceMode == .platform else {
+        await runLoadingOperation(message: "正在开启设备通知") {
+            guard self.dataSourceMode == .platform, self.hasConfiguration else {
                 throw NinebotPushError.missingServer
             }
+            self.saveConfiguration()
             _ = try await NinebotPushManager.shared.requestAuthorizationRegisterAndWaitForToken()
             self.pushDeviceToken = self.store.loadPushDeviceToken()
             if self.pushDeviceToken != nil {
                 try await NinebotPushManager.shared.registerStoredTokenWithServer()
-                self.statusMessage = "充电通知已开启"
+                self.statusMessage = "充电、骑行与报警通知已开启"
             } else {
-                self.statusMessage = "已允许通知，系统返回设备 Token 后会自动上报"
+                self.statusMessage = "已允许通知，系统返回 APNs Token 后会自动上报"
             }
             self.errorMessage = nil
         }
     }
 
     func syncPushDeviceToken() async {
-        await runLoadingOperation(message: "正在上报设备 Token") {
-            guard self.dataSourceMode == .platform else {
+        await runLoadingOperation(message: "正在重新上报 APNs 设备") {
+            guard self.dataSourceMode == .platform, self.hasConfiguration else {
                 throw NinebotPushError.missingServer
             }
+            self.saveConfiguration()
             _ = try await NinebotPushManager.shared.requestAuthorizationRegisterAndWaitForToken()
             self.pushDeviceToken = self.store.loadPushDeviceToken()
             try await NinebotPushManager.shared.registerStoredTokenWithServer()
-            self.statusMessage = "设备 Token 已上报"
+            self.statusMessage = "APNs 设备 Token 已上报"
             self.errorMessage = nil
         }
     }
@@ -458,10 +459,6 @@ final class NinebotViewModel: ObservableObject {
             portalLoginResult = result
             store.savePortalLoginResult(result)
             portalPassword = ""
-
-            guard result.officialAccountBound else {
-                throw NinebotProxyError.server("NinePlus 已登录，但服务器尚未完成九号云端设置，请先在服务器网页完成一次设置")
-            }
 
             let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
@@ -743,6 +740,46 @@ final class NinebotViewModel: ObservableObject {
                 ), at: 0)
             }
 
+            let oldRiding = old?.state.isRiding == true
+            let newRiding = snapshot.state.isRiding == true
+            if !oldRiding && newRiding {
+                nextEvents.insert(NinebotVehicleEvent(
+                    id: "ride-start-\(snapshot.vehicle.sn)-\(Int(now.timeIntervalSince1970))",
+                    vehicleSN: snapshot.vehicle.sn,
+                    vehicleName: snapshot.vehicle.name,
+                    type: .rideStarted,
+                    title: NinebotVehicleEventType.rideStarted.title,
+                    detail: "接口检测到车辆开始骑行\(snapshot.state.currentSpeedKmh.map { "，当前 \(Int($0.rounded())) km/h" } ?? "")",
+                    occurredAt: now,
+                    latitude: snapshot.state.latitude,
+                    longitude: snapshot.state.longitude,
+                    durationMinutes: nil,
+                    chargingPower: nil,
+                    batteryTemperature: snapshot.state.batteryTemperature,
+                    voltage: snapshot.state.batteryVoltage
+                ), at: 0)
+            } else if oldRiding && !newRiding, snapshot.state.isRiding == false {
+                let matchingStart = nextEvents.first(where: { $0.vehicleSN == snapshot.vehicle.sn && $0.type == .rideStarted })
+                let duration = matchingStart.map { max(now.timeIntervalSince($0.occurredAt) / 60, 0) }
+                nextEvents.insert(NinebotVehicleEvent(
+                    id: "ride-end-\(snapshot.vehicle.sn)-\(Int(now.timeIntervalSince1970))",
+                    vehicleSN: snapshot.vehicle.sn,
+                    vehicleName: snapshot.vehicle.name,
+                    type: .rideEnded,
+                    title: NinebotVehicleEventType.rideEnded.title,
+                    detail: "接口检测到车辆结束骑行",
+                    occurredAt: now,
+                    latitude: snapshot.state.latitude,
+                    longitude: snapshot.state.longitude,
+                    durationMinutes: duration,
+                    chargingPower: nil,
+                    batteryTemperature: snapshot.state.batteryTemperature,
+                    voltage: snapshot.state.batteryVoltage
+                ), at: 0)
+            }
+
+            // Only cloud warning/fault fields form alarm records. Lock state is
+            // intentionally excluded: “currently unlocked” is not an alarm.
             if let alarm = alarmText(in: snapshot.state.rawStatus), alarm != alarmText(in: old?.state.rawStatus) {
                 nextEvents.insert(NinebotVehicleEvent(
                     id: "alarm-\(snapshot.vehicle.sn)-\(Int(now.timeIntervalSince1970))",

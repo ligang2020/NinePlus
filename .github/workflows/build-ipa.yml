@@ -22,7 +22,7 @@ permissions:
 jobs:
   build-ipa:
     name: Build iOS IPA
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 45
 
     steps:
@@ -36,8 +36,8 @@ jobs:
           PROJECT=mini-ninebot/mini-ninebot.xcodeproj/project.pbxproj
           VERSION="$(awk -F ' = ' '/MARKETING_VERSION = / { gsub(/;/, "", $2); print $2; exit }' "$PROJECT")"
           BUILD="$(awk -F ' = ' '/CURRENT_PROJECT_VERSION = / { gsub(/;/, "", $2); print $2; exit }' "$PROJECT")"
-          test "$VERSION" = "1.2.69"
-          test "$BUILD" = "69"
+          test -n "$VERSION"
+          test -n "$BUILD"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             test "v$VERSION" = "$GITHUB_REF_NAME"
           fi
@@ -103,5 +103,5 @@ jobs:
           else
             gh release create "$TAG_NAME" "$IPA_PATH" "$CHECKSUM_PATH" \
               --title "NinePlus LiveRide $TAG_NAME" \
-              --notes "Unsigned IPA built by GitHub Actions from ${GITHUB_SHA}."
+              --notes "NinePlus v5 unsigned IPA built by GitHub Actions from ${GITHUB_SHA}."
           fi

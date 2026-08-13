@@ -15,7 +15,7 @@ NinePlus 是一个 FastAPI + Docker Web 控制台：首次在服务器完成九�
    vi .env
    ```
 
-   至少修改 `NINEPLUS_PORTAL_PASSWORD`。不要把 `.env` 提交到 Git。
+   至少修改 `NINEPLUS_PORTAL_PASSWORD`。如需限制 App/API 访问，请同时设置一个随机的 `NINEPLUS_APP_BEARER_TOKEN`；iOS App 在登录前的「服务保护 Token」中填写同一值，APNs 设备 Token 上报也会携带 `Authorization: Bearer <Token>`。不要把 `.env` 提交到 Git。
 
 首次部署仍需要管理员在服务器端完成一次九号云端绑定；绑定成功后，其他设备只登录 NinePlus 即可。
 3. 在飞牛「Docker / 项目」中新建项目：
@@ -56,3 +56,27 @@ docker compose down   # 不会删除 persistent-sessions
 - 远程控制：`POST /vehicles/{sn}/control`，必须提交 `confirm: true`
 
 所有 API 成功响应统一为 `{"ok": true, "data": ...}`；错误响应统一为 `{"ok": false, "error": ...}`。九号密码不会写入日志，也不会返回到浏览器响应。
+
+
+## iOS APNs 与 Bearer Token
+
+App 在「我的 → 设备通知」中会请求系统通知权限、注册 APNs 并将设备 Token 上报到 `POST /devices/register`。若服务器设置了 `NINEPLUS_APP_BEARER_TOKEN`，必须先在 App 登录页或「设备通知」卡填写相同 Token；否则服务器会返回 `bearer_token_required`，设备不会登记。Token 只用于请求鉴权，服务器不会在接口响应或日志中返回 APNs Token。
+
+### 配置真实的 APNs 远程通知
+
+仅完成 App 内的「允许通知」还不够：要让充电、骑行和报警变更真正显示为 iPhone 远程通知，服务器还需要 Apple Developer 的 APNs Provider 凭据。
+
+1. 在 Apple Developer 中为实际发布使用的 App ID 开启 **Push Notifications**，创建 APNs Auth Key，并记录 **Key ID** 和 **Team ID**。
+2. 将下载的 `.p8` 私钥放到服务器仅自己可读的持久化目录，例如 `server/persistent-sessions/AuthKey_XXXXXXXXXX.p8`；不要放进仓库、镜像或 GitHub Actions 日志。
+3. 在服务器 `.env` 设置：
+
+   ```env
+   NINEPLUS_APNS_KEY_ID=XXXXXXXXXX
+   NINEPLUS_APNS_TEAM_ID=你的AppleTeamID
+   NINEPLUS_APNS_AUTH_KEY_PATH=/run/nineplus/sessions/AuthKey_XXXXXXXXXX.p8
+   NINEPLUS_APNS_REQUEST_TIMEOUT=10
+   ```
+
+4. 重建并重启服务：`docker compose up -d --build`。服务会在每次 App 请求 `/dashboard` 刷新车况时比较前后状态，并向已登记设备发送「开始/结束充电」「开始/结束骑行」及九号接口返回的 `alarm`/`fault`/`error` 报警；**不会**把“当前未锁车”当作报警。
+
+当前示例工程 Bundle ID 是 `com.example.NineBotPlus`，只适合本地开发示例。正式安装必须替换为你的 Apple Developer Team 旗下的真实 Bundle ID、使用匹配的签名与 Push capability；Development/Sandbox 安装包走 APNs sandbox，Release/Production 安装包走 production。`NINEPLUS_APP_BEARER_TOKEN` 仅保护 App 到 NinePlus 后端的 HTTP 请求，不是 Apple APNs Provider Token。

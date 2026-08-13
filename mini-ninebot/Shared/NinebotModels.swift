@@ -310,12 +310,16 @@ enum NinebotVehicleEventType: String, Codable, Equatable {
     case alarm
     case chargeStarted
     case chargeEnded
+    case rideStarted
+    case rideEnded
 
     var title: String {
         switch self {
         case .alarm: return "车辆报警"
         case .chargeStarted: return "开始充电"
         case .chargeEnded: return "充电结束"
+        case .rideStarted: return "开始骑行"
+        case .rideEnded: return "骑行结束"
         }
     }
 
@@ -324,6 +328,8 @@ enum NinebotVehicleEventType: String, Codable, Equatable {
         case .alarm: return "exclamationmark.triangle.fill"
         case .chargeStarted: return "bolt.batteryblock.fill"
         case .chargeEnded: return "checkmark.bolt.fill"
+        case .rideStarted: return "figure.outdoor.cycle"
+        case .rideEnded: return "flag.checkered"
         }
     }
 }
@@ -434,6 +440,13 @@ extension NinebotRideDetail {
     }
 
     private static func bestTrackPoints(from value: JSONValue) -> [NinebotInterfaceTrackPoint] {
+        // The backend's normalized `track` is GCJ-02 and retains per-point
+        // `speed_kmh`; always prefer it over a raw upstream `trail` string.
+        if let track = value.objectValue?["track"] {
+            let points = trackPoints(from: track)
+            if points.count > 1 { return points }
+        }
+
         let candidateValues = trackCandidateValues(from: value)
         let parsedCandidates = candidateValues
             .map { trackPoints(from: $0) }
@@ -1147,6 +1160,21 @@ struct NinebotVehicleState: Codable, Equatable {
         return "\(Self.numberText(currentSpeedKmh, maximumFractionDigits: 0)) km/h"
     }
 
+    /// Server-provided movement status. Prefer explicit interface fields; a
+    /// positive live speed is only a fallback and never treats “unlocked” as
+    /// riding.
+    var isRiding: Bool? {
+        let keys = ["isRiding", "riding", "is_riding", "isMoving", "moving", "is_moving", "inMotion", "in_motion", "driving"]
+        for source in [rawStatus, rawTravel, rawBattery] {
+            guard let source else { continue }
+            for key in keys {
+                if let value = source[key]?.boolValue { return value }
+            }
+        }
+        if let currentSpeedKmh, currentSpeedKmh >= 3 { return true }
+        return nil
+    }
+
     var enduranceText: String {
         guard let endurance else { return "-- km" }
         return "\(Self.decimalFormatter.string(from: NSNumber(value: endurance)) ?? "--") km"
@@ -1560,9 +1588,6 @@ struct NinebotVehicleState: Codable, Equatable {
         }
         if isPoweredOn == false {
             warnings.append("上电状态为 0，请确认车辆电源")
-        }
-        if isLocked == false {
-            warnings.append("车辆当前未锁车")
         }
         return warnings
     }

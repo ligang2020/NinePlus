@@ -139,7 +139,17 @@ struct NinebotSharedStore {
               let events = try? decoder.decode([NinebotVehicleEvent].self, from: data) else {
             return []
         }
-        return events.sorted { $0.occurredAt > $1.occurredAt }
+
+        // v5 no longer treats an unlocked vehicle as an alarm. Remove records
+        // written by older builds as well, so historical cache cannot bring
+        // the deprecated “车辆当前未锁车” item back into notification cards.
+        let filtered = events.filter { event in
+            !(event.type == .alarm && event.detail.contains("车辆当前未锁车"))
+        }
+        if filtered.count != events.count {
+            saveVehicleEvents(filtered)
+        }
+        return filtered.sorted { $0.occurredAt > $1.occurredAt }
     }
 
     func saveVehicleEvents(_ events: [NinebotVehicleEvent]) {

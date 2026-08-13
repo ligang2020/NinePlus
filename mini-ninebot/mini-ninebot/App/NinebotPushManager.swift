@@ -17,7 +17,7 @@ enum NinebotPushError: LocalizedError {
         case .missingBundleID:
             return "无法读取 App Bundle ID"
         case .missingServer:
-            return "请先填写 NinePlus 平台地址和 Token"
+            return "请先填写 NinePlus 服务器地址；若后端开启 Bearer Token，也请填写服务保护 Token"
         }
     }
 }

@@ -431,7 +431,7 @@ private extension NinebotServerClient {
 
         return NinebotVehicleInfo(
             sn: sn,
-            name: firstString(["device_name", "deviceName", "ble_name"], in: object) ?? sn,
+            name: firstString(["device_name", "deviceName"], in: object) ?? sn,
             model: model,
             imageURLString: firstString(["v6_light_img_url", "img_url", "img"], in: object),
             raw: object

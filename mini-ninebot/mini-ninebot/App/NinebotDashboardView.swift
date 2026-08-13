@@ -5223,12 +5223,25 @@ private struct InterfaceRideTrackMapPanel: View {
             .frame(height: 240)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-            TrackSpeedLegend()
+            if hasInterfaceSpeed {
+                TrackSpeedLegend()
+                Text("路线按九号接口返回的逐点速度着色；最高速度标注在地图上。")
+                    .font(.caption2)
+                    .foregroundStyle(Color.teslaSecondaryText)
+            } else {
+                Label("接口未返回逐点速度，路线以单色显示", systemImage: "speedometer")
+                    .font(.caption2)
+                    .foregroundStyle(Color.teslaSecondaryText)
+            }
         }
         .padding(16)
         .background(Color.teslaCardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+    }
+
+    private var hasInterfaceSpeed: Bool {
+        points.contains { ($0.speedKmh ?? 0) > 0 }
     }
 
     private var speedPoints: [TrackSpeedPoint] {
@@ -5962,7 +5975,6 @@ private func friendlyRawFieldName(_ key: String) -> String {
         "battery_temp": "电池温度",
         "batteryTemp": "电池温度",
         "barrel_lock_status": "座桶锁状态",
-        "ble_name": "蓝牙名称",
         "bat_voltage": "电池电压",
         "batVoltage": "电池电压",
         "bat_temperature": "电池温度",

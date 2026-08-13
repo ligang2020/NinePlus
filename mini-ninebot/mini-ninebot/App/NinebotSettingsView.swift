@@ -39,17 +39,12 @@ struct NinebotSettingsView: View {
                     .ninePlusCard(cornerRadius: 24)
                 }
 
-                NinebotBuiltInConnectionRow()
+                DeviceNotificationsCard(model: model)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
                     .ninePlusCard(cornerRadius: 24)
 
                 AlarmRecordsCard(events: model.vehicleEvents)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                    .ninePlusCard(cornerRadius: 24)
-
-                ChargingRecordsCard(events: model.vehicleEvents)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
                     .ninePlusCard(cornerRadius: 24)
@@ -118,27 +113,89 @@ struct NinebotSettingsView: View {
 }
 
 
+private struct DeviceNotificationsCard: View {
+    @ObservedObject var model: NinebotViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "bell.badge.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(Color.teslaGreen)
+                    .frame(width: 34, height: 34)
+                    .background(Color.teslaGreen.opacity(0.13), in: Circle())
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("设备通知")
+                        .font(.headline.weight(.semibold))
+                    Text("充电、骑行与车辆报警会登记到本机记录；后端可向已上报的 APNs 设备发送通知。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            SettingsInputField(
+                title: "服务保护 Token（后端启用 Bearer 时必填）",
+                placeholder: "NINEPLUS_APP_BEARER_TOKEN",
+                systemImage: "key.fill",
+                text: $model.bearerToken,
+                isSecure: true,
+                textContentType: .password
+            )
+
+            PushDeviceTokenRow(token: model.pushDeviceToken, hasConfiguration: model.hasConfiguration)
+
+            HStack(spacing: 10) {
+                Button {
+                    Task { await model.enableChargingNotifications() }
+                } label: {
+                    SettingsCompactButtonLabel(
+                        title: "开启通知",
+                        systemImage: "bell.badge.fill"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    Task { await model.syncPushDeviceToken() }
+                } label: {
+                    SettingsCompactButtonLabel(
+                        title: "重新上报",
+                        systemImage: "arrow.triangle.2.circlepath"
+                    )
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Text("若服务器设置了 NINEPLUS_APP_BEARER_TOKEN，请先填入相同值并点“开启通知”。Token 会与 APNs 设备 Token 一起通过 HTTPS 上报，不会显示完整内容。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 private struct AlarmRecordsCard: View {
     var events: [NinebotVehicleEvent]
 
-    private var alarms: [NinebotVehicleEvent] {
-        events.filter { $0.type == .alarm }.sorted { $0.occurredAt > $1.occurredAt }
+    private var notificationEvents: [NinebotVehicleEvent] {
+        events.sorted { $0.occurredAt > $1.occurredAt }
     }
 
     var body: some View {
         SettingsRecordCard(
-            title: "车辆报警记录",
-            subtitle: alarms.isEmpty ? "暂无报警记录" : "共记录 \(alarms.count) 条报警",
-            systemImage: "exclamationmark.triangle.fill",
+            title: "车辆通知记录",
+            subtitle: notificationEvents.isEmpty ? "暂无充电、骑行或报警通知" : "每条均标注车辆、时间与事件位置",
+            systemImage: "tray.full.fill",
             tint: .orange,
-            badge: alarms.isEmpty ? nil : "\(alarms.count)"
+            badge: notificationEvents.isEmpty ? nil : "\(notificationEvents.count)"
         ) {
-            if alarms.isEmpty {
-                EmptySettingsRecord(message: "刷新车况后，检测到新的报警会自动记录。", systemImage: "checkmark.shield")
+            if notificationEvents.isEmpty {
+                EmptySettingsRecord(message: "刷新车况后，新的充电、骑行和服务端报警会自动记录。", systemImage: "checkmark.shield")
             } else {
                 LazyVStack(spacing: 12) {
-                    ForEach(alarms) { event in
-                        AlarmRecordRow(event: event)
+                    ForEach(notificationEvents) { event in
+                        VehicleNotificationRecordRow(event: event)
                     }
                 }
             }
@@ -146,42 +203,40 @@ private struct AlarmRecordsCard: View {
     }
 }
 
-private struct ChargingRecordsCard: View {
-    var events: [NinebotVehicleEvent]
+private struct VehicleNotificationRecordRow: View {
+    var event: NinebotVehicleEvent
 
-    private var chargeEnds: [NinebotVehicleEvent] {
-        events.filter { $0.type == .chargeEnded }.sorted { $0.occurredAt > $1.occurredAt }
-    }
-
-    var body: some View {
-        SettingsRecordCard(
-            title: "充电记录",
-            subtitle: chargeEnds.isEmpty ? "暂无完整充电周期" : "记录开始、结束与电池状态",
-            systemImage: "bolt.batteryblock.fill",
-            tint: Color.teslaGreen,
-            badge: nil
-        ) {
-            if chargeEnds.isEmpty {
-                EmptySettingsRecord(message: "下一次检测到充电结束后，会自动生成完整充电记录。", systemImage: "bolt.slash")
-            } else {
-                LazyVStack(spacing: 12) {
-                    ForEach(chargeEnds) { endEvent in
-                        ChargingRecordRow(endEvent: endEvent, startEvent: matchingStart(for: endEvent))
-                    }
-                }
-            }
+    private var tint: Color {
+        switch event.type {
+        case .alarm: return .orange
+        case .chargeStarted, .chargeEnded: return Color.teslaGreen
+        case .rideStarted, .rideEnded: return .blue
         }
     }
 
-    private func matchingStart(for endEvent: NinebotVehicleEvent) -> NinebotVehicleEvent? {
-        events
-            .filter {
-                $0.vehicleSN == endEvent.vehicleSN
-                    && $0.type == .chargeStarted
-                    && $0.occurredAt <= endEvent.occurredAt
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            RecordHeader(event: event, tint: tint)
+            Text(event.detail)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let durationMinutes = event.durationMinutes,
+               (event.type == .rideEnded || event.type == .chargeEnded) {
+                EventValuePill(title: "持续时间", value: Self.durationText(durationMinutes), systemImage: "timer")
             }
-            .sorted { $0.occurredAt > $1.occurredAt }
-            .first
+            EventLocationMap(event: event, tint: tint)
+        }
+        .padding(12)
+        .background(Color.teslaControlBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private static func durationText(_ minutes: Double) -> String {
+        let total = max(Int(minutes.rounded()), 0)
+        let hours = total / 60
+        let remainder = total % 60
+        return hours > 0 ? "\(hours)小时\(remainder)分" : "\(remainder)分钟"
     }
 }
 
@@ -321,6 +376,11 @@ private struct RecordHeader: View {
                 Text(event.vehicleName.isEmpty ? event.vehicleSN : event.vehicleName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if !event.vehicleSN.isEmpty, event.vehicleName != event.vehicleSN {
+                    Text("车辆 SN：\(event.vehicleSN)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 8)
             Text(Self.dateFormatter.string(from: event.occurredAt))
@@ -426,7 +486,7 @@ private struct NinebotBuiltInConnectionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("九号云接口已内置")
                     .font(.subheadline.weight(.semibold))
-                Text("无需填写服务地址或令牌；只需登录 NinePlus，九号云端由服务器统一管理。")
+                Text("九号云端由服务器统一管理。若服务器开启 Bearer 保护，请在“设备通知”填写服务保护 Token。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

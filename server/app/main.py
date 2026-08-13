@@ -17,6 +17,9 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
+import jwt
+
 from fastapi import Cookie, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
@@ -48,9 +51,20 @@ PERSISTENT_CLOUD_DIR = SESSION_ROOT / "official"
 PERSISTENT_CLOUD_META = SESSION_ROOT / "official-account.json"
 TOTAL_MILEAGE_CACHE = SESSION_ROOT / "total-mileage.json"
 PUSH_DEVICES_FILE = SESSION_ROOT / "push-devices.json"
+PUSH_EVENT_STATE_FILE = SESSION_ROOT / "push-event-state.json"
 PORTAL_SESSIONS_FILE = SESSION_ROOT / "portal-sessions.json"
 PORTAL_USERNAME = os.getenv("NINEPLUS_PORTAL_USERNAME", "gang").strip()
 PORTAL_PASSWORD = os.getenv("NINEPLUS_PORTAL_PASSWORD", "")
+# Optional installation-wide app token. When configured, every API request
+# (including APNs token registration) must include Authorization: Bearer <token>.
+# Leave blank only for trusted LAN deployments that do not require this extra layer.
+APP_BEARER_TOKEN = os.getenv("NINEPLUS_APP_BEARER_TOKEN", "").strip()
+# APNs token-based provider credentials. Keep the .p8 file on the mounted
+# session volume (or another server-only path), never in the repository.
+APNS_KEY_ID = os.getenv("NINEPLUS_APNS_KEY_ID", "").strip()
+APNS_TEAM_ID = os.getenv("NINEPLUS_APNS_TEAM_ID", "").strip()
+APNS_AUTH_KEY_PATH = Path(os.getenv("NINEPLUS_APNS_AUTH_KEY_PATH", "").strip()).expanduser()
+APNS_REQUEST_TIMEOUT = max(3.0, float(os.getenv("NINEPLUS_APNS_REQUEST_TIMEOUT", "10")))
 NINECLI_BIN = os.getenv("NINEPLUS_NINECLI_BIN", "").strip()
 NINECLI_MODULE = os.getenv("NINEPLUS_NINECLI_MODULE", "ninecli").strip() or "ninecli"
 DEVICE_ID = os.getenv("NINEPLUS_DEVICE_ID", "").strip().lower() or secrets.token_hex(16)
@@ -62,7 +76,7 @@ logging.basicConfig(level=os.getenv("NINEPLUS_LOG_LEVEL", "INFO"))
 
 app = FastAPI(
     title="NinePlus",
-    version="1.2.63",
+    version="5.0.0",
     description=(
         "Unofficial personal Ninebot web console. The backend invokes the "
         "community ninecli command-line client against the user-facing cloud service."
@@ -75,9 +89,21 @@ app.mount("/assets", StaticFiles(directory=APP_DIR / "static"), name="assets")
 
 @app.middleware("http")
 async def require_access_token(request: Request, call_next):
-    # Protected routes validate the per-user NinePlus session in their
-    # handlers. The official Ninebot cloud binding is server-side state and is
-    # never used as a frontend or device login token.
+    # The portal session is still validated by each protected handler.  An
+    # installation can additionally require a Bearer token for every API
+    # request, which is important for APNs device-token registration from the
+    # iOS app. Static assets and health checks remain reachable for deployment
+    # probes; the app sends this header even for /auth/login.
+    public_paths = {"/", "/healthz", "/openapi.json", "/api/docs"}
+    if APP_BEARER_TOKEN and request.url.path not in public_paths and not request.url.path.startswith("/assets/"):
+        authorization = request.headers.get("authorization", "")
+        expected = f"Bearer {APP_BEARER_TOKEN}"
+        if not hmac.compare_digest(authorization, expected):
+            return JSONResponse(
+                status_code=401,
+                content={"ok": False, "error": {"code": "bearer_token_required", "message": "服务器已启用 Bearer Token，请在 App 登录前填写正确的 Token"}},
+                headers={"Cache-Control": "no-store"},
+            )
     return await call_next(request)
 
 
@@ -128,6 +154,9 @@ class PortalSession:
 sessions: dict[str, PortalSession] = {}
 session_reaper_task: asyncio.Task[None] | None = None
 push_devices_lock = asyncio.Lock()
+push_event_state_lock = asyncio.Lock()
+apns_jwt_lock = asyncio.Lock()
+apns_jwt_cache: tuple[str, float] | None = None
 # Rebinding the installation-wide ninecli account replaces shared credential
 # files. Serialize that replacement with every cloud call so another device
 # cannot observe a half-written config or keep using a removed directory.
@@ -260,13 +289,30 @@ def wgs84_to_gcj02(latitude: float, longitude: float) -> list[float]:
     return [latitude + latitude_delta, longitude + longitude_delta]
 
 
-def _track_from_trail(value: Any) -> list[list[float]]:
+def _track_from_trail(value: Any) -> list[dict[str, float]]:
+    """Preserve official per-point speed while normalizing coordinates.
+
+    Official trail records normally use ``longitude,latitude,speed,distance``.
+    Earlier builds discarded every field after the coordinates, which made the
+    iOS route map unable to colour the line by interface-provided speed.
+    """
     if not isinstance(value, str):
         return []
-    points: list[list[float]] = []
+    points: list[dict[str, float]] = []
     for segment in re.split(r"[;|\n]+", value):
-        point = _coordinate_pair(segment)
-        if point and (not points or point != points[-1]):
+        numbers = [_number(part) for part in re.split(r"[,\s]+", segment.strip()) if part]
+        if len(numbers) < 2 or numbers[0] is None or numbers[1] is None:
+            continue
+        coordinate = _coordinate_pair([numbers[0], numbers[1]])
+        if coordinate is None:
+            continue
+        latitude, longitude = coordinate
+        point: dict[str, float] = {"latitude": latitude, "longitude": longitude}
+        if len(numbers) >= 3 and numbers[2] is not None and 0 <= numbers[2] <= 160:
+            point["speed_kmh"] = numbers[2]
+        if len(numbers) >= 4 and numbers[3] is not None and numbers[3] >= 0:
+            point["distance_meters"] = numbers[3]
+        if not points or (latitude, longitude) != (points[-1]["latitude"], points[-1]["longitude"]):
             points.append(point)
     return points
 
@@ -295,13 +341,18 @@ def normalize_travel_detail(payload: Any) -> Any:
     trail = _find_trail(detail)
     track = _track_from_trail(trail) if trail else []
     if len(track) >= 2:
-        map_track = [wgs84_to_gcj02(latitude, longitude) for latitude, longitude in track]
+        map_track: list[dict[str, float]] = []
+        for point in track:
+            latitude, longitude = wgs84_to_gcj02(point["latitude"], point["longitude"])
+            normalized = {**point, "latitude": latitude, "longitude": longitude}
+            map_track.append(normalized)
         detail["track"] = map_track
-        detail["start_coordinate"] = map_track[0]
-        detail["end_coordinate"] = map_track[-1]
+        detail["start_coordinate"] = [map_track[0]["latitude"], map_track[0]["longitude"]]
+        detail["end_coordinate"] = [map_track[-1]["latitude"], map_track[-1]["longitude"]]
         detail["coordinate_system"] = "gcj02"
         detail["source_coordinate_system"] = "wgs84"
         detail["track_point_count"] = len(track)
+        detail["track_speed_source"] = "ninebot_interface"
     return detail
 
 
@@ -609,21 +660,16 @@ async def _save_push_device(
     bundle_id: str,
     environment: str,
 ) -> None:
-    # Keep one current token per portal user/app/environment and remove a
-    # stale token when iOS rotates its APNs registration token.
+    # APNs tokens are device-specific. Keep every current phone registration
+    # for this portal user and replace a registration only when that token
+    # itself rotates.
     async with push_devices_lock:
         PUSH_DEVICES_FILE.parent.mkdir(parents=True, exist_ok=True)
         devices = _load_push_devices()
-        retained = [
-            item
-            for item in devices
-            if not (
-                (item.get("owner") == owner
-                 and item.get("bundle_id") == bundle_id
-                 and item.get("environment") == environment)
-                or item.get("token") == token
-            )
-        ]
+        # APNs tokens rotate, so replace only the exact token. Do not evict
+        # another phone owned by the same user: each registered device should
+        # receive the vehicle event.
+        retained = [item for item in devices if item.get("token") != token]
         retained.append({
             "owner": owner,
             "official_account": official_account,
@@ -643,6 +689,329 @@ async def _save_push_device(
             PUSH_DEVICES_FILE.chmod(0o600)
         except OSError:
             pass
+
+
+def apns_configured() -> bool:
+    return bool(APNS_KEY_ID and APNS_TEAM_ID and APNS_AUTH_KEY_PATH.is_file())
+
+
+def _push_state_payload() -> dict[str, Any]:
+    """Load per-NinePlus-user vehicle state used for transition detection.
+
+    State files written by pre-v5 builds used a top-level ``vehicles`` mapping.
+    It has no reliable owner association, so it is deliberately not reused for a
+    user after migration: the next dashboard sample becomes that user's clean
+    baseline instead of suppressing, or incorrectly creating, an event.
+    """
+    try:
+        payload = json.loads(PUSH_EVENT_STATE_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return {"owners": {}}
+    if not isinstance(payload, dict):
+        return {"owners": {}}
+    owners = payload.get("owners")
+    if not isinstance(owners, dict):
+        return {"owners": {}}
+    normalized_owners = {
+        str(owner): state
+        for owner, state in owners.items()
+        if isinstance(state, dict) and isinstance(state.get("vehicles"), dict)
+    }
+    return {"owners": normalized_owners}
+
+
+def _store_push_state(payload: dict[str, Any]) -> None:
+    PUSH_EVENT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = PUSH_EVENT_STATE_FILE.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.chmod(0o600)
+    os.replace(temporary, PUSH_EVENT_STATE_FILE)
+    try:
+        PUSH_EVENT_STATE_FILE.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _nested_values(value: Any):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield str(key), child
+            yield from _nested_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _nested_values(child)
+
+
+def _bool_like(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "charging", "riding", "moving"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "idle", "stopped", "none", "null", ""}:
+            return False
+    return None
+
+
+def _first_named_bool(payloads: list[Any], keys: set[str]) -> bool | None:
+    normalized_keys = {key.lower() for key in keys}
+    for payload in payloads:
+        for key, value in _nested_values(payload):
+            if key.lower() not in normalized_keys:
+                continue
+            parsed = _bool_like(value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _first_named_number(payloads: list[Any], keys: set[str]) -> float | None:
+    normalized_keys = {key.lower() for key in keys}
+    for payload in payloads:
+        for key, value in _nested_values(payload):
+            if key.lower() not in normalized_keys:
+                continue
+            number = _number(value)
+            if number is not None:
+                return number
+    return None
+
+
+def _alarm_summary(payloads: list[Any]) -> str | None:
+    for payload in payloads:
+        for key, value in _nested_values(payload):
+            normalized_key = key.lower()
+            if not any(marker in normalized_key for marker in ("alarm", "fault", "error")):
+                continue
+            if isinstance(value, (dict, list)):
+                continue
+            if isinstance(value, str):
+                detail = value.strip()
+                if detail and detail.lower() not in {"0", "false", "no", "off", "none", "null", "normal", "ok"}:
+                    return f"{key}：{detail}"
+            elif isinstance(value, bool):
+                if value:
+                    return key
+            else:
+                number = _number(value)
+                if number not in (None, 0):
+                    return f"{key}：{number:g}"
+    return None
+
+
+def vehicle_notification_state(status: Any, battery: Any) -> dict[str, Any]:
+    payloads = [status, battery]
+    charging = _first_named_bool(
+        payloads,
+        {"charging", "charging_state", "chargingstate", "is_charging", "ischarging"},
+    )
+    riding = _first_named_bool(
+        payloads,
+        {"is_riding", "isriding", "riding", "is_moving", "ismoving", "moving", "in_motion", "inmotion", "driving"},
+    )
+    if riding is None:
+        speed = _first_named_number(
+            payloads,
+            {"speed", "current_speed", "currentspeed", "speed_kmh", "speedkmh", "vehicle_speed", "vehiclespeed"},
+        )
+        if speed is not None and 0 <= speed <= 160:
+            riding = speed >= 3
+    return {
+        "charging": charging,
+        "riding": riding,
+        "alarm": _alarm_summary(payloads),
+    }
+
+
+def _vehicle_name(vehicle: dict[str, Any], sn: str) -> str:
+    for key in ("device_name", "deviceName", "name", "vehicle_name", "vehicleName", "model"):
+        value = vehicle.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return sn
+
+
+def _vehicle_location(status: Any) -> tuple[float | None, float | None]:
+    if not isinstance(status, dict):
+        return None, None
+    coordinate = _coordinate_pair(status.get("loc") or status.get("location") or status.get("position"))
+    if coordinate is None:
+        coordinate = _coordinate_pair({"lat": status.get("source_latitude") or status.get("lat"), "lon": status.get("source_longitude") or status.get("lon")})
+    if coordinate is None:
+        return None, None
+    return coordinate[0], coordinate[1]
+
+
+def _notification_event(
+    *,
+    event_type: str,
+    vehicle_name: str,
+    sn: str,
+    occurred_at: float,
+    latitude: float | None,
+    longitude: float | None,
+    detail: str | None = None,
+) -> dict[str, Any]:
+    labels = {
+        "charge_started": ("开始充电", "车辆开始充电"),
+        "charge_ended": ("充电结束", "车辆已结束充电"),
+        "ride_started": ("开始骑行", "车辆开始骑行"),
+        "ride_ended": ("骑行结束", "车辆已结束骑行"),
+        "alarm": ("车辆报警", detail or "车辆接口返回报警"),
+    }
+    title, summary = labels[event_type]
+    timestamp = datetime.fromtimestamp(occurred_at, ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
+    return {
+        "event_type": event_type,
+        "title": title,
+        "body": f"{vehicle_name}（{sn}）{summary}\n{timestamp}",
+        "vehicle_name": vehicle_name,
+        "vehicle_sn": sn,
+        "occurred_at": occurred_at,
+        "latitude": latitude,
+        "longitude": longitude,
+        "detail": detail,
+    }
+
+
+async def _apns_provider_token() -> str:
+    global apns_jwt_cache
+    if not apns_configured():
+        raise RuntimeError("APNs provider credentials are not configured")
+    now = time.time()
+    async with apns_jwt_lock:
+        if apns_jwt_cache is not None and apns_jwt_cache[1] > now:
+            return apns_jwt_cache[0]
+        private_key = APNS_AUTH_KEY_PATH.read_text(encoding="utf-8")
+        token = jwt.encode(
+            {"iss": APNS_TEAM_ID, "iat": int(now)},
+            private_key,
+            algorithm="ES256",
+            headers={"kid": APNS_KEY_ID},
+        )
+        if isinstance(token, bytes):
+            token = token.decode("utf-8")
+        apns_jwt_cache = (token, now + 50 * 60)
+        return token
+
+
+def _apns_host(environment: str) -> str:
+    return "https://api.sandbox.push.apple.com" if environment in {"development", "sandbox"} else "https://api.push.apple.com"
+
+
+async def _send_apns(device: dict[str, Any], event: dict[str, Any]) -> bool:
+    token = str(device.get("token") or "").strip()
+    bundle_id = str(device.get("bundle_id") or "").strip()
+    environment = str(device.get("environment") or "").strip().lower()
+    if not token or not bundle_id or environment not in {"development", "sandbox", "production"}:
+        return False
+
+    try:
+        provider_token = await _apns_provider_token()
+    except (OSError, jwt.PyJWTError) as exc:
+        logger.warning("APNs provider token creation failed: %s", type(exc).__name__)
+        return False
+
+    payload: dict[str, Any] = {
+        "aps": {
+            "alert": {"title": event["title"], "body": event["body"]},
+            "sound": "default",
+            "thread-id": event["vehicle_sn"],
+        },
+        "event_type": event["event_type"],
+        "vehicle_name": event["vehicle_name"],
+        "vehicle_sn": event["vehicle_sn"],
+        "occurred_at": event["occurred_at"],
+    }
+    if event["latitude"] is not None and event["longitude"] is not None:
+        payload["latitude"] = event["latitude"]
+        payload["longitude"] = event["longitude"]
+    if event["detail"]:
+        payload["detail"] = event["detail"]
+
+    headers = {
+        "authorization": f"bearer {provider_token}",
+        "apns-topic": bundle_id,
+        "apns-push-type": "alert",
+        "apns-priority": "10",
+    }
+    try:
+        async with httpx.AsyncClient(http2=True, timeout=APNS_REQUEST_TIMEOUT) as client:
+            response = await client.post(f"{_apns_host(environment)}/3/device/{token}", headers=headers, json=payload)
+    except httpx.HTTPError as exc:
+        logger.warning("APNs delivery failed for bundle_id=%s: %s", bundle_id, type(exc).__name__)
+        return False
+
+    if 200 <= response.status_code < 300:
+        return True
+    reason = "unknown"
+    try:
+        reason = str(response.json().get("reason") or reason)
+    except (ValueError, AttributeError):
+        pass
+    logger.warning("APNs rejected notification bundle_id=%s status=%s reason=%s", bundle_id, response.status_code, reason)
+    return False
+
+
+async def publish_vehicle_notifications(owner: str, vehicles: list[dict[str, Any]]) -> None:
+    """Detect cloud state transitions and deliver APNs notifications.
+
+    The first successful dashboard sample only establishes a baseline. Later
+    samples emit charge/ride transitions and new server alarm values. An
+    unlocked lock state is deliberately not inspected or sent as an alarm.
+    """
+    if not vehicles:
+        return
+    async with push_event_state_lock:
+        saved = _push_state_payload()
+        owners = saved.setdefault("owners", {})
+        owner_state = owners.setdefault(owner, {"vehicles": {}})
+        if not isinstance(owner_state, dict):
+            owner_state = {"vehicles": {}}
+            owners[owner] = owner_state
+        known = owner_state.setdefault("vehicles", {})
+        if not isinstance(known, dict):
+            known = {}
+            owner_state["vehicles"] = known
+        events: list[dict[str, Any]] = []
+        now = time.time()
+        for item in vehicles:
+            sn = item["sn"]
+            state = vehicle_notification_state(item["status"], item["battery"])
+            prior = known.get(sn)
+            known[sn] = {**state, "updated_at": int(now)}
+            if not isinstance(prior, dict):
+                continue
+            vehicle_name = item["vehicle_name"]
+            latitude, longitude = _vehicle_location(item["status"])
+            if prior.get("charging") is False and state["charging"] is True:
+                events.append(_notification_event(event_type="charge_started", vehicle_name=vehicle_name, sn=sn, occurred_at=now, latitude=latitude, longitude=longitude))
+            elif prior.get("charging") is True and state["charging"] is False:
+                events.append(_notification_event(event_type="charge_ended", vehicle_name=vehicle_name, sn=sn, occurred_at=now, latitude=latitude, longitude=longitude))
+            if prior.get("riding") is False and state["riding"] is True:
+                events.append(_notification_event(event_type="ride_started", vehicle_name=vehicle_name, sn=sn, occurred_at=now, latitude=latitude, longitude=longitude))
+            elif prior.get("riding") is True and state["riding"] is False:
+                events.append(_notification_event(event_type="ride_ended", vehicle_name=vehicle_name, sn=sn, occurred_at=now, latitude=latitude, longitude=longitude))
+            alarm = state.get("alarm")
+            if alarm and alarm != prior.get("alarm"):
+                events.append(_notification_event(event_type="alarm", vehicle_name=vehicle_name, sn=sn, occurred_at=now, latitude=latitude, longitude=longitude, detail=str(alarm)))
+        _store_push_state(saved)
+
+    if not events:
+        return
+    if not apns_configured():
+        logger.info("vehicle notification state changed but APNs provider credentials are not configured")
+        return
+    devices = [device for device in _load_push_devices() if device.get("owner") == owner]
+    if not devices:
+        return
+    deliveries = [_send_apns(device, event) for event in events for device in devices]
+    results = await asyncio.gather(*deliveries, return_exceptions=True)
+    delivered = sum(result is True for result in results)
+    logger.info("published %d vehicle notification(s) to %d APNs target(s)", len(events), delivered)
 
 
 def get_session(
@@ -860,7 +1229,13 @@ async def http_error_handler(_: Request, exc: HTTPException):
 
 @app.get("/", include_in_schema=False)
 async def index():
-    return FileResponse(APP_DIR / "static" / "index.html")
+    # The login page changed from a device-level official-account form to a
+    # NinePlus-only form. Do not let browsers keep serving the old page from
+    # cache after the server is upgraded.
+    return FileResponse(
+        APP_DIR / "static" / "index.html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 @app.get("/healthz")
@@ -870,6 +1245,7 @@ async def healthz(response: Response):
         "service": "nineplus",
         "version": app.version,
         "auth_mode": "per-login-session",
+        "bearer_token_required": bool(APP_BEARER_TOKEN),
         "ninecli": cli_available(),
         "uptime_seconds": int(time.time() - BOOT_TIME),
         "active_sessions": len(sessions),
@@ -1157,11 +1533,13 @@ async def dashboard(
     they share token/config files, but the HTTP fan-out and duplicate calls are
     removed.  Each read also benefits from the session-level short TTL cache.
     """
-    _, session = await auth_from_request(request, nineplus_session)
+    token, session = await auth_from_request(request, nineplus_session)
+    owner = sessions[token].username
     normalized_month = normalize_month(month) or current_month_string()
     raw_vehicles = await cloud_call(session, "vehicles", cache_ttl=CACHE_TTL_VEHICLES)
 
     entries: list[dict[str, Any]] = []
+    notification_vehicles: list[dict[str, Any]] = []
     for vehicle in vehicle_items(raw_vehicles):
         sn_value = vehicle.get("wnumber") or vehicle.get("sn")
         if not isinstance(sn_value, str) or not SN_PATTERN.fullmatch(sn_value):
@@ -1181,6 +1559,14 @@ async def dashboard(
             "battery": battery,
             "travel": travel,
         })
+        notification_vehicles.append({
+            "sn": sn,
+            "vehicle_name": _vehicle_name(vehicle, sn),
+            "status": status,
+            "battery": battery,
+        })
+
+    await publish_vehicle_notifications(owner, notification_vehicles)
 
     response.headers["Cache-Control"] = "no-store"
     return ok({"month": normalized_month, "vehicles": entries, "updated_at": time.time()})

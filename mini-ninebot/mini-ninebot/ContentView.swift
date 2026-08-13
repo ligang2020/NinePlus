@@ -95,6 +95,7 @@ struct ContentView: View {
 private enum NinebotCloudLoginField: Hashable {
     case account
     case password
+    case bearerToken
 }
 
 struct NinebotCloudLoginView: View {
@@ -156,6 +157,16 @@ struct NinebotCloudLoginView: View {
                             isSecure: true,
                             textContentType: .password
                         )
+                        CloudLoginField(
+                            title: "服务保护 Token（可选）",
+                            placeholder: "后端开启 Bearer 时填写",
+                            systemImage: "key.fill",
+                            text: $model.bearerToken,
+                            focusedField: $focusedField,
+                            field: .bearerToken,
+                            isSecure: true,
+                            textContentType: .password
+                        )
                     }
 
                     if let message = model.errorMessage {
@@ -189,7 +200,7 @@ struct NinebotCloudLoginView: View {
                     .buttonStyle(.plain)
                     .disabled(!canLogin)
 
-                    Text("NinePlus 密码仅用于建立当前登录会话；九号云端凭据保存在服务器，不会写入本设备。")
+                    Text("NinePlus 密码仅用于建立当前登录会话；如服务器设置了 NINEPLUS_APP_BEARER_TOKEN，请先填写相同的服务保护 Token。九号云端凭据保存在服务器，不会写入本设备。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
