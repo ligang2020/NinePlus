@@ -1434,18 +1434,24 @@ private struct RideWeatherSnapshot: Equatable {
     var windSpeedKmh: Double?
     var ultravioletIndex: Double?
     var airQualityIndex: Double?
-    var isDay: Bool
     var fetchedAt: Date
 
+    /// The scene uses the device clock instead of a value frozen at the last
+    /// weather request. This lets the primary card switch immediately between
+    /// the day and night scene even when the vehicle is parked for hours or
+    /// the weather service is temporarily unavailable.
+    var isDay: Bool {
+        let hour = Calendar.autoupdatingCurrent.component(.hour, from: Date())
+        return (7...18).contains(hour)
+    }
+
     static var fallback: RideWeatherSnapshot {
-        let hour = Calendar.current.component(.hour, from: Date())
-        return RideWeatherSnapshot(
+        RideWeatherSnapshot(
             condition: .partlyCloudy,
             temperatureC: nil,
             windSpeedKmh: nil,
             ultravioletIndex: nil,
             airQualityIndex: nil,
-            isDay: (7...18).contains(hour),
             fetchedAt: Date()
         )
     }
@@ -1550,7 +1556,7 @@ private final class RideWeatherProvider: NSObject, ObservableObject, CLLocationM
         components.queryItems = [
             URLQueryItem(name: "latitude", value: String(format: "%.5f", coordinate.latitude)),
             URLQueryItem(name: "longitude", value: String(format: "%.5f", coordinate.longitude)),
-            URLQueryItem(name: "current", value: "temperature_2m,weather_code,wind_speed_10m,is_day,uv_index"),
+            URLQueryItem(name: "current", value: "temperature_2m,weather_code,wind_speed_10m,uv_index"),
             URLQueryItem(name: "timezone", value: "auto")
         ]
         guard let url = components.url else { throw URLError(.badURL) }
@@ -1567,7 +1573,6 @@ private final class RideWeatherProvider: NSObject, ObservableObject, CLLocationM
             windSpeedKmh: current.windSpeed,
             ultravioletIndex: current.uvIndex,
             airQualityIndex: await fetchAirQuality(coordinate: coordinate),
-            isDay: current.isDay == 1,
             fetchedAt: Date()
         )
     }
@@ -1610,14 +1615,12 @@ private struct OpenMeteoWeatherResponse: Decodable {
         var temperature: Double?
         var weatherCode: Int?
         var windSpeed: Double?
-        var isDay: Int?
         var uvIndex: Double?
 
         enum CodingKeys: String, CodingKey {
             case temperature = "temperature_2m"
             case weatherCode = "weather_code"
             case windSpeed = "wind_speed_10m"
-            case isDay = "is_day"
             case uvIndex = "uv_index"
         }
     }
@@ -1681,83 +1684,74 @@ private struct WeatherRainLayer: View {
 }
 private struct RideWeatherCard: View {
     var snapshot: RideWeatherSnapshot
-    var width: CGFloat = 148
+    var width: CGFloat = 126
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
                 Image(systemName: snapshot.condition.systemImage)
                     .symbolRenderingMode(.multicolor)
-                    .font(.system(size: snapshot.condition.isWet ? 30 : 19, weight: .semibold))
+                    .font(.system(size: snapshot.condition.isWet ? 24 : 17, weight: .semibold))
                     .foregroundStyle(snapshot.condition.isWet ? Color.cyan : Color.white)
-                    .frame(
-                        width: snapshot.condition.isWet ? 38 : 25,
-                        height: snapshot.condition.isWet ? 36 : 25
-                    )
-                VStack(alignment: .leading, spacing: 1) {
+                    .frame(width: 28, height: 28)
+
+                VStack(alignment: .leading, spacing: 0) {
                     Text("实时天气")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.66))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.64))
                     Text(snapshot.condition.title)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.white)
                 }
-                Spacer(minLength: 8)
-                // Rain already carries the weather signal; do not pair it with a
-                // contradictory sun or moon icon.
+
+                Spacer(minLength: 3)
+
                 if !snapshot.condition.isWet {
                     Image(systemName: snapshot.isDay ? "sun.max.fill" : "moon.fill")
-                        .font(.system(size: 18, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(snapshot.isDay ? Color.yellow : Color.orange.opacity(0.9))
                 }
             }
 
-            Divider().overlay(.white.opacity(0.12))
+            HStack(spacing: 6) {
+                weatherPill("thermometer.medium", snapshot.temperatureC.map { "\(Int($0.rounded()))°" } ?? "--")
+                weatherPill("wind", snapshot.windSpeedKmh.map { String(format: "%.0f", $0) } ?? "--")
+            }
 
-            weatherRow("thermometer.medium", "气温", snapshot.temperatureC.map { "\(Int($0.rounded()))°" } ?? "--")
-            weatherRow("wind", "风速", snapshot.windSpeedKmh.map { String(format: "%.0f km/h", $0) } ?? "--")
-            weatherRow("sun.max", "紫外线", snapshot.ultravioletIndex.map { String(format: "%.0f", $0) } ?? "--")
-
-            Divider().overlay(.white.opacity(0.12))
-
-            HStack(spacing: 8) {
+            HStack(spacing: 4) {
                 Image(systemName: "aqi.medium")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.yellow)
-                Text("空气质量")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.78))
-                Spacer()
-                Text(snapshot.airQualityIndex.map { "\(aqiLabel($0)) \(Int($0.rounded()))" } ?? "--")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(aqiColor(snapshot.airQualityIndex))
+                Text("空气 \(snapshot.airQualityIndex.map { "\(aqiLabel($0)) \(Int($0.rounded()))" } ?? "--")")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.80))
+                    .lineLimit(1)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 13)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 10)
         .frame(width: width)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
-        .background(Color.black.opacity(0.20), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 19, style: .continuous).stroke(.white.opacity(0.18), lineWidth: 0.8))
-        .shadow(color: .black.opacity(0.30), radius: 18, x: 0, y: 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .background(Color.black.opacity(0.20), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).stroke(.white.opacity(0.18), lineWidth: 0.8))
+        .shadow(color: .black.opacity(0.28), radius: 14, x: 0, y: 7)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("天气 \(snapshot.condition.title)，气温 \(snapshot.temperatureC.map { String(format: "%.0f", $0) } ?? "未知") 度，风速 \(snapshot.windSpeedKmh.map { String(format: "%.0f", $0) } ?? "未知") 公里每小时，紫外线 \(snapshot.ultravioletIndex.map { String(format: "%.0f", $0) } ?? "未知")，空气质量 \(snapshot.airQualityIndex.map { String(format: "%.0f", $0) } ?? "未知")")
+        .accessibilityLabel("天气 \(snapshot.condition.title)，气温 \(snapshot.temperatureC.map { String(format: "%.0f", $0) } ?? "未知") 度，风速 \(snapshot.windSpeedKmh.map { String(format: "%.0f", $0) } ?? "未知") 公里每小时，空气质量 \(snapshot.airQualityIndex.map { String(format: "%.0f", $0) } ?? "未知")")
     }
 
-    private func weatherRow(_ image: String, _ title: String, _ value: String) -> some View {
-        HStack(spacing: 8) {
+    private func weatherPill(_ image: String, _ value: String) -> some View {
+        HStack(spacing: 3) {
             Image(systemName: image)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white.opacity(0.82))
-                .frame(width: 17)
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white.opacity(0.72))
-            Spacer(minLength: 4)
+                .font(.system(size: 10, weight: .semibold))
             Text(value)
-                .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
-                .foregroundStyle(.white)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .monospacedDigit()
         }
+        .foregroundStyle(.white.opacity(0.88))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(.white.opacity(0.10), in: Capsule())
     }
 }
 
@@ -2437,7 +2431,7 @@ private struct VehicleParkedScene: View {
             .padding(.leading, 20)
             .padding(.top, 22)
 
-            RideWeatherCard(snapshot: weather)
+            RideWeatherCard(snapshot: weather, width: min(size.width * 0.36, 132))
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.top, 17)
                 .padding(.trailing, 15)
@@ -2454,6 +2448,37 @@ private struct VehicleParkedScene: View {
 
         }
         .frame(width: size.width, height: size.height)
+    }
+}
+
+private struct RidingWindLayer: View {
+    var size: CGSize
+    var phase: TimeInterval
+    var windSpeedKmh: Double?
+
+    private var intensity: CGFloat {
+        min(max(CGFloat(windSpeedKmh ?? 18) / 42, 0.45), 1)
+    }
+
+    var body: some View {
+        ForEach(0..<12, id: \.self) { index in
+            let progress = (phase * (0.38 + Double(index % 3) * 0.06) + Double(index) * 0.137)
+                .truncatingRemainder(dividingBy: 1)
+            let length = size.width * (0.075 + CGFloat(index % 4) * 0.022) * intensity
+            let y = size.height * (0.24 + CGFloat((index * 37) % 62) / 100)
+
+            Capsule()
+                .fill(.white.opacity(0.10 + Double(index % 3) * 0.045))
+                .frame(width: length, height: index.isMultiple(of: 3) ? 1.5 : 1)
+                .rotationEffect(.degrees(-7))
+                .offset(
+                    x: size.width * (-0.58 + CGFloat(progress) * 1.28),
+                    y: y
+                )
+        }
+        .blur(radius: 0.15)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -2476,9 +2501,11 @@ private struct VehicleRidingScene: View {
                 .padding(.leading, 20)
                 .padding(.top, 18)
 
-            // Weather deliberately occupies the upper-right corner after the
-            // three redundant side cards were removed.
-            RideWeatherCard(snapshot: weather, width: min(size.width * 0.43, 164))
+            RidingWindLayer(size: size, phase: phase, windSpeedKmh: weather.windSpeedKmh)
+                .padding(.top, size.height * 0.06)
+
+            // Keep live weather visible without competing with the riding state.
+            RideWeatherCard(snapshot: weather, width: min(size.width * 0.37, 132))
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.top, 17)
                 .padding(.trailing, 14)
@@ -5241,7 +5268,7 @@ private struct InterfaceRideTrackMapPanel: View {
     }
 
     private var hasInterfaceSpeed: Bool {
-        points.contains { ($0.speedKmh ?? 0) > 0 }
+        points.contains { $0.speedKmh != nil }
     }
 
     private var speedPoints: [TrackSpeedPoint] {
@@ -5323,22 +5350,31 @@ private struct TrackMaxSpeedBadge: View {
 
 private struct TrackSpeedLegend: View {
     var body: some View {
-        HStack(spacing: 10) {
-            legendItem(color: .cyan, title: "低速")
-            legendItem(color: Color.teslaGreen, title: "巡航")
-            legendItem(color: .orange, title: "较快")
-            legendItem(color: .red, title: "最快")
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 6) {
+            Label("速度颜色", systemImage: "speedometer")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.teslaPrimaryText)
+
+            HStack(spacing: 8) {
+                legendItem(color: .blue, title: "0–10")
+                legendItem(color: .cyan, title: "10–25")
+                legendItem(color: Color.teslaGreen, title: "25–40")
+                legendItem(color: .orange, title: "40–55")
+                legendItem(color: .red, title: "55+")
+                Spacer(minLength: 0)
+            }
         }
         .font(.caption2.weight(.medium))
         .foregroundStyle(Color.teslaSecondaryText)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("路线速度颜色：每小时 0 到 10 公里蓝色，10 到 25 公里青色，25 到 40 公里绿色，40 到 55 公里橙色，55 公里以上红色")
     }
 
     private func legendItem(color: Color, title: String) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             Capsule()
                 .fill(color)
-                .frame(width: 16, height: 4)
+                .frame(width: 14, height: 4)
             Text(title)
         }
     }
@@ -5386,7 +5422,10 @@ private func makeSpeedTrackSegments(from points: [TrackSpeedPoint]) -> [TrackSpe
     return (0..<(points.count - 1)).map { index in
         let start = points[index]
         let end = points[index + 1]
-        let speed = end.speedKmh ?? start.speedKmh
+        let availableSpeeds = [start.speedKmh, end.speedKmh].compactMap { $0 }
+        let speed = availableSpeeds.isEmpty
+            ? nil
+            : availableSpeeds.reduce(0, +) / Double(availableSpeeds.count)
         return TrackSpeedSegment(
             id: "\(start.id)-\(end.id)-\(index)",
             coordinates: [start.coordinate, end.coordinate],
@@ -5402,13 +5441,15 @@ private func bestSpeedTrackPoint(from points: [TrackSpeedPoint]) -> TrackSpeedPo
 }
 
 private func speedTrackColor(_ speed: Double?) -> Color {
-    guard let speed else { return Color.teslaGreen }
+    guard let speed else { return Color.teslaGreen.opacity(0.78) }
     switch speed {
-    case ..<8:
-        return .cyan
+    case ..<10:
+        return .blue
     case ..<25:
-        return Color.teslaGreen
+        return .cyan
     case ..<40:
+        return Color.teslaGreen
+    case ..<55:
         return .orange
     default:
         return .red

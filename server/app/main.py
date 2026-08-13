@@ -76,7 +76,7 @@ logging.basicConfig(level=os.getenv("NINEPLUS_LOG_LEVEL", "INFO"))
 
 app = FastAPI(
     title="NinePlus",
-    version="6.0.0",
+    version="7.0.0",
     description=(
         "Unofficial personal Ninebot web console. The backend invokes the "
         "community ninecli command-line client against the user-facing cloud service."
@@ -289,57 +289,124 @@ def wgs84_to_gcj02(latitude: float, longitude: float) -> list[float]:
     return [latitude + latitude_delta, longitude + longitude_delta]
 
 
-def _track_from_trail(value: Any) -> list[dict[str, float]]:
-    """Preserve official per-point speed while normalizing coordinates.
+def _track_point(value: Any) -> dict[str, float] | None:
+    """Read one upstream route point and retain its optional speed value."""
+    latitude: float | None = None
+    longitude: float | None = None
+    speed: float | None = None
+    distance: float | None = None
 
-    Official trail records normally use ``longitude,latitude,speed,distance``.
-    Earlier builds discarded every field after the coordinates, which made the
-    iOS route map unable to colour the line by interface-provided speed.
-    """
+    if isinstance(value, dict):
+        latitude = _number(value.get("latitude", value.get("lat", value.get("y"))))
+        longitude = _number(value.get("longitude", value.get("lon", value.get("lng", value.get("x")))))
+        if latitude is None or longitude is None:
+            return None
+        speed = _number(
+            value.get(
+                "speed_kmh",
+                value.get("speedKmh", value.get("speed", value.get("spd", value.get("velocity", value.get("v"))))),
+            )
+        )
+        distance = _number(value.get("distance_meters", value.get("distance", value.get("mileage"))))
+    elif isinstance(value, (list, tuple)):
+        numbers = [_number(item) for item in value]
+        if len(numbers) < 2 or numbers[0] is None or numbers[1] is None:
+            return None
+        coordinate = _coordinate_pair([numbers[0], numbers[1]])
+        if coordinate is None:
+            return None
+        latitude, longitude = coordinate
+        speed = numbers[2] if len(numbers) >= 3 else None
+        distance = numbers[3] if len(numbers) >= 4 else None
+    else:
+        return None
+
+    coordinate = _coordinate_pair([latitude, longitude])
+    if coordinate is None:
+        return None
+    latitude, longitude = coordinate
+    point: dict[str, float] = {"latitude": latitude, "longitude": longitude}
+    if speed is not None and 0 <= speed <= 160:
+        point["speed_kmh"] = speed
+    if distance is not None and distance >= 0:
+        point["distance_meters"] = distance
+    return point
+
+
+def _deduplicated_track(points: list[dict[str, float]]) -> list[dict[str, float]]:
+    result: list[dict[str, float]] = []
+    for point in points:
+        if not result or (point["latitude"], point["longitude"]) != (result[-1]["latitude"], result[-1]["longitude"]):
+            result.append(point)
+    return result
+
+
+def _track_from_trail(value: Any) -> list[dict[str, float]]:
+    """Parse legacy ``longitude,latitude,speed,distance`` trail strings."""
     if not isinstance(value, str):
         return []
     points: list[dict[str, float]] = []
     for segment in re.split(r"[;|\n]+", value):
         numbers = [_number(part) for part in re.split(r"[,\s]+", segment.strip()) if part]
-        if len(numbers) < 2 or numbers[0] is None or numbers[1] is None:
-            continue
-        coordinate = _coordinate_pair([numbers[0], numbers[1]])
-        if coordinate is None:
-            continue
-        latitude, longitude = coordinate
-        point: dict[str, float] = {"latitude": latitude, "longitude": longitude}
-        if len(numbers) >= 3 and numbers[2] is not None and 0 <= numbers[2] <= 160:
-            point["speed_kmh"] = numbers[2]
-        if len(numbers) >= 4 and numbers[3] is not None and numbers[3] >= 0:
-            point["distance_meters"] = numbers[3]
-        if not points or (latitude, longitude) != (points[-1]["latitude"], points[-1]["longitude"]):
+        point = _track_point(numbers)
+        if point:
             points.append(point)
-    return points
+    return _deduplicated_track(points)
 
 
-def _find_trail(value: Any) -> str | None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if str(key).lower() == "trail" and isinstance(child, str) and child.strip():
-                return child
-            found = _find_trail(child)
-            if found:
-                return found
-    elif isinstance(value, list):
-        for child in value:
-            found = _find_trail(child)
-            if found:
-                return found
-    return None
+def _track_candidates(value: Any) -> list[list[dict[str, float]]]:
+    """Find route arrays or legacy route strings anywhere in travel detail.
+
+    Ninebot firmware versions alternately return `trail`, `track`, `points`,
+    or object arrays. Normalizing every known shape here keeps the iOS route
+    map independent of those upstream naming changes and preserves speed data.
+    """
+    candidates: list[list[dict[str, float]]] = []
+    route_keys = {"trail", "trace", "track", "tracks", "points", "gps", "locations", "coordinates"}
+
+    def collect(item: Any, preferred: bool = False) -> None:
+        if isinstance(item, str):
+            points = _track_from_trail(item)
+            if len(points) >= 2:
+                candidates.append(points)
+            return
+
+        if isinstance(item, list):
+            direct_points = [point for child in item if (point := _track_point(child)) is not None]
+            direct_points = _deduplicated_track(direct_points)
+            if len(direct_points) >= 2:
+                candidates.append(direct_points)
+            for child in item:
+                if isinstance(child, (dict, list, str)):
+                    collect(child, preferred=preferred)
+            return
+
+        if isinstance(item, dict):
+            for key, child in item.items():
+                normalized_key = str(key).lower()
+                if normalized_key in route_keys:
+                    collect(child, preferred=True)
+                elif isinstance(child, (dict, list)):
+                    collect(child, preferred=False)
+
+    collect(value)
+    return candidates
+
+
+def _best_track(value: Any) -> list[dict[str, float]]:
+    candidates = _track_candidates(value)
+    if not candidates:
+        return []
+    # First prefer richer data with per-point speed, then use the longest line.
+    return max(candidates, key=lambda points: (sum("speed_kmh" in point for point in points), len(points)))
 
 
 def normalize_travel_detail(payload: Any) -> Any:
-    """Add stable route fields without altering the upstream response."""
+    """Add stable GCJ-02 route fields and interface-provided point speeds."""
     if not isinstance(payload, dict):
         return payload
     detail = copy.deepcopy(payload)
-    trail = _find_trail(detail)
-    track = _track_from_trail(trail) if trail else []
+    track = _best_track(detail)
     if len(track) >= 2:
         map_track: list[dict[str, float]] = []
         for point in track:
@@ -352,9 +419,8 @@ def normalize_travel_detail(payload: Any) -> Any:
         detail["coordinate_system"] = "gcj02"
         detail["source_coordinate_system"] = "wgs84"
         detail["track_point_count"] = len(track)
-        detail["track_speed_source"] = "ninebot_interface"
+        detail["track_speed_source"] = "ninebot_interface" if any("speed_kmh" in point for point in track) else "unavailable"
     return detail
-
 
 def normalize_status_location(payload: Any) -> Any:
     if not isinstance(payload, dict):
