@@ -75,9 +75,9 @@ app.mount("/assets", StaticFiles(directory=APP_DIR / "static"), name="assets")
 
 @app.middleware("http")
 async def require_access_token(request: Request, call_next):
-    # v1.2.62 authenticates the app with the Ninebot account itself. There is
-    # no deployment-wide frontend token; protected routes validate the
-    # per-login session in their handlers.
+    # Protected routes validate the per-user NinePlus session in their
+    # handlers. The official Ninebot cloud binding is server-side state and is
+    # never used as a frontend or device login token.
     return await call_next(request)
 
 
@@ -128,6 +128,10 @@ class PortalSession:
 sessions: dict[str, PortalSession] = {}
 session_reaper_task: asyncio.Task[None] | None = None
 push_devices_lock = asyncio.Lock()
+# Rebinding the installation-wide ninecli account replaces shared credential
+# files. Serialize that replacement with every cloud call so another device
+# cannot observe a half-written config or keep using a removed directory.
+official_binding_lock = asyncio.Lock()
 
 
 def ok(data: Any = None) -> dict[str, Any]:
@@ -427,12 +431,52 @@ def attach_persistent_cloud(portal: PortalSession) -> CloudSession | None:
 
 
 def persist_official_account(account: str) -> None:
-    PERSISTENT_CLOUD_DIR.mkdir(parents=True, exist_ok=True)
-    PERSISTENT_CLOUD_META.write_text(
+    """Atomically persist the server-wide official account metadata."""
+    SESSION_ROOT.mkdir(parents=True, exist_ok=True)
+    temporary = SESSION_ROOT / f".official-account-{secrets.token_hex(8)}.tmp"
+    temporary.write_text(
         json.dumps({"account": account}, ensure_ascii=False),
         encoding="utf-8",
     )
-    PERSISTENT_CLOUD_META.chmod(0o600)
+    try:
+        temporary.chmod(0o600)
+        os.replace(temporary, PERSISTENT_CLOUD_META)
+        try:
+            PERSISTENT_CLOUD_META.chmod(0o600)
+        except OSError:
+            pass
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def replace_persistent_cloud(temp_dir: Path, account: str) -> None:
+    """Install a verified temporary cloud config without destroying the old one.
+
+    The temporary directory is created beside the persistent directory, so the
+    renames are normally same-filesystem operations. Keeping a backup until
+    metadata is committed also protects an existing binding if a bind mount or
+    permission boundary rejects the replacement midway through.
+    """
+    backup_dir = SESSION_ROOT / f".official-backup-{secrets.token_hex(8)}"
+    had_old_dir = PERSISTENT_CLOUD_DIR.exists()
+    if had_old_dir:
+        PERSISTENT_CLOUD_DIR.rename(backup_dir)
+    try:
+        temp_dir.rename(PERSISTENT_CLOUD_DIR)
+        try:
+            persist_official_account(account)
+        except Exception:
+            shutil.rmtree(PERSISTENT_CLOUD_DIR, ignore_errors=True)
+            if backup_dir.exists():
+                backup_dir.rename(PERSISTENT_CLOUD_DIR)
+            raise
+    except Exception:
+        if backup_dir.exists() and not PERSISTENT_CLOUD_DIR.exists():
+            backup_dir.rename(PERSISTENT_CLOUD_DIR)
+        raise
+    finally:
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def cleanup_portal_session(session: PortalSession) -> None:
@@ -606,7 +650,7 @@ def get_session(
     x_session: str | None,
     cookie_session: str | None,
 ) -> tuple[str, PortalSession]:
-    # The app sends the session returned by POST /ninebot/login. Keep the
+    # The app sends the session returned by POST /auth/login. Keep the
     # Authorization argument for source compatibility with older clients, but
     # never interpret it as an installation-wide access token.
     del authorization
@@ -620,7 +664,7 @@ def get_session(
         sessions.pop(token, None)
         cleanup_portal_session(session)
         persist_portal_sessions()
-        error(401, "session_expired", "九号登录已过期，请重新登录")
+        error(401, "session_expired", "NinePlus 登录会话已过期，请重新登录 NinePlus 账号")
 
     # Sliding renewal keeps an actively used app session alive indefinitely
     # while abandoned sessions still expire after the configured TTL.
@@ -640,13 +684,17 @@ def portal_from_request(request: Request, cookie: str | None) -> tuple[str, Port
     )
 
 
-def auth_from_request(request: Request, cookie: str | None) -> tuple[str, CloudSession]:
+async def auth_from_request(request: Request, cookie: str | None) -> tuple[str, CloudSession]:
     token, portal = portal_from_request(request, cookie)
-    cloud = attach_persistent_cloud(portal)
-    if cloud is None:
-        error(409, "cloud_account_not_configured", "NinePlus 已登录，但服务器尚未完成九号云端绑定")
-    persist_portal_sessions()
-    return token, cloud
+    # The persistent config can be replaced by the administrator while a new
+    # device is logging in. Resolve the shared object under the same lock used
+    # by cloud calls and rebinding.
+    async with official_binding_lock:
+        cloud = attach_persistent_cloud(portal)
+        if cloud is None:
+            error(409, "cloud_account_not_configured", "NinePlus 已登录，但服务器尚未完成九号云端绑定")
+        persist_portal_sessions()
+        return token, cloud
 
 
 async def run_cli(
@@ -697,17 +745,18 @@ async def run_cli(
         logger.warning("ninecli operation failed (%s): %s", args[0] if args else "unknown", diagnostic[:240])
         if args and args[0] == "login":
             if "resultcode=90014" in diagnostic_lower or "username or password incorrect" in diagnostic_lower:
-                error(401, "login_failed", "九号云返回 90014：账号或密码不正确。请先确认九号官方 App 能使用同一账号登录")
+                error(401, "login_failed", "九号云返回 90014：账号或密码不正确。请由服务器管理员确认九号官方 App 能使用同一账号登录")
             if any(marker in diagnostic_lower for marker in ("timeout", "deadline exceeded", "timed out", "i/o timeout")):
-                error(504, "ninebot_cloud_timeout", "九号云登录请求超时，请检查服务器网络后重试")
-            error(502, "ninebot_cloud_error", "九号云登录服务返回错误，请查看后端日志")
+                error(504, "ninebot_cloud_timeout", "服务器连接九号云超时，请检查服务器网络后重试")
+            error(502, "ninebot_cloud_error", "服务器绑定九号云失败，请查看后端日志")
         error(502, "ninebot_cloud_error", "九号云请求失败，请稍后重试")
     return parse_cli_json(stdout)
 
 
 async def _run_cloud_call(session: CloudSession, args: tuple[str, ...]) -> Any:
-    async with session.lock:
-        return await run_cli(session, *args)
+    async with official_binding_lock:
+        async with session.lock:
+            return await run_cli(session, *args)
 
 
 def invalidate_session_cache(session: CloudSession) -> None:
@@ -877,7 +926,8 @@ async def perform_portal_login(body: PortalLoginBody, request: Request, response
     # The official cloud binding is installation-wide. A new browser, phone,
     # or tablet gets a fresh NinePlus session but never needs the official
     # account credentials again.
-    attach_persistent_cloud(portal)
+    async with official_binding_lock:
+        attach_persistent_cloud(portal)
     sessions[token] = portal
     persist_portal_sessions()
     set_session_cookie(request, response, token)
@@ -893,29 +943,44 @@ async def perform_official_login(body: OfficialLoginBody, request: Request, resp
     if not cli_available():
         error(503, "dependency_missing", "ninecli 未安装")
 
-    if portal.cloud is not None:
-        cleanup_session(portal.cloud)
-        portal.cloud = None
-        persist_portal_sessions()
-
     account = body.account.strip()
-    # There is one installation-wide official binding. Reusing a stable path
-    # makes ninecli credentials survive Uvicorn/Docker restarts; the directory
-    # lives on the host-mounted session volume and is mode 0700.
-    shutil.rmtree(PERSISTENT_CLOUD_DIR, ignore_errors=True)
-    PERSISTENT_CLOUD_DIR.mkdir(parents=True, exist_ok=False)
-    config_dir = PERSISTENT_CLOUD_DIR
-    cloud = CloudSession(account, config_dir, portal.expires_at)
-    prepare_cli_config(config_dir, normalize_area_code(body.area_code))
-    try:
-        raw = await run_cli(cloud, "login", "-u", account, password=body.password)
-    except Exception:
-        cleanup_session(cloud)
-        raise
+    # Login into a temporary sibling directory first. The existing binding
+    # remains usable if the new credentials are rejected or ninecli times out.
+    temp_dir = SESSION_ROOT / f".official-login-{secrets.token_hex(8)}"
+    async with official_binding_lock:
+        temp_dir.mkdir(parents=True, exist_ok=False)
+        temp_cloud = CloudSession(account, temp_dir, portal.expires_at)
+        prepare_cli_config(temp_dir, normalize_area_code(body.area_code))
+        try:
+            raw = await run_cli(temp_cloud, "login", "-u", account, password=body.password)
+            # No cloud call can run concurrently while this lock is held.
+            # Swap the verified config and its metadata as one recoverable
+            # operation so a failed replacement keeps the old binding usable.
+            replace_persistent_cloud(temp_dir, account)
+            temp_cloud.config_dir = PERSISTENT_CLOUD_DIR
 
-    persist_official_account(account)
-    portal.cloud = cloud
-    persist_portal_sessions()
+            # Preserve object identity for in-flight/request-local references
+            # held by other sessions, then point every portal at the same
+            # installation-wide CloudSession and clear stale response caches.
+            canonical = next(
+                (existing.cloud for existing in sessions.values()
+                 if is_persistent_cloud(existing.cloud)),
+                temp_cloud,
+            )
+            canonical.account = account
+            canonical.config_dir = PERSISTENT_CLOUD_DIR
+            canonical.expires_at = max(portal.expires_at, time.time() + SESSION_TTL)
+            canonical.cache.clear()
+            canonical.inflight.clear()
+            for existing in sessions.values():
+                if existing.cloud is not None and is_persistent_cloud(existing.cloud):
+                    existing.cloud = canonical
+            portal.cloud = canonical
+            persist_portal_sessions()
+        except Exception:
+            cleanup_session(temp_cloud)
+            raise
+
     set_session_cookie(request, response, token)
     return login_result(raw, account, token, portal.expires_at)
 
@@ -987,8 +1052,9 @@ async def logout(request: Request, response: Response, nineplus_session: str | N
 @app.get("/auth/me")
 async def me(request: Request, nineplus_session: str | None = Cookie(default=None)):
     token, session = portal_from_request(request, nineplus_session)
-    attach_persistent_cloud(session)
-    persist_portal_sessions()
+    async with official_binding_lock:
+        attach_persistent_cloud(session)
+        persist_portal_sessions()
     return ok(portal_login_result(session, token))
 
 
@@ -996,9 +1062,10 @@ async def me(request: Request, nineplus_session: str | None = Cookie(default=Non
 async def refresh_auth(request: Request, response: Response, nineplus_session: str | None = Cookie(default=None)):
     token, session = portal_from_request(request, nineplus_session)
     session.expires_at = time.time() + SESSION_TTL
-    attach_persistent_cloud(session)
-    if session.cloud is not None:
-        session.cloud.expires_at = session.expires_at
+    async with official_binding_lock:
+        attach_persistent_cloud(session)
+        if session.cloud is not None:
+            session.cloud.expires_at = session.expires_at
     persist_portal_sessions()
     set_session_cookie(request, response, token)
     return ok(portal_login_result(session, token))
@@ -1073,7 +1140,7 @@ async def dashboard_read(
 
 @app.get("/vehicles")
 async def vehicles(request: Request, nineplus_session: str | None = Cookie(default=None)):
-    _, session = auth_from_request(request, nineplus_session)
+    _, session = await auth_from_request(request, nineplus_session)
     return ok(await cloud_call(session, "vehicles", cache_ttl=CACHE_TTL_VEHICLES))
 
 
@@ -1090,7 +1157,7 @@ async def dashboard(
     they share token/config files, but the HTTP fan-out and duplicate calls are
     removed.  Each read also benefits from the session-level short TTL cache.
     """
-    _, session = auth_from_request(request, nineplus_session)
+    _, session = await auth_from_request(request, nineplus_session)
     normalized_month = normalize_month(month) or current_month_string()
     raw_vehicles = await cloud_call(session, "vehicles", cache_ttl=CACHE_TTL_VEHICLES)
 
@@ -1121,7 +1188,7 @@ async def dashboard(
 
 @app.get("/vehicles/{sn}/status")
 async def vehicle_status(sn: str, request: Request, nineplus_session: str | None = Cookie(default=None)):
-    _, session = auth_from_request(request, nineplus_session)
+    _, session = await auth_from_request(request, nineplus_session)
     normalized_sn = validate_sn(sn)
     payload = await cloud_call(session, "status", normalized_sn, cache_ttl=CACHE_TTL_STATUS)
     payload = enrich_status_for_legacy_clients(normalized_sn, payload)
@@ -1130,7 +1197,7 @@ async def vehicle_status(sn: str, request: Request, nineplus_session: str | None
 
 @app.get("/vehicles/{sn}/location")
 async def vehicle_location(sn: str, request: Request, nineplus_session: str | None = Cookie(default=None)):
-    _, session = auth_from_request(request, nineplus_session)
+    _, session = await auth_from_request(request, nineplus_session)
     payload = await cloud_call(session, "status", validate_sn(sn), cache_ttl=CACHE_TTL_STATUS)
     normalized = normalize_status_location(payload)
     if not isinstance(normalized, dict) or "location_coordinate" not in normalized:
@@ -1147,7 +1214,7 @@ async def vehicle_location(sn: str, request: Request, nineplus_session: str | No
 
 @app.get("/vehicles/{sn}/battery")
 async def vehicle_battery(sn: str, request: Request, nineplus_session: str | None = Cookie(default=None)):
-    _, session = auth_from_request(request, nineplus_session)
+    _, session = await auth_from_request(request, nineplus_session)
     return ok(await cloud_call(session, "battery", validate_sn(sn), cache_ttl=CACHE_TTL_BATTERY))
 
 
@@ -1162,7 +1229,7 @@ async def vehicle_travel(
 ):
     if page < 1 or page > 1000 or page_size < 1 or page_size > 100:
         error(400, "invalid_pagination", "分页参数超出范围")
-    _, session = auth_from_request(request, nineplus_session)
+    _, session = await auth_from_request(request, nineplus_session)
     normalized_month = normalize_month(month)
     payload = (
         await cloud_call(
@@ -1189,7 +1256,7 @@ async def travel_detail(
     request: Request,
     nineplus_session: str | None = Cookie(default=None),
 ):
-    _, session = auth_from_request(request, nineplus_session)
+    _, session = await auth_from_request(request, nineplus_session)
     payload = await cloud_call(session, "travel", validate_sn(sn), "--detail", validate_travel_id(travel_id))
     return ok(normalize_travel_detail(payload))
 
@@ -1204,7 +1271,7 @@ async def travel_sync(
 ):
     if page_size < 1 or page_size > 100:
         error(400, "invalid_pagination", "分页参数超出范围")
-    _, session = auth_from_request(request, nineplus_session)
+    _, session = await auth_from_request(request, nineplus_session)
     normalized_month = normalize_month(month) or current_month_string()
     payload = await cloud_call(
         session, "travel", validate_sn(sn), "--month", normalized_month,
@@ -1282,7 +1349,7 @@ async def vehicle_control(
 ):
     if not body.confirm:
         error(400, "confirmation_required", "远程控制必须明确确认")
-    _, session = auth_from_request(request, nineplus_session)
+    _, session = await auth_from_request(request, nineplus_session)
     control_args = [CONTROL_COMMANDS[body.action], validate_sn(sn)]
     if body.action != "bell":
         control_args.append("--yes")

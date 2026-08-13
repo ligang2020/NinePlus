@@ -55,9 +55,10 @@ struct NinebotProxyClient {
         return Self.loginResult(from: payload)
     }
 
-    // Compatibility methods for older callers. New UI must use the explicit
-    // two-step methods above so the Ninebot password is never used as the
-    // NinePlus portal password.
+    // Legacy server-binding methods retained only for older app builds. The
+    // current UI never calls them: devices authenticate with NinePlus and the
+    // official cloud account is configured once on the server. New clients
+    // must not expose these methods as a device login flow.
     func login(account: String, password: String) async throws -> NinebotLoginResult {
         try await loginNinebotAccount(account: account, password: password)
     }
@@ -111,20 +112,16 @@ struct NinebotProxyClient {
         return Self.loginResult(from: payload)
     }
 
-    func refreshAccessToken() async throws {
-        _ = try await request(method: "POST", path: ["auth", "refresh"])
-    }
-
-    /// Attempts to renew the per-installation session. The server may either
+    /// Renews the per-user NinePlus session. The server may either
     /// return a replacement token or refresh its cookie-backed session and
     /// return an empty payload; both outcomes are useful to the caller.
-    func refreshNinebotSession() async throws -> String? {
+    func refreshNinePlusSession() async throws -> String? {
         let payload = try await request(
             method: "POST",
             path: ["auth", "refresh"],
             allowSessionRecovery: false
         )
-        return Self.loginResult(from: payload).sessionToken
+        return Self.portalLoginResult(from: payload).sessionToken
     }
 
     func ringBell(sn: String) async throws -> JSONValue {
@@ -273,8 +270,8 @@ struct NinebotProxyClient {
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        // Do not send a build-time NinePlus access token. Authentication is
-        // established by the Ninebot account login and the session header.
+        // Do not send a build-time access token. Authentication is established
+        // by the per-user NinePlus session header.
         if let sessionToken = configuration.appSessionToken?.trimmingCharacters(in: .whitespacesAndNewlines),
            !sessionToken.isEmpty {
             request.setValue(sessionToken, forHTTPHeaderField: "X-NinePlus-Session")
@@ -290,9 +287,9 @@ struct NinebotProxyClient {
             throw NinebotProxyError.invalidResponse
         }
 
-        // A server restart can clear the in-memory app session. Re-login with
-        // the Ninebot account instead of falling back to a deployment-wide
-        // bearer token.
+        // A server restart can clear the in-memory session. Retry without the
+        // stale header once; the view model then asks /auth/refresh and replays
+        // the request using the renewed NinePlus session.
         if httpResponse.statusCode == 401,
            allowSessionRecovery,
            configuration.appSessionToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {

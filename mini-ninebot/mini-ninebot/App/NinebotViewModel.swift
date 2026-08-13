@@ -16,9 +16,9 @@ enum NinebotInputError: LocalizedError {
         case .missingProxy:
             return "请先填写服务地址"
         case .missingAccount:
-            return "请填写九号账号"
+            return "请填写 NinePlus 账号"
         case .missingPassword:
-            return "请填写九号账号密码"
+            return "请填写 NinePlus 密码"
         case .missingCode:
             return "请填写验证码"
         case .platformOnly:
@@ -135,15 +135,11 @@ final class NinebotViewModel: ObservableObject {
     @Published var dataSourceMode: NinebotDataSourceMode = .platform
     @Published var baseURLString = ""
     @Published var bearerToken = ""
-    // NinePlus portal credentials and the official Ninebot credentials are
-    // deliberately separate. The portal password is never persisted.
+    // Only NinePlus credentials are entered on this device. The portal
+    // password is never persisted; the official cloud binding stays on the server.
     @Published var portalUsername = ""
     @Published var portalPassword = ""
-    @Published var account = ""
-    @Published var password = ""
-    @Published var smsCode = ""
     @Published var pushDeviceToken: String?
-    @Published var loginResult: NinebotLoginResult?
     @Published var portalLoginResult: NinePlusPortalLoginResult?
     @Published var dashboard: NinebotDashboard
     @Published var isLoading = false
@@ -166,15 +162,15 @@ final class NinebotViewModel: ObservableObject {
 
     init() {
         let configuration = store.loadConfiguration()
-        let loginResult = store.loadLoginResult()
         let portalLoginResult = store.loadPortalLoginResult()
         self.dataSourceMode = store.loadDataSourceMode()
         self.baseURLString = configuration?.baseURLString ?? NinebotAppRuntimeConfiguration.baseURL
         self.bearerToken = ""
-        self.loginResult = loginResult
         self.portalLoginResult = portalLoginResult
         self.portalUsername = portalLoginResult?.username ?? ""
-        self.account = loginResult?.phone ?? ""
+        // Old builds persisted a device-local official-account session. It is
+        // no longer used for authorization, so remove it during migration.
+        store.clearLoginResult()
         self.pushDeviceToken = store.loadPushDeviceToken()
         self.dashboard = store.loadDashboard() ?? .empty
         self.errorMessage = store.loadLastError()
@@ -191,7 +187,7 @@ final class NinebotViewModel: ObservableObject {
     /// NinePlus is the only interactive login on a device. The official
     /// Ninebot cloud binding belongs to the server installation and is
     /// reported by the portal session, so a new device does not need the
-    /// official account password.
+    /// official account password; each device only needs the NinePlus session.
     var hasConnectionSession: Bool {
         hasConfiguration
             && activeSessionToken?.trimmed.isEmpty == false
@@ -322,7 +318,7 @@ final class NinebotViewModel: ObservableObject {
     func connectToService() async {
         await runLoadingOperation(message: "正在连接服务并获取车辆") {
             guard self.hasConfiguration else {
-                throw NinebotProxyError.server("九号云服务地址无效")
+                throw NinebotProxyError.server("NinePlus 服务地址无效")
             }
             self.saveConfiguration()
             let client = try self.makeClient()
@@ -348,7 +344,10 @@ final class NinebotViewModel: ObservableObject {
     func refreshLoginToken() async {
         await runLoadingOperation(message: "正在刷新登录状态") {
             let client = try makeClient()
-            try await client.refreshAccessToken()
+            if let refreshedToken = try await client.refreshNinePlusSession()?.trimmed,
+               !refreshedToken.isEmpty {
+                updateSessionToken(refreshedToken)
+            }
             self.errorMessage = nil
             self.statusMessage = "登录状态已刷新"
         }
@@ -475,68 +474,6 @@ final class NinebotViewModel: ObservableObject {
         }
     }
 
-    func loginWithPassword() async {
-        await runLoadingOperation(message: "正在登录九号账号并获取车辆") {
-            guard !account.trimmed.isEmpty else { throw NinebotInputError.missingAccount }
-            guard !password.isEmpty else { throw NinebotInputError.missingPassword }
-            guard self.hasConfiguration else {
-                throw NinebotProxyError.server("九号云服务地址无效，请检查内置服务配置")
-            }
-
-            self.saveConfiguration()
-            let client = try makeClient()
-            let result = try await client.loginNinebotAccount(account: account.trimmed, password: password)
-            rememberLoginResult(result, fallbackAccount: account.trimmed)
-            password = ""
-
-            let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
-            let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
-            self.errorMessage = nil
-            self.statusMessage = archivedDashboard.vehicles.isEmpty ? "登录成功，但未找到车辆" : "登录成功，已获取车辆信息"
-            WidgetCenter.shared.reloadAllTimelines()
-        }
-    }
-
-    func sendSMSCode() async {
-        await runLoadingOperation(message: "正在发送验证码") {
-            guard !account.trimmed.isEmpty else { throw NinebotInputError.missingAccount }
-
-            saveConfiguration()
-            let client = try makeClient()
-            if dataSourceMode == .platform {
-                try await client.sendPlatformLoginCode(account: account.trimmed)
-            } else {
-                try await client.sendLoginCode(account: account.trimmed)
-            }
-            self.errorMessage = nil
-            self.statusMessage = "验证码已发送"
-        }
-    }
-
-    func consumeSMSCode() async {
-        await runLoadingOperation(message: "正在验证码登录") {
-            guard !account.trimmed.isEmpty else { throw NinebotInputError.missingAccount }
-            guard !smsCode.trimmed.isEmpty else { throw NinebotInputError.missingCode }
-
-            saveConfiguration()
-            let client = try makeClient()
-            let result = try await consumeLoginCode(client: client, account: account.trimmed, code: smsCode.trimmed)
-            rememberLoginResult(result, fallbackAccount: account.trimmed)
-            smsCode = ""
-            await self.syncPushDeviceTokenIfPossible()
-
-            let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
-            let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
-            self.errorMessage = nil
-            self.statusMessage = "登录成功"
-            WidgetCenter.shared.reloadAllTimelines()
-        }
-    }
-
     func selectVehicle(sn: String) {
         dashboard.selectedSN = sn
         saveDashboard(dashboard)
@@ -642,22 +579,17 @@ final class NinebotViewModel: ObservableObject {
     }
 
     /// Clears only the NinePlus portal session. The official cloud password is
-    /// never persisted, and the server session can disappear after a restart,
+    /// never persisted on this device, and the server session can disappear after a restart,
     /// so a stale token must return the UI to the first login step.
     func clearNinePlusSession() {
         portalLoginResult = nil
         portalUsername = ""
         portalPassword = ""
-        loginResult = nil
-        password = ""
-        smsCode = ""
         store.clearPortalLoginResult()
+        // Remove legacy device-local Ninebot login data while retaining only
+        // the server address and non-secret configuration.
         store.clearLoginResult()
-        store.saveConfiguration(NinebotProxyConfiguration(
-            baseURLString: baseURLString,
-            bearerToken: bearerToken,
-            appSessionToken: nil
-        ))
+        store.saveConfiguration(currentConfiguration)
         errorMessage = nil
         statusMessage = "NinePlus 登录状态已失效，请重新登录 NinePlus 账号"
     }
@@ -731,7 +663,7 @@ final class NinebotViewModel: ObservableObject {
             // refresh the user session once, save a returned replacement token,
             // then replay the original dashboard request exactly once.
             do {
-                let refreshedToken = try await client.refreshNinebotSession()
+                let refreshedToken = try await client.refreshNinePlusSession()
                 if let refreshedToken = refreshedToken?.trimmingCharacters(in: .whitespacesAndNewlines),
                    !refreshedToken.isEmpty {
                     updateSessionToken(refreshedToken)
@@ -753,20 +685,6 @@ final class NinebotViewModel: ObservableObject {
 
     private func rideDetailKey(vehicleSN: String, rideID: String) -> String {
         "\(vehicleSN)|\(rideID)"
-    }
-
-    private func loginWithPassword(client: NinebotProxyClient, account: String, password: String) async throws -> NinebotLoginResult {
-        if dataSourceMode == .platform {
-            return try await client.platformLogin(account: account, password: password)
-        }
-        return try await client.login(account: account, password: password)
-    }
-
-    private func consumeLoginCode(client: NinebotProxyClient, account: String, code: String) async throws -> NinebotLoginResult {
-        if dataSourceMode == .platform {
-            return try await client.consumePlatformLoginCode(account: account, code: code)
-        }
-        return try await client.consumeLoginCode(account: account, code: code)
     }
 
     @discardableResult
@@ -956,18 +874,6 @@ final class NinebotViewModel: ObservableObject {
         return sameCoordinate && Date().timeIntervalSince(address.updatedAt) < 15 * 60
     }
 
-    private func rememberLoginResult(_ result: NinebotLoginResult, fallbackAccount: String) {
-        var resolvedResult = result
-        if resolvedResult.phone?.trimmed.isEmpty != false {
-            resolvedResult.phone = fallbackAccount
-        }
-        loginResult = resolvedResult
-        account = resolvedResult.phone ?? fallbackAccount
-        store.saveLoginResult(resolvedResult)
-        if dataSourceMode == .platform {
-            store.saveConfiguration(currentConfiguration)
-        }
-    }
 
     private func runLoadingOperation(message: String, _ operation: () async throws -> Void) async {
         let startedAt = Date()

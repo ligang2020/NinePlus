@@ -426,7 +426,7 @@ private struct NinebotBuiltInConnectionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("九号云接口已内置")
                     .font(.subheadline.weight(.semibold))
-                Text("无需填写服务地址或令牌；只需使用九号账号登录。")
+                Text("无需填写服务地址或令牌；只需登录 NinePlus，九号云端由服务器统一管理。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1060,60 +1060,6 @@ private struct DiagnosticMetricPill: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.teslaControlBackground)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-}
-
-private struct AccountSummaryRow: View {
-    var accountText: String
-    var loginResult: NinebotLoginResult?
-    var hasAccount: Bool
-    var dataSourceMode: NinebotDataSourceMode
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill((hasAccount ? Color.green : Color.orange).opacity(0.14))
-                Image(systemName: hasAccount ? "person.crop.circle.badge.checkmark" : "person.crop.circle.badge.plus")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(hasAccount ? Color.green : Color.orange)
-            }
-            .frame(width: 42, height: 42)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(hasAccount ? "服务器九号云端" : "NinePlus 登录状态")
-                    .font(.subheadline.weight(.semibold))
-                Text(summaryText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                if let detailText {
-                    Text(detailText)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
-
-            Spacer(minLength: 8)
-        }
-    }
-
-    private var summaryText: String {
-        if hasAccount {
-            return accountText
-        }
-        return dataSourceMode == .platform ? "由服务器统一管理，当前设备无需重复登录九号账号" : "当前服务会话状态"
-    }
-
-    private var detailText: String? {
-        let areaCode = loginResult?.areaCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let region = loginResult?.region?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let businessUID = loginResult?.businessUID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let parts = [areaCode.isEmpty ? nil : "+\(areaCode)", region.isEmpty ? nil : region, businessUID.isEmpty ? nil : "UID \(businessUID)"]
-            .compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 

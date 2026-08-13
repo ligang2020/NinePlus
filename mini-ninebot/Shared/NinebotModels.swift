@@ -5,8 +5,8 @@ enum NinebotAppGroup {
     static let identifier = "group.com.example.NineBotPlus"
 }
 
-/// Build-time connection values. The app only exposes the Ninebot account
-/// login. No NinePlus installation access token is required or embedded.
+/// Build-time connection values. The app exposes only the NinePlus login.
+/// No installation access token or official Ninebot password is embedded.
 enum NinebotAppRuntimeConfiguration {
     static let baseURL: String = {
         let value = Bundle.main.object(forInfoDictionaryKey: "NINEPLUS_BASE_URL") as? String
@@ -64,9 +64,8 @@ struct NinebotProxyConfiguration: Codable, Equatable {
     static let defaultPlatformURL = "https://9hao.ligangs2025.top:16689"
 
     var baseURLString: String
-    /// Kept for decoding older installations. New builds never require or
-    /// inject a deployment token; the official Ninebot login creates the
-    /// per-installation session instead.
+    /// Kept for decoding older installations. New builds authenticate with
+    /// the per-user NinePlus session instead of a deployment-wide token.
     var bearerToken: String = ""
     var appSessionToken: String? = nil
 
