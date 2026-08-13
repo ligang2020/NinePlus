@@ -4975,9 +4975,23 @@ private struct NinebotRideDetailView: View {
                 RideDetailHero(record: effectiveRecord, localRecord: localRecord)
 
                 if let localRecord {
-                    RideTrackMapPanel(record: localRecord)
+                    RideTrackExperiencePanel(
+                        title: "本地轨迹",
+                        sourceDescription: "本机定位记录 · \(formatDate(localRecord.startedAt)) - \(formatDate(localRecord.endedAt))",
+                        points: localRecord.speedTrackPoints,
+                        startedAt: localRecord.startedAt,
+                        endedAt: localRecord.endedAt,
+                        distanceText: formatDistance(localRecord.distanceKilometers)
+                    )
                 } else if !interfaceTrackPoints.isEmpty {
-                    InterfaceRideTrackMapPanel(points: interfaceTrackPoints)
+                    RideTrackExperiencePanel(
+                        title: "行程轨迹",
+                        sourceDescription: "九号接口轨迹 · \(interfaceTrackPoints.count) 个定位点",
+                        points: interfaceTrackSpeedPoints,
+                        startedAt: effectiveRecord.startedAt,
+                        endedAt: effectiveRecord.endedAt,
+                        distanceText: formatDistance(effectiveRecord.mileage)
+                    )
                 }
 
                 DetailSection(title: "接口行程") {
@@ -5020,6 +5034,16 @@ private struct NinebotRideDetailView: View {
     private var interfaceTrackPoints: [NinebotInterfaceTrackPoint] {
         guard localRecord == nil else { return [] }
         return remoteDetail?.interfaceTrackPoints ?? []
+    }
+
+    private var interfaceTrackSpeedPoints: [TrackSpeedPoint] {
+        interfaceTrackPoints.enumerated().map { index, point in
+            TrackSpeedPoint(
+                id: point.id.isEmpty ? "interface-\(index)" : point.id,
+                coordinate: point.coordinate,
+                speedKmh: point.speedKmh
+            )
+        }
     }
 
     private func loadRemoteDetailIfNeeded() async {
@@ -5114,179 +5138,353 @@ private struct RideDetailHero: View {
     }
 }
 
-private struct RideTrackMapPanel: View {
-    var record: NinebotRecordedRide
+private struct RideTrackExperiencePanel: View {
+    var title: String
+    var sourceDescription: String
+    var points: [TrackSpeedPoint]
+    var startedAt: Date?
+    var endedAt: Date?
+    var distanceText: String?
+
     @State private var cameraPosition: MapCameraPosition
+    @State private var startAddress: String?
+    @State private var endAddress: String?
+    @State private var isResolvingAddresses = false
+    @State private var showsPlaybackVehicle = false
+    @State private var isPlaying = false
+    @State private var playbackProgress: Double = 0
+    @State private var playbackTask: Task<Void, Never>?
 
-    init(record: NinebotRecordedRide) {
-        self.record = record
-        _cameraPosition = State(initialValue: .region(Self.region(for: record.speedTrackCoordinates)))
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("本地轨迹")
-                        .font(.headline)
-                    Text("\(formatDate(record.startedAt)) - \(formatDate(record.endedAt))")
-                        .font(.caption)
-                        .foregroundStyle(Color.teslaSecondaryText)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
-
-                Spacer()
-
-                Text(formatDistance(record.distanceKilometers))
-                    .font(.headline.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(Color.teslaGreen)
-            }
-
-            Map(position: $cameraPosition) {
-                ForEach(record.speedTrackSegments) { segment in
-                    MapPolyline(coordinates: segment.coordinates)
-                        .stroke(segment.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
-                }
-
-                if let firstCoordinate = record.speedTrackCoordinates.first {
-                    Marker("起点", systemImage: "flag.fill", coordinate: firstCoordinate)
-                        .tint(.green)
-                }
-                if let lastCoordinate = record.speedTrackCoordinates.last,
-                   record.speedTrackCoordinates.count > 1 {
-                    Marker("终点", systemImage: "flag.checkered", coordinate: lastCoordinate)
-                        .tint(.red)
-                }
-                if let maxSpeedPoint = record.maxSpeedTrackPoint {
-                    Annotation("最快", coordinate: maxSpeedPoint.coordinate) {
-                        TrackMaxSpeedBadge(speed: maxSpeedPoint.speedKmh)
-                    }
-                }
-            }
-            .frame(height: 240)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-            TrackSpeedLegend()
-
-            LazyVGrid(
-                columns: [
-                    GridItem(.flexible(), spacing: 10),
-                    GridItem(.flexible(), spacing: 10)
-                ],
-                spacing: 10
-            ) {
-                RideMetric(title: "开始", value: formatTime(record.startedAt), systemImage: "play.fill")
-                RideMetric(title: "结束", value: formatTime(record.endedAt), systemImage: "stop.fill")
-                RideMetric(title: "最快", value: formatSpeed(record.maxSpeedKmh), systemImage: "speedometer")
-                RideMetric(title: "最大 G", value: formatAccelerationG(record.maxAccelerationG), systemImage: "bolt.circle.fill")
-            }
-        }
-        .padding(16)
-        .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
-    }
-
-    private static func region(for coordinates: [CLLocationCoordinate2D]) -> MKCoordinateRegion {
-        guard !coordinates.isEmpty else {
-            return MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: 31.2304, longitude: 121.4737),
-                span: MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
-            )
-        }
-
-        let minLatitude = coordinates.map(\.latitude).min() ?? coordinates[0].latitude
-        let maxLatitude = coordinates.map(\.latitude).max() ?? coordinates[0].latitude
-        let minLongitude = coordinates.map(\.longitude).min() ?? coordinates[0].longitude
-        let maxLongitude = coordinates.map(\.longitude).max() ?? coordinates[0].longitude
-        let center = CLLocationCoordinate2D(
-            latitude: (minLatitude + maxLatitude) / 2,
-            longitude: (minLongitude + maxLongitude) / 2
-        )
-        let span = MKCoordinateSpan(
-            latitudeDelta: max((maxLatitude - minLatitude) * 1.5, 0.006),
-            longitudeDelta: max((maxLongitude - minLongitude) * 1.5, 0.006)
-        )
-        return MKCoordinateRegion(center: center, span: span)
-    }
-}
-
-private struct InterfaceRideTrackMapPanel: View {
-    var points: [NinebotInterfaceTrackPoint]
-    @State private var cameraPosition: MapCameraPosition
-
-    init(points: [NinebotInterfaceTrackPoint]) {
+    init(
+        title: String,
+        sourceDescription: String,
+        points: [TrackSpeedPoint],
+        startedAt: Date?,
+        endedAt: Date?,
+        distanceText: String? = nil
+    ) {
+        self.title = title
+        self.sourceDescription = sourceDescription
         self.points = points
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.distanceText = distanceText
         _cameraPosition = State(initialValue: .region(Self.region(for: points.map(\.coordinate))))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("接口轨迹")
-                .font(.headline)
-                .foregroundStyle(Color.teslaPrimaryText)
-
-            Map(position: $cameraPosition) {
-                ForEach(speedSegments) { segment in
-                    MapPolyline(coordinates: segment.coordinates)
-                        .stroke(segment.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(Color.teslaPrimaryText)
+                    Text(sourceDescription)
+                        .font(.caption)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                        .lineLimit(1)
                 }
 
-                if let firstPoint = points.first {
-                    Marker("起点", systemImage: "flag.fill", coordinate: firstPoint.coordinate)
-                        .tint(.green)
-                }
-                if let lastPoint = points.last, points.count > 1 {
-                    Marker("终点", systemImage: "flag.checkered", coordinate: lastPoint.coordinate)
-                        .tint(.red)
-                }
-                if let maxSpeedPoint {
-                    Annotation("最快", coordinate: maxSpeedPoint.coordinate) {
-                        TrackMaxSpeedBadge(speed: maxSpeedPoint.speedKmh)
-                    }
+                Spacer()
+
+                if let distanceText {
+                    Text(distanceText)
+                        .font(.headline.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(Color.teslaGreen)
                 }
             }
-            .frame(height: 240)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-            if hasInterfaceSpeed {
-                TrackSpeedLegend()
-                Text("路线按九号接口返回的逐点速度着色；最高速度标注在地图上。")
-                    .font(.caption2)
-                    .foregroundStyle(Color.teslaSecondaryText)
-            } else {
-                Label("接口未返回逐点速度，路线以单色显示", systemImage: "speedometer")
-                    .font(.caption2)
-                    .foregroundStyle(Color.teslaSecondaryText)
+            ZStack(alignment: .bottomTrailing) {
+                Map(position: $cameraPosition) {
+                    ForEach(speedSegments) { segment in
+                        MapPolyline(coordinates: segment.coordinates)
+                            .stroke(segment.color.opacity(showsPlaybackVehicle ? 0.32 : 1), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                    }
+
+                    if showsPlaybackVehicle {
+                        ForEach(playedSpeedSegments) { segment in
+                            MapPolyline(coordinates: segment.coordinates)
+                                .stroke(segment.color, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                        }
+                    }
+
+                    if let firstPoint = points.first {
+                        Marker("起点", systemImage: "flag.fill", coordinate: firstPoint.coordinate)
+                            .tint(.green)
+                    }
+                    if let lastPoint = points.last, points.count > 1 {
+                        Marker("终点", systemImage: "flag.checkered", coordinate: lastPoint.coordinate)
+                            .tint(.red)
+                    }
+                    if let maxSpeedPoint {
+                        Annotation("最快", coordinate: maxSpeedPoint.coordinate) {
+                            TrackMaxSpeedBadge(speed: maxSpeedPoint.speedKmh)
+                        }
+                    }
+                    if showsPlaybackVehicle, let playbackCoordinate {
+                        Annotation("电瓶车回放", coordinate: playbackCoordinate) {
+                            RidePlaybackVehicleMarker(speed: playbackSpeed)
+                        }
+                    }
+                }
+
+                if showsPlaybackVehicle {
+                    Text(playbackTimestampText)
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(Color.teslaPrimaryText)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                        .padding(10)
+                }
+            }
+            .frame(height: 270)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.teslaHairline, lineWidth: 1)
+            }
+
+            TrackSpeedLegend()
+            Text(hasPointSpeeds
+                 ? "路线根据车辆逐点速度着色；回放时会高亮已骑行的路段。"
+                 : "接口未返回逐点速度，路线以默认绿色显示。")
+                .font(.caption2)
+                .foregroundStyle(Color.teslaSecondaryText)
+
+            RideEndpointAddressSection(
+                startAddress: startAddress ?? fallbackAddress(for: points.first?.coordinate),
+                endAddress: endAddress ?? fallbackAddress(for: points.last?.coordinate),
+                startedAt: startedAt,
+                endedAt: endedAt,
+                isResolving: isResolvingAddresses
+            )
+
+            if canPlayback {
+                playbackControls
             }
         }
         .padding(16)
         .background(Color.teslaCardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
-    }
-
-    private var hasInterfaceSpeed: Bool {
-        points.contains { $0.speedKmh != nil }
-    }
-
-    private var speedPoints: [TrackSpeedPoint] {
-        points.enumerated().map { index, point in
-            TrackSpeedPoint(
-                id: point.id.isEmpty ? "interface-\(index)" : point.id,
-                coordinate: point.coordinate,
-                speedKmh: point.speedKmh
-            )
+        .task(id: endpointLookupKey) {
+            await resolveEndpointAddresses()
+        }
+        .onDisappear {
+            stopPlayback()
         }
     }
 
     private var speedSegments: [TrackSpeedSegment] {
-        makeSpeedTrackSegments(from: speedPoints)
+        makeSpeedTrackSegments(from: points)
     }
 
     private var maxSpeedPoint: TrackSpeedPoint? {
-        bestSpeedTrackPoint(from: speedPoints)
+        bestSpeedTrackPoint(from: points)
+    }
+
+    private var hasPointSpeeds: Bool {
+        points.contains { $0.speedKmh != nil }
+    }
+
+    private var canPlayback: Bool {
+        points.count > 1
+    }
+
+    private var endpointLookupKey: String {
+        guard let first = points.first?.coordinate, let last = points.last?.coordinate else {
+            return "no-endpoints"
+        }
+        return String(format: "%.5f,%.5f|%.5f,%.5f", first.latitude, first.longitude, last.latitude, last.longitude)
+    }
+
+    private var playbackControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("轨迹回放", systemImage: "play.rectangle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+
+                Spacer()
+
+                Text(playbackSpeed.map(formatSpeed) ?? "-- km/h")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(Color.teslaSecondaryText)
+            }
+
+            HStack(spacing: 10) {
+                Button(action: togglePlayback) {
+                    Label(
+                        isPlaying ? "暂停" : (playbackProgress >= 0.999 ? "重播" : "播放"),
+                        systemImage: isPlaying ? "pause.fill" : (playbackProgress >= 0.999 ? "arrow.counterclockwise" : "play.fill")
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minWidth: 70)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color.teslaGreen)
+                .accessibilityLabel(isPlaying ? "暂停轨迹回放" : "开始轨迹回放")
+
+                Button {
+                    replayFromStart()
+                } label: {
+                    Image(systemName: "backward.end.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.bordered)
+                .tint(Color.teslaGreen)
+                .accessibilityLabel("从起点重新回放")
+
+                Slider(
+                    value: Binding(
+                        get: { playbackProgress },
+                        set: { newValue in
+                            stopPlayback()
+                            showsPlaybackVehicle = true
+                            playbackProgress = newValue
+                        }
+                    ),
+                    in: 0...1
+                )
+                .tint(Color.teslaGreen)
+                .accessibilityLabel("轨迹回放进度")
+            }
+        }
+        .padding(12)
+        .background(Color.teslaPageBackground.opacity(0.7))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var playbackCoordinate: CLLocationCoordinate2D? {
+        guard points.count > 1 else { return points.first?.coordinate }
+        let rawIndex = Double(points.count - 1) * playbackProgress
+        let lowerIndex = min(max(Int(rawIndex.rounded(.down)), 0), points.count - 2)
+        let progressWithinSegment = rawIndex - Double(lowerIndex)
+        return interpolate(
+            from: points[lowerIndex].coordinate,
+            to: points[lowerIndex + 1].coordinate,
+            progress: progressWithinSegment
+        )
+    }
+
+    private var playbackSpeed: Double? {
+        guard !points.isEmpty else { return nil }
+        let index = min(max(Int((Double(points.count - 1) * playbackProgress).rounded()), 0), points.count - 1)
+        return points[index].speedKmh
+    }
+
+    private var playedSpeedSegments: [TrackSpeedSegment] {
+        guard showsPlaybackVehicle, points.count > 1, let playbackCoordinate else { return [] }
+        let rawIndex = Double(points.count - 1) * playbackProgress
+        let fullSegmentCount = min(max(Int(rawIndex.rounded(.down)), 0), points.count - 1)
+        var playedPoints = Array(points.prefix(fullSegmentCount + 1))
+
+        if fullSegmentCount < points.count - 1,
+           playbackProgress > 0,
+           !coordinatesMatch(playedPoints.last?.coordinate, playbackCoordinate) {
+            let source = points[fullSegmentCount]
+            playedPoints.append(
+                TrackSpeedPoint(
+                    id: "playback-\(fullSegmentCount)",
+                    coordinate: playbackCoordinate,
+                    speedKmh: source.speedKmh
+                )
+            )
+        }
+        return makeSpeedTrackSegments(from: playedPoints)
+    }
+
+    private var playbackTimestampText: String {
+        guard let startedAt else { return "回放中" }
+        guard let endedAt else { return formatDate(startedAt) }
+        let duration = max(endedAt.timeIntervalSince(startedAt), 0)
+        return formatDate(startedAt.addingTimeInterval(duration * playbackProgress))
+    }
+
+    private func togglePlayback() {
+        isPlaying ? stopPlayback() : startPlayback()
+    }
+
+    private func replayFromStart() {
+        stopPlayback()
+        playbackProgress = 0
+        showsPlaybackVehicle = true
+        startPlayback()
+    }
+
+    private func startPlayback() {
+        guard canPlayback else { return }
+        if playbackProgress >= 0.999 {
+            playbackProgress = 0
+        }
+        showsPlaybackVehicle = true
+        isPlaying = true
+        playbackTask?.cancel()
+        playbackTask = Task { @MainActor in
+            // A 12-second preview keeps a full trip understandable while remaining interruptible.
+            let playbackDuration: Double = 12
+            let frameInterval: Double = 1.0 / 30.0
+            while !Task.isCancelled && isPlaying && playbackProgress < 1 {
+                try? await Task.sleep(nanoseconds: 33_333_333)
+                guard !Task.isCancelled, isPlaying else { break }
+                playbackProgress = min(playbackProgress + frameInterval / playbackDuration, 1)
+            }
+            if playbackProgress >= 1 {
+                isPlaying = false
+            }
+        }
+    }
+
+    private func stopPlayback() {
+        isPlaying = false
+        playbackTask?.cancel()
+        playbackTask = nil
+    }
+
+    private func resolveEndpointAddresses() async {
+        guard let first = points.first?.coordinate, let last = points.last?.coordinate else { return }
+        isResolvingAddresses = true
+        defer { isResolvingAddresses = false }
+
+        async let resolvedStart = Self.reverseGeocodedAddress(for: first)
+        async let resolvedEnd = Self.reverseGeocodedAddress(for: last)
+        let (start, end) = await (resolvedStart, resolvedEnd)
+        guard !Task.isCancelled else { return }
+        startAddress = start
+        endAddress = end
+    }
+
+    private func fallbackAddress(for coordinate: CLLocationCoordinate2D?) -> String {
+        guard let coordinate else { return "暂无定位地址" }
+        return String(format: "位置 %.5f, %.5f", coordinate.latitude, coordinate.longitude)
+    }
+
+    private static func reverseGeocodedAddress(for coordinate: CLLocationCoordinate2D) async -> String? {
+        guard CLLocationCoordinate2DIsValid(coordinate) else { return nil }
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        do {
+            let placemarks = try await CLGeocoder().reverseGeocodeLocation(location)
+            guard let placemark = placemarks.first else { return nil }
+            let parts = [
+                placemark.name,
+                placemark.thoroughfare,
+                placemark.subThoroughfare,
+                placemark.subLocality,
+                placemark.locality,
+                placemark.administrativeArea
+            ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .reduce(into: [String]()) { result, part in
+                if !result.contains(part) { result.append(part) }
+            }
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        } catch {
+            return nil
+        }
     }
 
     private static func region(for coordinates: [CLLocationCoordinate2D]) -> MKCoordinateRegion {
@@ -5305,12 +5503,138 @@ private struct InterfaceRideTrackMapPanel: View {
             latitude: (minLatitude + maxLatitude) / 2,
             longitude: (minLongitude + maxLongitude) / 2
         )
-        let span = MKCoordinateSpan(
-            latitudeDelta: max((maxLatitude - minLatitude) * 1.5, 0.006),
-            longitudeDelta: max((maxLongitude - minLongitude) * 1.5, 0.006)
+        return MKCoordinateRegion(
+            center: center,
+            span: MKCoordinateSpan(
+                latitudeDelta: max((maxLatitude - minLatitude) * 1.5, 0.006),
+                longitudeDelta: max((maxLongitude - minLongitude) * 1.5, 0.006)
+            )
         )
-        return MKCoordinateRegion(center: center, span: span)
     }
+}
+
+private struct RideEndpointAddressSection: View {
+    var startAddress: String
+    var endAddress: String
+    var startedAt: Date?
+    var endedAt: Date?
+    var isResolving: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            endpointRow(
+                title: "起点",
+                address: startAddress,
+                time: startedAt,
+                color: .green,
+                systemImage: "play.fill"
+            )
+
+            Divider()
+                .padding(.leading, 36)
+
+            endpointRow(
+                title: "终点",
+                address: endAddress,
+                time: endedAt,
+                color: .red,
+                systemImage: "stop.fill"
+            )
+        }
+        .padding(.horizontal, 12)
+        .background(Color.teslaPageBackground.opacity(0.7))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("行程起点和终点地址")
+    }
+
+    private func endpointRow(
+        title: String,
+        address: String,
+        time: Date?,
+        color: Color,
+        systemImage: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.14))
+                    .frame(width: 28, height: 28)
+                Image(systemName: systemImage)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(color)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Text(title)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(color)
+                    if isResolving && address.hasPrefix("位置 ") {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
+                }
+                Text(address)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                    .lineLimit(2)
+                Text(time.map(formatDate) ?? "时间未知")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Color.teslaSecondaryText)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 11)
+    }
+}
+
+private struct RidePlaybackVehicleMarker: View {
+    var speed: Double?
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Image(systemName: "scooter")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .background(Color.teslaGreen)
+                .clipShape(Circle())
+                .overlay {
+                    Circle().stroke(.white, lineWidth: 2)
+                }
+                .shadow(color: Color.black.opacity(0.28), radius: 7, x: 0, y: 3)
+            if let speed {
+                Text(String(format: "%.0f", speed))
+                    .font(.caption2.monospacedDigit().weight(.bold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Capsule())
+            }
+        }
+        .accessibilityLabel("电瓶车回放位置，速度 \(formatSpeed(speed))")
+    }
+}
+
+private func interpolate(
+    from start: CLLocationCoordinate2D,
+    to end: CLLocationCoordinate2D,
+    progress: Double
+) -> CLLocationCoordinate2D {
+    let clampedProgress = min(max(progress, 0), 1)
+    return CLLocationCoordinate2D(
+        latitude: start.latitude + (end.latitude - start.latitude) * clampedProgress,
+        longitude: start.longitude + (end.longitude - start.longitude) * clampedProgress
+    )
+}
+
+private func coordinatesMatch(_ lhs: CLLocationCoordinate2D?, _ rhs: CLLocationCoordinate2D) -> Bool {
+    guard let lhs else { return false }
+    return abs(lhs.latitude - rhs.latitude) < 0.0000001
+        && abs(lhs.longitude - rhs.longitude) < 0.0000001
 }
 
 private struct TrackSpeedPoint: Identifiable {

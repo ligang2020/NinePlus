@@ -1,6 +1,6 @@
 # mini-ninebot
 
-NineBot+ iOS app, version **7.0.0** (build **7**).
+NineBot+ iOS app, version **8.0.0** (build **8**).
 
 The app's first screen is the **NinePlus account login**. The service URL can be
 entered in the app, and an installation-wide Bearer Token can be supplied when
@@ -13,9 +13,15 @@ developer API. The official Ninebot cloud binding is configured once on the
 server and reused by every device; the iOS app never asks each device for that
 password. Cached vehicle data may be kept locally for a smoother dashboard.
 
+## v8 行程详情
+
+- 行程详情会显示轨迹起点、终点的反向地理编码地址和对应时间；无网络或无法解析时回退显示坐标。
+- 轨迹线按车辆逐点速度分段着色：蓝色（0–10 km/h）、青色（10–25 km/h）、绿色（25–40 km/h）、橙色（40–55 km/h）、红色（55+ km/h）。
+- 支持从起点到终点回放轨迹，地图会使用电瓶车图标显示当前位置，并提供播放、暂停、重播和进度拖动。
+
 ## 配置服务器地址并连接 App
 
-当前 v7 App 支持在登录页和「我的 → 服务器连接」中修改后端地址。地址只需要填写协议、主机和端口，不要附加 `/healthz` 或其他接口路径：
+当前 v8 App 支持在登录页和「我的 → 服务器连接」中修改后端地址。地址只需要填写协议、主机和端口，不要附加 `/healthz` 或其他接口路径：
 
 - 局域网后端：`http://服务器局域网IP:8765`，例如 `http://192.168.1.100:8765`
 - HTTPS 反向代理：`https://你的域名`
