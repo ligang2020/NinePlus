@@ -88,6 +88,10 @@ struct NinebotProxyConfiguration: Codable, Equatable {
     }
 }
 
+/// Compatibility name used by the server-backed background and widget clients.
+/// The app and extensions share one persisted configuration model.
+typealias NinebotServerConfiguration = NinebotProxyConfiguration
+
 struct NinebotLoginResult: Codable, Equatable {
     var uuid: String?
     var phone: String?
@@ -96,6 +100,102 @@ struct NinebotLoginResult: Codable, Equatable {
     var businessUID: String?
     var accountID: Int?
     var sessionToken: String?
+}
+
+enum NinebotBatteryChemistry: String, Codable, CaseIterable, Identifiable {
+    case auto
+    case lithium
+    case leadAcid = "lead_acid"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .auto: return "自动识别"
+        case .lithium: return "锂电池"
+        case .leadAcid: return "铅酸电池"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .auto: return "仅在接口明确返回类型时自动采用"
+        case .lithium: return "按锂电充电平台期与尾段涓流建模"
+        case .leadAcid: return "按铅酸吸收充电与容量衰减建模"
+        }
+    }
+}
+
+struct NinebotBatteryChemistryInfo: Codable, Equatable {
+    var configured: NinebotBatteryChemistry
+    var effective: String
+    var source: String
+    var nominalVoltage: Double?
+    var capacityWh: Double?
+    var capacityAh: Double?
+
+    var effectiveTitle: String {
+        switch effective {
+        case NinebotBatteryChemistry.lithium.rawValue: return "锂电池"
+        case NinebotBatteryChemistry.leadAcid.rawValue: return "铅酸电池"
+        default: return "待选择"
+        }
+    }
+
+    var specificationText: String {
+        var parts: [String] = []
+        if let nominalVoltage {
+            parts.append("\(Self.numberText(nominalVoltage)) V")
+        }
+        if let capacityWh {
+            parts.append("\(Self.numberText(capacityWh)) Wh")
+        }
+        return parts.isEmpty ? "未填写电压与容量" : parts.joined(separator: " · ")
+    }
+
+    private static func numberText(_ value: Double) -> String {
+        value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
+    }
+}
+
+struct NinebotServerRangePrediction: Codable, Equatable {
+    var estimatedRange: Double?
+    var localRange: Double?
+    var officialRange: Double?
+    var source: String?
+    var kmPerPercent: Double?
+    var estimatedFullRange: Double?
+    var sampleCount: Int?
+    var totalUsedPercent: Double?
+    var accuracyPercent: Double?
+    var confidencePercent: Double?
+    var accuracySource: String?
+    var measuredSampleCount: Int?
+    var isReady: Bool?
+}
+
+struct NinebotServerChargingPrediction: Codable, Equatable {
+    var isCharging: Bool?
+    var remainingMinutes: Double?
+    var estimatedFullAt: Date?
+    var fastMinutesPerPercent: Double?
+    var taperMinutesPerPercent: Double?
+    var sampleCount: Int?
+    var accuracyPercent: Double?
+    var confidencePercent: Double?
+    var accuracySource: String?
+    var measuredSampleCount: Int?
+    var isReady: Bool?
+    var estimatedSpeedKmh: Double?
+}
+
+struct NinebotServerPrediction: Codable, Equatable {
+    var modelVersion: String?
+    var updatedAt: Date?
+    var batteryPercent: Double?
+    var batteryChemistry: NinebotBatteryChemistryInfo?
+    var range: NinebotServerRangePrediction
+    var charging: NinebotServerChargingPrediction
 }
 
 struct NinePlusPortalLoginResult: Codable, Equatable {
@@ -991,6 +1091,8 @@ struct NinebotVehicleState: Codable, Equatable {
     var lastUsedElectricity: Double?
     var rideRecords: [NinebotRideRecord]?
     var dailyMileageRecords: [NinebotDailyMileageRecord]?
+    /// Optional server-side prediction payload; older cached dashboards decode without it.
+    var serverPrediction: NinebotServerPrediction?
     var updatedAt: Date
     var rawStatus: [String: JSONValue]?
     var rawTravel: [String: JSONValue]?
