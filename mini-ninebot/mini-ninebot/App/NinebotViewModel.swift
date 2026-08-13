@@ -1024,30 +1024,34 @@ private enum AppleGeocodingError: LocalizedError {
 private struct AppleReverseGeocoder {
     func reverseGeocode(latitude: Double, longitude: Double) async throws -> String {
         let location = CLLocation(latitude: latitude, longitude: longitude)
-        guard let request = MKReverseGeocodingRequest(location: location) else {
-            throw AppleGeocodingError.invalidResponse
-        }
-        request.preferredLocale = Locale(identifier: "zh_CN")
-
-        let mapItems = try await request.mapItems
-        let address = Self.addressText(from: mapItems.first)
+        let placemarks = try await CLGeocoder().reverseGeocodeLocation(
+            location,
+            preferredLocale: Locale(identifier: "zh_CN")
+        )
+        let address = Self.addressText(from: placemarks.first)
         guard !address.isEmpty else {
             throw AppleGeocodingError.invalidResponse
         }
         return address
     }
 
-    private static func addressText(from mapItem: MKMapItem?) -> String {
-        guard let mapItem else { return "" }
-        let candidates = [
-            mapItem.addressRepresentations?.fullAddress(includingRegion: true, singleLine: true),
-            mapItem.address?.fullAddress,
-            mapItem.address?.shortAddress,
-            mapItem.name
+    private static func addressText(from placemark: CLPlacemark?) -> String {
+        guard let placemark else { return "" }
+        let components = [
+            placemark.country,
+            placemark.administrativeArea,
+            placemark.locality,
+            placemark.subLocality,
+            placemark.thoroughfare,
+            placemark.subThoroughfare,
+            placemark.name,
         ]
-
-        return candidates
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty } ?? ""
+        var seen = Set<String>()
+        return components.compactMap { value -> String? in
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+                return nil
+            }
+            return seen.insert(value).inserted ? value : nil
+        }.joined()
     }
 }

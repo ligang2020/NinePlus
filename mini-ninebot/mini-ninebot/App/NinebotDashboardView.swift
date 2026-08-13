@@ -710,8 +710,8 @@ private struct NinebotVehicleMapView: View {
     }
 
     private func openInAppleMaps() {
-        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        let mapItem = MKMapItem(location: location, address: nil)
+        let placemark = MKPlacemark(coordinate: coordinate)
+        let mapItem = MKMapItem(placemark: placemark)
         mapItem.name = snapshot.vehicle.name
         mapItem.openInMaps()
     }

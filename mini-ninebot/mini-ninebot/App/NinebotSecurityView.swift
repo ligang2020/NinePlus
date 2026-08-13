@@ -191,7 +191,8 @@ private struct SecurityLocationCard: View {
             }
 
             Button {
-                let item = MKMapItem(location: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude), address: nil)
+                let placemark = MKPlacemark(coordinate: coordinate)
+                let item = MKMapItem(placemark: placemark)
                 item.name = snapshot.vehicle.name
                 item.openInMaps()
             } label: {
