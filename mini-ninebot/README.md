@@ -1,6 +1,6 @@
 # mini-ninebot
 
-NineBot+ iOS app, version **9.0.0** (build **9**).
+NineBot+ iOS app, version **10.0.0** (build **10**).
 
 The app's first screen is the **NinePlus account login**. The service URL can be
 entered in the app, and an installation-wide Bearer Token can be supplied when
@@ -13,6 +13,14 @@ developer API. The official Ninebot cloud binding is configured once on the
 server and reused by every device; the iOS app never asks each device for that
 password. Cached vehicle data may be kept locally for a smoother dashboard.
 
+## v10 充电主页
+
+- 充电状态改为无卡片的科技感场景：电量、预计充满和充电功率使用轻量 HUD 排版，主页不再堆叠充电信息卡片。
+- 车辆旁边增加带 DC/01 状态屏的充电桩，充电线使用流动电流粒子表现能量从充电桩进入车辆。
+- 车辆进入充电状态时触发一次中等强度触觉反馈和系统提示音，同时显示从电池接口向外扩散的声波环。
+- 电量上升时显示轻量粒子烟花；动画帧率降为 15 fps，并在系统开启“减弱动态效果”时完全停用时间线动画，降低主页卡顿。
+
+
 ## v9 行程详情
 
 - 行程详情会显示轨迹起点、终点的反向地理编码地址和对应时间；无网络或无法解析时回退显示坐标。
@@ -21,7 +29,7 @@ password. Cached vehicle data may be kept locally for a smoother dashboard.
 
 ## 配置服务器地址并连接 App
 
-当前 v9 App 支持在登录页和「我的 → 服务器连接」中修改后端地址。地址只需要填写协议、主机和端口，不要附加 `/healthz` 或其他接口路径：
+当前 v10 App 支持在登录页和「我的 → 服务器连接」中修改后端地址。地址只需要填写协议、主机和端口，不要附加 `/healthz` 或其他接口路径：
 
 - 局域网后端：`http://服务器局域网IP:8765`，例如 `http://192.168.1.100:8765`
 - HTTPS 反向代理：`https://你的域名`

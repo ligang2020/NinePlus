@@ -76,7 +76,7 @@ logging.basicConfig(level=os.getenv("NINEPLUS_LOG_LEVEL", "INFO"))
 
 app = FastAPI(
     title="NinePlus",
-    version="9.0.0",
+    version="10.0.0",
     description=(
         "Unofficial personal Ninebot web console. The backend invokes the "
         "community ninecli command-line client against the user-facing cloud service."

@@ -3,6 +3,7 @@ import UIKit
 import MapKit
 import CoreLocation
 import Combine
+import AudioToolbox
 
 struct NinebotDashboardView: View {
     @ObservedObject var model: NinebotViewModel
@@ -1324,10 +1325,6 @@ private struct VehicleControlHero: View {
                 }
             }
 
-            if snapshot.state.isCharging == true && !snapshot.state.isFullyCharged {
-                ChargingStatusView(state: snapshot.state)
-                    .padding(.horizontal, -6)
-            }
         }
         .padding(.horizontal, 22)
         .padding(.top, 10)
@@ -1780,6 +1777,7 @@ private struct VehicleMotionScene: View {
     var snapshot: NinebotVehicleSnapshot
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var weatherProvider = RideWeatherProvider()
+    @State private var chargingStartPulse: Double = 0
 
     private var mode: VehicleMotionSceneMode {
         if snapshot.state.isCharging == true { return .charging }
@@ -1793,16 +1791,26 @@ private struct VehicleMotionScene: View {
 
     var body: some View {
         GeometryReader { proxy in
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-                // Motion indicates an active ride. Respect the system setting by
-                // retaining the complete scene while freezing transform motion.
-                scene(size: proxy.size, phase: reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate)
+            Group {
+                if reduceMotion {
+                    scene(size: proxy.size, phase: 0)
+                } else {
+                    // 15 fps is enough for cable current and keeps the home screen
+                    // responsive on older iPhones. Static layers are not rebuilt at 30 fps.
+                    TimelineView(.animation(minimumInterval: 1.0 / 15.0)) { timeline in
+                        scene(size: proxy.size, phase: timeline.date.timeIntervalSinceReferenceDate)
+                    }
+                }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         .task(id: weatherLocationKey) {
             await weatherProvider.refresh(vehicleLatitude: snapshot.state.latitude, vehicleLongitude: snapshot.state.longitude)
+        }
+        .onChange(of: mode) { oldMode, newMode in
+            guard oldMode != .charging, newMode == .charging else { return }
+            triggerChargingStartFeedback()
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(sceneAccessibilityLabel)
@@ -1816,7 +1824,23 @@ private struct VehicleMotionScene: View {
         case .riding:
             VehicleRidingScene(snapshot: snapshot, weather: weatherProvider.snapshot, size: size, phase: phase)
         case .charging:
-            VehicleChargingScene(snapshot: snapshot, weather: weatherProvider.snapshot, size: size, phase: phase)
+            VehicleChargingScene(snapshot: snapshot, weather: weatherProvider.snapshot, size: size, phase: phase, startPulse: chargingStartPulse)
+        }
+    }
+
+    private func triggerChargingStartFeedback() {
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.prepare()
+        generator.impactOccurred(intensity: 0.9)
+        AudioServicesPlaySystemSound(1104)
+
+        chargingStartPulse = 0
+        withAnimation(.easeOut(duration: 0.85)) {
+            chargingStartPulse = 1
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 950_000_000)
+            chargingStartPulse = 0
         }
     }
 
@@ -2345,74 +2369,6 @@ private struct VehicleSceneHeader: View {
     }
 }
 
-private struct VehicleMetricCard: View {
-    var title: String
-    var value: String
-    var icon: String
-    var accent: Color = .white
-
-    var body: some View {
-        VehicleGlassCard {
-            HStack(spacing: 11) {
-                Image(systemName: icon)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(accent)
-                    .frame(width: 29)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.68))
-                    Text(value)
-                        .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
-            }
-        }
-    }
-}
-
-private struct VehicleBatteryCard: View {
-    var state: NinebotVehicleState
-    var title: String = "剩余电量"
-
-    var body: some View {
-        VehicleGlassCard {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(spacing: 10) {
-                    ZStack {
-                        Circle().stroke(Color.white.opacity(0.18), lineWidth: 5)
-                        Circle()
-                            .trim(from: 0, to: state.batteryFraction)
-                            .stroke(Color.teslaGreen, style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                            .rotationEffect(.degrees(-90))
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(Color.teslaGreen)
-                    }
-                    .frame(width: 35, height: 35)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.68))
-                        Text(state.batteryText)
-                            .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(.white)
-                    }
-                }
-                GeometryReader { proxy in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(.white.opacity(0.18))
-                        Capsule().fill(Color.teslaGreen).frame(width: proxy.size.width * state.batteryFraction)
-                    }
-                }
-                .frame(height: 5)
-            }
-        }
-    }
-}
-
 private struct VehicleParkedScene: View {
     var snapshot: NinebotVehicleSnapshot
     var weather: RideWeatherSnapshot
@@ -2534,50 +2490,199 @@ private struct VehicleChargingScene: View {
     var weather: RideWeatherSnapshot
     var size: CGSize
     var phase: TimeInterval
+    var startPulse: Double
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var fireworkProgress: Double = 0
+    @State private var hasSeenBattery = false
+
+    private var battery: Int? { snapshot.state.battery }
 
     var body: some View {
-        let pulse = 0.76 + 0.24 * (0.5 + 0.5 * sin(phase * 4.2))
+        let currentPulse = reduceMotion ? 0.9 : 0.76 + 0.24 * (0.5 + 0.5 * sin(phase * 3.4))
 
         return ZStack(alignment: .topLeading) {
             VehicleSceneBackdrop(size: size, phase: phase, style: .charging, weather: weather)
 
-            VehicleSceneHeader(title: snapshot.state.isFullyCharged ? "充电完成" : "正在充电", subtitle: "充电中 · 预计 \(snapshot.state.estimatedFullChargeTimeText) 后充满", tint: Color.teslaGreen)
-                .padding(.leading, 20)
-                .padding(.top, 18)
+            VehicleSceneHeader(
+                title: snapshot.state.isFullyCharged ? "充电完成" : "正在充电",
+                subtitle: snapshot.state.isFullyCharged ? "电池已达到安全上限" : "能量正在稳定注入",
+                tint: Color.teslaGreen
+            )
+            .padding(.leading, 20)
+            .padding(.top, 18)
 
-            VStack(spacing: 8) {
-                VehicleBatteryCard(state: snapshot.state, title: "当前电量")
-                VehicleMetricCard(title: "预计充满", value: snapshot.state.estimatedFullChargeClockText, icon: "clock.badge.checkmark", accent: Color.teslaGreen)
-                VehicleMetricCard(title: "充电功率", value: snapshot.state.chargingPowerText, icon: "waveform.path.ecg", accent: Color.teslaGreen)
-                VehicleMetricCard(title: "电池温度", value: snapshot.state.batteryTemperatureText, icon: "thermometer.medium", accent: Color.teslaGreen)
-            }
-            .frame(width: min(size.width * 0.31, 132))
-            .padding(.leading, 15)
-            .padding(.top, 70)
+            ChargingTelemetryHUD(state: snapshot.state)
+                .frame(width: min(size.width * 0.40, 168), alignment: .leading)
+                .padding(.leading, 18)
+                .padding(.top, 76)
 
             Ellipse()
-                .fill(Color.black.opacity(0.36))
+                .fill(Color.black.opacity(0.42))
                 .frame(width: size.width * 0.54, height: size.height * 0.07)
                 .blur(radius: 8)
-                .offset(x: size.width * 0.27, y: size.height * 0.82)
+                .offset(x: size.width * 0.24, y: size.height * 0.82)
 
-            VehicleImage(urlString: snapshot.vehicle.imageURLString, sn: snapshot.vehicle.sn, size: min(size.width * 0.60, 250), showsBackground: false)
-                .shadow(color: .black.opacity(0.44), radius: 14, x: 0, y: 9)
-                .position(x: size.width * 0.53, y: size.height * 0.67)
+            VehicleImage(
+                urlString: snapshot.vehicle.imageURLString,
+                sn: snapshot.vehicle.sn,
+                size: min(size.width * 0.60, 250),
+                showsBackground: false
+            )
+            .shadow(color: .black.opacity(0.44), radius: 14, x: 0, y: 9)
+            .position(x: size.width * 0.52, y: size.height * 0.67)
 
             VehicleChargingCable(size: size, phase: phase)
-                .opacity(pulse)
+                .opacity(currentPulse)
 
-            VehicleChargePillar(pulse: pulse)
-                .frame(width: size.width * 0.13, height: size.height * 0.48)
+            ChargingStartWave(size: size, progress: startPulse)
+            ChargingBatteryFireworks(size: size, progress: fireworkProgress)
+
+            VehicleChargePillar(pulse: currentPulse)
+                .frame(width: size.width * 0.15, height: size.height * 0.48)
                 .position(x: size.width * 0.84, y: size.height * 0.45)
 
-            ChargingSteps(active: snapshot.state.isFullyCharged ? 3 : 2)
+            ChargingSteps(active: snapshot.state.isFullyCharged ? 4 : 3)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .padding(.horizontal, 15)
-                .padding(.bottom, 12)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 14)
         }
         .frame(width: size.width, height: size.height)
+        .onAppear {
+            hasSeenBattery = battery != nil
+        }
+        .onChange(of: battery) { oldValue, newValue in
+            guard hasSeenBattery, let oldValue, let newValue, newValue > oldValue else {
+                hasSeenBattery = true
+                return
+            }
+            triggerBatteryFireworks()
+        }
+    }
+
+    private func triggerBatteryFireworks() {
+        fireworkProgress = 0.01
+        withAnimation(.easeOut(duration: 0.85)) {
+            fireworkProgress = 1
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 950_000_000)
+            fireworkProgress = 0
+        }
+    }
+}
+
+private struct ChargingTelemetryHUD: View {
+    var state: NinebotVehicleState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .stroke(.white.opacity(0.16), lineWidth: 5)
+                    Circle()
+                        .trim(from: 0, to: state.batteryFraction)
+                        .stroke(Color.teslaGreen, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.teslaGreen)
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("当前电量")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.66))
+                    Text(state.batteryText)
+                        .font(.system(size: 27, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.white)
+                }
+            }
+
+            Rectangle()
+                .fill(Color.teslaGreen.opacity(0.8))
+                .frame(width: 48, height: 2)
+
+            HStack(spacing: 15) {
+                ChargingTelemetryValue(title: "预计充满", value: state.estimatedFullChargeClockText, icon: "clock")
+                ChargingTelemetryValue(title: "充电功率", value: state.chargingPowerText, icon: "waveform.path.ecg")
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("当前电量 \(state.batteryText)，预计 \(state.estimatedFullChargeClockText) 充满，充电功率 \(state.chargingPowerText)")
+    }
+}
+
+private struct ChargingTelemetryValue: View {
+    var title: String
+    var value: String
+    var icon: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.63))
+                .lineLimit(1)
+            Text(value)
+                .font(.system(size: 14, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.68)
+        }
+    }
+}
+
+private struct ChargingStartWave: View {
+    var size: CGSize
+    var progress: Double
+
+    var body: some View {
+        let origin = CGPoint(x: size.width * 0.58, y: size.height * 0.67)
+        ZStack {
+            ForEach(0..<3, id: \.self) { index in
+                let delay = Double(index) * 0.12
+                let local = min(max((progress - delay) / (1 - delay), 0), 1)
+                Circle()
+                    .stroke(Color.teslaGreen.opacity((1 - local) * 0.75), lineWidth: 1.5)
+                    .frame(width: 30 + CGFloat(local) * 130, height: 30 + CGFloat(local) * 130)
+                    .position(origin)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct ChargingBatteryFireworks: View {
+    var size: CGSize
+    var progress: Double
+
+    var body: some View {
+        let origin = CGPoint(x: size.width * 0.53, y: size.height * 0.58)
+        ZStack {
+            ForEach(0..<12, id: \.self) { index in
+                let angle = Double(index) * (.pi * 2 / 12)
+                let delay = Double(index % 3) * 0.06
+                let local = min(max((progress - delay) / (1 - delay), 0), 1)
+                Circle()
+                    .fill(index.isMultiple(of: 2) ? Color.white : Color.teslaGreen)
+                    .frame(width: index.isMultiple(of: 3) ? 4 : 3, height: index.isMultiple(of: 3) ? 4 : 3)
+                    .shadow(color: Color.teslaGreen, radius: 5)
+                    .scaleEffect(0.7 + local * 0.8)
+                    .position(
+                        x: origin.x + cos(angle) * (16 + 54 * local),
+                        y: origin.y + sin(angle) * (16 + 54 * local)
+                    )
+                    .opacity((1 - local) * 0.95)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -2587,30 +2692,75 @@ private struct ChargingGarageBackdrop: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: isDay ? [Color(red: 0.78, green: 0.80, blue: 0.78), Color(red: 0.38, green: 0.42, blue: 0.44)] : [Color(red: 0.025, green: 0.055, blue: 0.11), Color(red: 0.18, green: 0.20, blue: 0.22)], startPoint: .topLeading, endPoint: .bottomTrailing)
-            HStack(spacing: 0) {
-                Rectangle()
-                    .fill(isDay ? Color.blue.opacity(0.22) : Color.blue.opacity(0.38))
-                    .frame(width: size.width * 0.43)
-                    .overlay(alignment: .bottom) {
-                        Rectangle().fill(isDay ? Color.green.opacity(0.20) : Color.black.opacity(0.50)).frame(height: size.height * 0.30)
-                    }
-                Rectangle()
-                    .fill(isDay ? Color.white.opacity(0.08) : Color.black.opacity(0.16))
-            }
-            Rectangle()
-                .fill(LinearGradient(colors: [.clear, Color.black.opacity(isDay ? 0.18 : 0.40)], startPoint: .top, endPoint: .bottom))
+            LinearGradient(
+                colors: isDay
+                    ? [Color(red: 0.10, green: 0.18, blue: 0.24), Color(red: 0.04, green: 0.09, blue: 0.13)]
+                    : [Color(red: 0.015, green: 0.025, blue: 0.08), Color(red: 0.02, green: 0.08, blue: 0.13)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            RadialGradient(
+                colors: [Color.teslaGreen.opacity(isDay ? 0.18 : 0.24), .clear],
+                center: .init(x: 0.58, y: 0.52),
+                startRadius: 4,
+                endRadius: size.width * 0.7
+            )
+
             VStack(spacing: 0) {
-                Rectangle().fill(isDay ? Color.white.opacity(0.72) : Color.orange.opacity(0.55)).frame(height: 3)
-                    .shadow(color: isDay ? .white.opacity(0.4) : .orange.opacity(0.7), radius: 8)
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(Color.cyan.opacity(isDay ? 0.22 : 0.30))
+                        .frame(width: size.width * 0.42)
+                    Rectangle()
+                        .fill(Color.white.opacity(0.04))
+                }
+                .frame(height: size.height * 0.60)
+                Spacer()
+            }
+
+            ChargingFloorGrid(size: size)
+
+            VStack(spacing: 0) {
+                Rectangle()
+                    .fill(Color.cyan.opacity(0.65))
+                    .frame(height: 1)
+                    .shadow(color: .cyan, radius: 8)
                 Spacer()
             }
             .padding(.top, size.height * 0.12)
+
             Rectangle()
-                .fill(LinearGradient(colors: [Color.black.opacity(0.02), Color.black.opacity(isDay ? 0.17 : 0.38)], startPoint: .top, endPoint: .bottom))
-                .frame(height: size.height * 0.38)
-                .frame(maxHeight: .infinity, alignment: .bottom)
+                .fill(LinearGradient(colors: [.clear, Color.black.opacity(0.56)], startPoint: .top, endPoint: .bottom))
         }
+    }
+}
+
+private struct ChargingFloorGrid: View {
+    var size: CGSize
+
+    var body: some View {
+        Path { path in
+            let horizonY = size.height * 0.56
+            let bottomY = size.height * 0.98
+            let vanishingX = size.width * 0.56
+
+            for index in 0..<7 {
+                let progress = CGFloat(index) / 6
+                let y = horizonY + pow(progress, 1.65) * (bottomY - horizonY)
+                path.move(to: CGPoint(x: 0, y: y))
+                path.addLine(to: CGPoint(x: size.width, y: y))
+            }
+
+            for index in 0..<9 {
+                let x = CGFloat(index) / 8 * size.width
+                path.move(to: CGPoint(x: vanishingX, y: horizonY))
+                path.addLine(to: CGPoint(x: x, y: bottomY))
+            }
+        }
+        .stroke(Color.cyan.opacity(0.13), style: StrokeStyle(lineWidth: 0.7, lineCap: .round))
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -2618,23 +2768,60 @@ private struct VehicleChargePillar: View {
     var pulse: Double
 
     var body: some View {
-        VStack(spacing: 5) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.black.opacity(0.80))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.18), lineWidth: 1))
+        ZStack {
+            Capsule()
+                .fill(Color.teslaGreen.opacity(0.16))
+                .frame(width: 70, height: 160)
+                .blur(radius: 18)
+
+            VStack(spacing: 7) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(LinearGradient(colors: [Color.black.opacity(0.94), Color(red: 0.08, green: 0.14, blue: 0.17)], startPoint: .top, endPoint: .bottom))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.cyan.opacity(0.42), lineWidth: 1)
+                        }
+
+                    VStack(spacing: 6) {
+                        Text("DC / 01")
+                            .font(.system(size: 7, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.58))
+                        Circle()
+                            .fill(Color.teslaGreen.opacity(pulse))
+                            .frame(width: 9, height: 9)
+                            .shadow(color: Color.teslaGreen, radius: 9)
+                        Capsule()
+                            .fill(Color.teslaGreen.opacity(pulse))
+                            .frame(width: 4, height: 22)
+                            .shadow(color: Color.teslaGreen, radius: 8)
+                    }
+                }
+                .frame(height: 64)
+
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(LinearGradient(colors: [Color.black.opacity(0.94), Color.black.opacity(0.56)], startPoint: .top, endPoint: .bottom))
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.teslaGreen.opacity(pulse))
+                            .frame(width: 3, height: 28)
+                            .padding(.leading, 6)
+                    }
+                    .overlay(alignment: .trailing) {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Color.teslaGreen.opacity(pulse))
+                            .padding(.trailing, 9)
+                    }
+                    .frame(height: 72)
+
                 Capsule()
-                    .fill(Color.teslaGreen.opacity(pulse))
-                    .frame(width: 4, height: 20)
-                    .shadow(color: Color.teslaGreen, radius: 7)
+                    .fill(Color.black.opacity(0.7))
+                    .frame(width: 42, height: 5)
             }
-            .frame(height: 50)
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(LinearGradient(colors: [.black.opacity(0.84), .black.opacity(0.48)], startPoint: .top, endPoint: .bottom))
-                .overlay(alignment: .leading) { Capsule().fill(Color.teslaGreen.opacity(pulse)).frame(width: 3, height: 19).padding(.leading, 5) }
-            Capsule().fill(Color.black.opacity(0.56)).frame(width: 34, height: 5)
         }
-        .shadow(color: .black.opacity(0.32), radius: 10, x: -3, y: 6)
+        .shadow(color: .black.opacity(0.36), radius: 13, x: -4, y: 8)
+        .accessibilityHidden(true)
     }
 }
 
@@ -2647,53 +2834,92 @@ private struct VehicleChargingCable: View {
         let batteryPort = CGPoint(x: size.width * 0.58, y: size.height * 0.67)
         let control1 = CGPoint(x: size.width * 0.73, y: size.height * 0.80)
         let control2 = CGPoint(x: size.width * 0.64, y: size.height * 0.51)
+
         return ZStack {
-            Path { path in
-                path.move(to: chargerPort)
-                path.addCurve(to: batteryPort, control1: control1, control2: control2)
+            chargingCablePath(chargerPort: chargerPort, batteryPort: batteryPort, control1: control1, control2: control2)
+                .stroke(.black.opacity(0.78), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+
+            chargingCablePath(chargerPort: chargerPort, batteryPort: batteryPort, control1: control1, control2: control2)
+                .stroke(Color.teslaGreen.opacity(0.86), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, dash: [2, 10], dashPhase: phase * -30))
+                .shadow(color: Color.teslaGreen.opacity(0.9), radius: 6)
+
+            ForEach(0..<6, id: \.self) { index in
+                let progress = (phase * 0.42 + Double(index) * 0.16).truncatingRemainder(dividingBy: 1)
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: index.isMultiple(of: 2) ? 4 : 3, height: index.isMultiple(of: 2) ? 4 : 3)
+                    .shadow(color: Color.teslaGreen, radius: 7)
+                    .position(chargingCubicPoint(from: chargerPort, to: batteryPort, control1: control1, control2: control2, progress: progress))
             }
-            .stroke(.black.opacity(0.72), style: StrokeStyle(lineWidth: 4, lineCap: .round))
-            Path { path in
-                path.move(to: chargerPort)
-                path.addCurve(to: batteryPort, control1: control1, control2: control2)
-            }
-            .stroke(Color.teslaGreen.opacity(0.86), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, dash: [2, 10], dashPhase: phase * -34))
-            .shadow(color: Color.teslaGreen.opacity(0.85), radius: 5)
         }
         .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
+
+    private func chargingCablePath(chargerPort: CGPoint, batteryPort: CGPoint, control1: CGPoint, control2: CGPoint) -> Path {
+        Path { path in
+            path.move(to: chargerPort)
+            path.addCurve(to: batteryPort, control1: control1, control2: control2)
+        }
+    }
+}
+
+private func chargingCubicPoint(from start: CGPoint, to end: CGPoint, control1: CGPoint, control2: CGPoint, progress: Double) -> CGPoint {
+    let t = min(max(progress, 0), 1)
+    let inverse = 1 - t
+    let x = inverse * inverse * inverse * start.x
+        + 3 * inverse * inverse * t * control1.x
+        + 3 * inverse * t * t * control2.x
+        + t * t * t * end.x
+    let y = inverse * inverse * inverse * start.y
+        + 3 * inverse * inverse * t * control1.y
+        + 3 * inverse * t * t * control2.y
+        + t * t * t * end.y
+    return CGPoint(x: x, y: y)
 }
 
 private struct ChargingSteps: View {
     var active: Int
 
+    private let steps = [
+        ("powerplug.fill", "连接电源"),
+        ("bolt.fill", "开始充电"),
+        ("battery.75percent", "充电中"),
+        ("checkmark", "充电完成")
+    ]
+
     var body: some View {
         HStack(spacing: 0) {
-            step(icon: "powerplug.fill", title: "连接电源", index: 1)
-            Divider().frame(height: 42).overlay(.white.opacity(0.14))
-            step(icon: "bolt.fill", title: "开始充电", index: 2)
-            Divider().frame(height: 42).overlay(.white.opacity(0.14))
-            step(icon: "battery.75percent", title: "充电中", index: 3)
-            Divider().frame(height: 42).overlay(.white.opacity(0.14))
-            step(icon: "checkmark", title: "充电完成", index: 4)
+            ForEach(Array(steps.enumerated()), id: \.offset) { index, stepValue in
+                step(icon: stepValue.0, title: stepValue.1, index: index + 1)
+                if index < steps.count - 1 {
+                    Rectangle()
+                        .fill(index + 1 < active ? Color.teslaGreen.opacity(0.9) : .white.opacity(0.22))
+                        .frame(width: 24, height: 1)
+                        .padding(.horizontal, 3)
+                }
+            }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: Capsule())
-        .background(Color.black.opacity(0.24), in: Capsule())
-        .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.8))
+        .padding(.horizontal, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("充电流程，已完成第 \(active) 步")
     }
 
     private func step(icon: String, title: String, index: Int) -> some View {
-        VStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(index <= active ? Color.teslaGreen : .white.opacity(0.45))
+        VStack(spacing: 5) {
+            ZStack {
+                Circle()
+                    .fill(index <= active ? Color.teslaGreen.opacity(0.18) : .white.opacity(0.08))
+                    .frame(width: 29, height: 29)
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(index <= active ? Color.teslaGreen : .white.opacity(0.42))
+            }
             Text(title)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(index <= active ? Color.teslaGreen : .white.opacity(0.48))
+                .font(.system(size: 8.5, weight: .medium))
+                .foregroundStyle(index <= active ? Color.teslaGreen : .white.opacity(0.46))
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.68)
         }
         .frame(maxWidth: .infinity)
     }
@@ -2759,127 +2985,6 @@ private struct StatusChip: View {
                 Capsule()
                     .stroke(Color.black.opacity(0.06), lineWidth: 1)
             }
-    }
-}
-
-private struct ChargingStatusView: View {
-    var state: NinebotVehicleState
-    @State private var isAnimating = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(Color.teslaGreen.opacity(0.16))
-                    ZStack {
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(Color.teslaGreen)
-                            .offset(y: isAnimating ? -1 : 1)
-                            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: isAnimating)
-                    }
-                    .frame(width: 22, height: 22)
-                    .clipped()
-                }
-                .frame(width: 34, height: 34)
-                .clipShape(Circle())
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("正在充电")
-                        .font(.subheadline.weight(.semibold))
-                    Text("约 \(state.estimatedFullChargeTimeText) 充满")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer()
-            }
-
-            if !metrics.isEmpty {
-                HStack(spacing: 8) {
-                    ForEach(metrics) { metric in
-                        ChargingMetricChip(metric: metric)
-                    }
-                }
-            }
-        }
-        .padding(12)
-        .background(Color.teslaControlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(alignment: .bottomLeading) {
-            GeometryReader { proxy in
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [.clear, Color.teslaGreen.opacity(0.9), .clear],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: proxy.size.width * 0.42, height: 2)
-                    .offset(x: isAnimating ? proxy.size.width : -proxy.size.width * 0.42)
-                    .animation(.linear(duration: 1.35).repeatForever(autoreverses: false), value: isAnimating)
-            }
-            .frame(height: 2)
-        }
-        .clipped()
-        .onAppear {
-            isAnimating = true
-        }
-    }
-
-    private var metrics: [ChargingMetric] {
-        [
-            state.chargingPower.map {
-                ChargingMetric(title: "功率", value: formatNumber($0, unit: " W", maximumFractionDigits: 0), systemImage: "bolt.fill")
-            },
-            state.batteryVoltage.map {
-                ChargingMetric(title: "电压", value: formatNumber($0, unit: " V", maximumFractionDigits: 1), systemImage: "bolt.batteryblock.fill")
-            },
-            state.batteryTemperature.map {
-                ChargingMetric(title: "温度", value: formatNumber($0, unit: "°C", maximumFractionDigits: 1), systemImage: "thermometer.medium")
-            }
-        ].compactMap { $0 }
-    }
-}
-
-private struct ChargingMetric: Identifiable {
-    var title: String
-    var value: String
-    var systemImage: String
-
-    var id: String {
-        title
-    }
-}
-
-private struct ChargingMetricChip: View {
-    var metric: ChargingMetric
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: metric.systemImage)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(Color.teslaGreen)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(metric.value)
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(Color.teslaPrimaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                Text(metric.title)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(Color.teslaSecondaryText)
-                    .lineLimit(1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(Color.teslaCardBackground.opacity(0.72))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
