@@ -34,36 +34,26 @@ struct NinebotDashboardView: View {
                         }
 
                         if let primary = model.dashboard.primaryVehicle {
-                            let isCharging = primary.state.isCharging == true && !primary.state.isFullyCharged
                             let activeAction = activeVehicleAction(for: primary.vehicle.sn)
 
-                            if isCharging {
-                                // Keep the lightweight charging scene as the visual hero, but do not
-                                // hide the dashboard actions and cards below it. Charging should be a
-                                // different state of the dashboard, not a separate empty screen.
-                                ChargingDashboardHero(
+                            // Charging is a state of the normal vehicle card, not a second
+                            // oversized dashboard. This keeps the charging layout the same
+                            // height and control hierarchy as the parked layout.
+                            A1GlassSurface(cornerRadius: 30, padding: 0) {
+                                VehicleControlHero(
                                     snapshot: primary,
-                                    canSwitchVehicle: model.hasVehicles
+                                    canSwitchVehicle: model.hasVehicles,
+                                    resolvedAddress: model.resolvedAddressText(for: primary),
+                                    showsUpdateTime: !model.isAddressGeocodingEnabled,
+                                    isLoading: model.isLoading,
+                                    onRingBell: {
+                                        performVehicleAction(.bell, sn: primary.vehicle.sn)
+                                    }
                                 ) {
                                     isShowingVehiclePicker = true
                                 }
-                            } else {
-                                A1GlassSurface(cornerRadius: 30, padding: 0) {
-                                    VehicleControlHero(
-                                        snapshot: primary,
-                                        canSwitchVehicle: model.hasVehicles,
-                                        resolvedAddress: model.resolvedAddressText(for: primary),
-                                        showsUpdateTime: !model.isAddressGeocodingEnabled,
-                                        isLoading: model.isLoading,
-                                        onRingBell: {
-                                            performVehicleAction(.bell, sn: primary.vehicle.sn)
-                                        }
-                                    ) {
-                                        isShowingVehiclePicker = true
-                                    }
-                                }
-                                .padding(.horizontal, 16)
                             }
+                            .padding(.horizontal, 16)
 
                             // These controls and cards remain available while charging, matching the
                             // normal dashboard layout and preventing the charging state from becoming
@@ -2665,16 +2655,15 @@ private struct VehicleChargingScene: View {
     var size: CGSize
 
     var body: some View {
-        // Charging is a parked vehicle with an attached charging pile—not a
-        // separate neon/technology backdrop. Keeping the same static setting
-        // makes the vehicle state immediately understandable and avoids extra
-        // visual background work while the app is refreshing.
+        // Charging occupies the same compact scene slot as a parked vehicle.
+        // The vehicle image comes from the official vehicle interface URL, with
+        // the existing locally cached official image as the offline fallback.
         ZStack(alignment: .topLeading) {
-            VehicleSceneBackdrop(size: size, phase: 0, style: .parked, weather: weather)
+            ChargingIndoorBackdrop(size: size, isDay: weather.isDay)
 
             VehicleSceneHeader(
-                title: "车辆正在充电",
-                subtitle: "已停稳 · 充电桩已连接",
+                title: "正在充电",
+                subtitle: "电量正在快速回升",
                 tint: Color.teslaGreen
             )
             .padding(.leading, 20)
@@ -2685,31 +2674,8 @@ private struct VehicleChargingScene: View {
                 .padding(.top, 17)
                 .padding(.trailing, 15)
 
-            // Keep the charge information no larger than the compact parked
-            // scene controls. This preserves open space around the scooter and
-            // avoids the oversized card competing with the weather card.
-            ChargingTelemetryHUD(state: snapshot.state)
-                .frame(width: min(max(size.width * 0.285, 106), 122), alignment: .leading)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-                .background(Color.black.opacity(weather.isDay ? 0.10 : 0.22), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .stroke(.white.opacity(weather.isDay ? 0.16 : 0.24), lineWidth: 0.8)
-                }
-                .shadow(color: .black.opacity(weather.isDay ? 0.16 : 0.30), radius: 9, x: 0, y: 5)
-                .padding(.leading, 18)
-                .padding(.top, 91)
-
-            ChargingSceneCaption(state: snapshot.state)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 20)
-                .padding(.bottom, 22)
-                .frame(maxHeight: .infinity, alignment: .bottom)
-
             Ellipse()
-                .fill(Color.black.opacity(0.38))
+                .fill(Color.black.opacity(weather.isDay ? 0.24 : 0.42))
                 .frame(width: size.width * 0.57, height: size.height * 0.065)
                 .blur(radius: 9)
                 .offset(x: size.width * 0.12, y: size.height * 0.82)
@@ -2720,16 +2686,190 @@ private struct VehicleChargingScene: View {
                 size: min(size.width * 0.72, 280),
                 showsBackground: false
             )
-            .shadow(color: .black.opacity(0.42), radius: 15, x: 0, y: 10)
+            .shadow(color: .black.opacity(weather.isDay ? 0.32 : 0.48), radius: 15, x: 0, y: 10)
             .position(x: size.width * 0.47, y: size.height * 0.70)
-
-            StaticChargingCable(size: size)
-
-            ChargingStation()
-                .frame(width: min(size.width * 0.18, 82), height: size.height * 0.48)
-                .position(x: size.width * 0.86, y: size.height * 0.58)
         }
         .frame(width: size.width, height: size.height)
+    }
+}
+
+/// Indoor charging scene based on the supplied reference. Daylight is driven
+/// by the location-aware weather value; warm lamps appear only at night.
+private struct ChargingIndoorBackdrop: View {
+    var size: CGSize
+    var isDay: Bool
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: isDay
+                    ? [Color(red: 0.86, green: 0.82, blue: 0.75), Color(red: 0.60, green: 0.59, blue: 0.56)]
+                    : [Color(red: 0.10, green: 0.085, blue: 0.075), Color(red: 0.055, green: 0.045, blue: 0.040)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            ChargingRoomWindow(size: size, isDay: isDay)
+                .frame(width: size.width * 0.47, height: size.height * 0.66)
+                .position(x: size.width * 0.56, y: size.height * 0.34)
+
+            Rectangle()
+                .fill(Color.black.opacity(isDay ? 0.07 : 0.24))
+                .frame(width: size.width * 0.12, height: size.height * 0.66)
+                .position(x: size.width * 0.78, y: size.height * 0.34)
+
+            ChargingRoomSofa(size: size, isDay: isDay)
+                .position(x: size.width * 0.20, y: size.height * 0.70)
+
+            ChargingRoomWallBox(size: size, isDay: isDay)
+                .position(x: size.width * 0.84, y: size.height * 0.42)
+
+            ChargingRoomPlant(size: size, isDay: isDay)
+                .position(x: size.width * 0.92, y: size.height * 0.77)
+
+            Rectangle()
+                .fill(LinearGradient(
+                    colors: isDay
+                        ? [Color(red: 0.44, green: 0.40, blue: 0.35), Color(red: 0.22, green: 0.20, blue: 0.18)]
+                        : [Color(red: 0.10, green: 0.075, blue: 0.055), Color(red: 0.035, green: 0.028, blue: 0.023)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ))
+                .frame(height: size.height * 0.28)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+
+            if !isDay { ChargingRoomNightLight(size: size) }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipped()
+    }
+}
+
+private struct ChargingRoomWindow: View {
+    var size: CGSize
+    var isDay: Bool
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: isDay
+                    ? [Color(red: 0.35, green: 0.58, blue: 0.65), Color(red: 0.15, green: 0.29, blue: 0.31)]
+                    : [Color(red: 0.035, green: 0.10, blue: 0.13), Color(red: 0.015, green: 0.045, blue: 0.065)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            HStack(spacing: 0) {
+                Rectangle().fill(Color.black.opacity(0.54)).frame(width: 2)
+                Spacer()
+                Rectangle().fill(Color.black.opacity(0.54)).frame(width: 2)
+            }
+            .padding(5)
+
+            Rectangle().fill(Color.black.opacity(0.44)).frame(height: 2)
+
+            HStack(alignment: .bottom, spacing: 3) {
+                ForEach(0..<8, id: \.self) { index in
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(isDay ? Color(red: 0.16, green: 0.31, blue: 0.26).opacity(0.64) : Color(red: 0.04, green: 0.15, blue: 0.13).opacity(0.80))
+                        .frame(width: max(4, size.width * 0.018), height: size.height * (0.07 + CGFloat(index % 3) * 0.03))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            .padding(10)
+        }
+        .overlay(Rectangle().stroke(Color.black.opacity(0.48), lineWidth: 3))
+    }
+}
+
+private struct ChargingRoomSofa: View {
+    var size: CGSize
+    var isDay: Bool
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isDay ? Color(red: 0.27, green: 0.24, blue: 0.22) : Color(red: 0.10, green: 0.075, blue: 0.06))
+                .frame(width: size.width * 0.31, height: size.height * 0.17)
+            HStack(spacing: 5) {
+                RoundedRectangle(cornerRadius: 5, style: .continuous).fill(isDay ? Color(red: 0.44, green: 0.37, blue: 0.31) : Color(red: 0.19, green: 0.13, blue: 0.09))
+                RoundedRectangle(cornerRadius: 5, style: .continuous).fill(isDay ? Color(red: 0.50, green: 0.42, blue: 0.34) : Color(red: 0.23, green: 0.15, blue: 0.10))
+            }
+            .frame(width: size.width * 0.24, height: size.height * 0.11)
+            .padding(.bottom, 7)
+        }
+        .shadow(color: .black.opacity(isDay ? 0.17 : 0.40), radius: 8, y: 5)
+    }
+}
+
+private struct ChargingRoomPlant: View {
+    var size: CGSize
+    var isDay: Bool
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(isDay ? Color(red: 0.34, green: 0.24, blue: 0.17) : Color(red: 0.16, green: 0.09, blue: 0.06))
+                .frame(width: size.width * 0.10, height: size.height * 0.12)
+            ForEach(0..<7, id: \.self) { index in
+                Capsule()
+                    .fill(isDay ? Color(red: 0.12, green: 0.28, blue: 0.18) : Color(red: 0.04, green: 0.13, blue: 0.08))
+                    .frame(width: 7, height: size.height * (0.10 + CGFloat(index % 3) * 0.035))
+                    .rotationEffect(.degrees(Double(index - 3) * 13))
+                    .offset(x: CGFloat(index - 3) * 5, y: -size.height * 0.10)
+            }
+        }
+    }
+}
+
+private struct ChargingRoomWallBox: View {
+    var size: CGSize
+    var isDay: Bool
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(LinearGradient(colors: [Color.black.opacity(0.74), Color.black.opacity(0.92)], startPoint: .top, endPoint: .bottom))
+                .frame(width: size.width * 0.105, height: size.height * 0.24)
+                .overlay {
+                    VStack(spacing: 7) {
+                        Image(systemName: "bolt.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(Color.teslaGreen)
+                        Capsule().fill(Color.white.opacity(0.22)).frame(width: size.width * 0.045, height: 2)
+                    }
+                }
+                .shadow(color: isDay ? .black.opacity(0.22) : Color.teslaGreen.opacity(0.18), radius: 9)
+
+            Path { path in
+                path.move(to: CGPoint(x: size.width * 0.052, y: size.height * 0.10))
+                path.addCurve(
+                    to: CGPoint(x: size.width * 0.18, y: size.height * 0.42),
+                    control1: CGPoint(x: size.width * 0.03, y: size.height * 0.26),
+                    control2: CGPoint(x: size.width * 0.13, y: size.height * 0.33)
+                )
+            }
+            .stroke(Color.black.opacity(0.78), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+        }
+    }
+}
+
+private struct ChargingRoomNightLight: View {
+    var size: CGSize
+
+    var body: some View {
+        ZStack {
+            Capsule()
+                .fill(Color.orange.opacity(0.75))
+                .frame(width: size.width * 0.22, height: 3)
+                .blur(radius: 2)
+                .shadow(color: Color.orange.opacity(0.85), radius: 18)
+                .position(x: size.width * 0.23, y: size.height * 0.20)
+            Ellipse()
+                .fill(Color.orange.opacity(0.18))
+                .frame(width: size.width * 0.38, height: size.height * 0.32)
+                .blur(radius: 24)
+                .position(x: size.width * 0.26, y: size.height * 0.40)
+        }
+        .allowsHitTesting(false)
     }
 }
 

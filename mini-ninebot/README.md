@@ -1,6 +1,6 @@
 # mini-ninebot
 
-NineBot+ iOS app, **A1 UI redesign**, version **13** (build **13**).
+NineBot+ iOS app, **A1 UI redesign**, version **15** (build **15**).
 
 The app's first screen is the **NinePlus account login**. The service URL can be
 entered in the app, and an installation-wide Bearer Token can be supplied when
