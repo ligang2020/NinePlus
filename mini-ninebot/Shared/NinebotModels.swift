@@ -440,10 +440,13 @@ extension NinebotRideDetail {
     }
 
     private static func bestTrackPoints(from value: JSONValue) -> [NinebotInterfaceTrackPoint] {
-        // The backend's normalized `track` is GCJ-02 and retains per-point
-        // `speed_kmh`; always prefer it over a raw upstream `trail` string.
-        if let track = value.objectValue?["track"] {
-            let points = trackPoints(from: track)
+        // The backend's normalized `track` is already GCJ-02 for MapKit and
+        // retains `speed_kmh`. Do not run it through WGS-84 → GCJ-02 a second
+        // time: doing so shifts every route by hundreds of metres in China.
+        if let object = value.objectValue,
+           let track = object["track"],
+           object["coordinate_system"]?.stringValue?.lowercased() == "gcj02" {
+            let points = normalizedGCJTrackPoints(from: track)
             if points.count > 1 { return points }
         }
 
@@ -507,6 +510,57 @@ extension NinebotRideDetail {
 
         collect(value)
         return values
+    }
+
+    /// The NinePlus backend publishes `track` as `[latitude, longitude]` in
+    /// GCJ-02. These are already the coordinates MapKit should display, so
+    /// parse them without coordinate conversion.
+    private static func normalizedGCJTrackPoints(from value: JSONValue) -> [NinebotInterfaceTrackPoint] {
+        guard let array = value.arrayValue else { return [] }
+
+        let points = array.enumerated().compactMap { index, value -> NinebotInterfaceTrackPoint? in
+            let latitude: Double?
+            let longitude: Double?
+            let speed: Double?
+            let auxiliary: Double?
+
+            if let object = value.objectValue {
+                latitude = firstDouble(["latitude", "lat", "gcj_lat", "gcjLat", "gcj02_lat", "gcj02Lat", "y"], in: object)
+                longitude = firstDouble(["longitude", "lon", "lng", "gcj_lng", "gcjLon", "gcj02_lng", "gcj02Lng", "x"], in: object)
+                speed = normalizedSpeed(firstDouble(["speed_kmh", "speedKmh", "speed", "spd", "velocity", "v"], in: object))
+                auxiliary = firstDouble(["distance_meters", "distance", "mileage", "direction", "bearing", "heading", "course", "angle"], in: object)
+            } else if let pair = value.arrayValue {
+                let numbers = pair.compactMap(\.doubleValue)
+                guard numbers.count >= 2 else { return nil }
+                if abs(numbers[0]) > 90, abs(numbers[1]) <= 90 {
+                    latitude = numbers[1]
+                    longitude = numbers[0]
+                } else {
+                    latitude = numbers[0]
+                    longitude = numbers[1]
+                }
+                speed = normalizedSpeed(numbers.count >= 3 ? numbers[2] : nil)
+                auxiliary = numbers.count >= 4 ? numbers[3] : nil
+            } else {
+                return nil
+            }
+
+            guard let latitude, let longitude,
+                  (-90...90).contains(latitude),
+                  (-180...180).contains(longitude) else {
+                return nil
+            }
+
+            return NinebotInterfaceTrackPoint(
+                id: "gcj-\(index)-\(Int((latitude * 1_000_000).rounded()))-\(Int((longitude * 1_000_000).rounded()))",
+                latitude: latitude,
+                longitude: longitude,
+                speedKmh: speed,
+                auxiliaryValue: auxiliary
+            )
+        }
+
+        return deduplicated(points)
     }
 
     private static func trackPoints(from value: JSONValue) -> [NinebotInterfaceTrackPoint] {

@@ -1,6 +1,6 @@
 # mini-ninebot
 
-NineBot+ iOS app, **A1 UI redesign**, version **16** (build **16**).
+NineBot+ iOS app, **A1 UI redesign**, version **17** (build **17**).
 
 The app's first screen is the **NinePlus account login**. The service URL can be
 entered in the app, and an installation-wide Bearer Token can be supplied when
@@ -19,6 +19,13 @@ password. Cached vehicle data may be kept locally for a smoother dashboard.
 - 保留原有登录、Bearer Token、车辆控制、充电反馈、地图、行程、报警和推送功能；本次只调整视觉层、背景、间距、层级和反馈表现。
 - 主仪表盘加入轻量连接状态顶栏、动态光晕背景、玻璃表面和更清晰的车辆状态层级。
 - 不增加蓝牙能力；动画继续遵守“减少动态效果”系统设置，避免使用高频复杂粒子造成卡顿。
+
+## v17 充电别墅场景与行程轨迹修复
+
+- 充电状态使用别墅庭院场景：保留官方接口返回的车辆图片，新增充电桩和连接线，并依据天气接口的昼夜状态自动切换日景 / 夜景；日景不显示庭院灯，夜景显示暖色路径灯。
+- 充电时主卡片将“接口续航”替换为“充电功率”，将“最高速度”替换为“电池温度”；“正在充电”下方显示预计充满所需时间和预计完成时刻。
+- 行程详情直接使用后端标准化后的 GCJ-02 轨迹，避免再次进行 WGS-84 → GCJ-02 转换造成路线整体偏移。
+- 当九号云逐点速度缺失、过少或重复时，地图会使用定位点间距和行程时长补全速度颜色；同时过滤异常 GPS 跳点，避免出现跨地图的错误直线。
 
 ## v16 前台刷新与更新时间
 

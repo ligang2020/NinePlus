@@ -1458,10 +1458,18 @@ private struct VehicleControlHero: View {
                     TeslaHeroMetric(title: "电量", value: snapshot.state.batteryText, systemImage: "battery.100")
                     Divider()
                         .frame(height: 34)
-                    TeslaHeroMetric(title: "接口续航", value: snapshot.state.enduranceText, systemImage: "road.lanes")
+                    TeslaHeroMetric(
+                        title: snapshot.state.isCharging == true ? "充电功率" : "接口续航",
+                        value: snapshot.state.isCharging == true ? snapshot.state.chargingPowerText : snapshot.state.enduranceText,
+                        systemImage: snapshot.state.isCharging == true ? "bolt.fill" : "road.lanes"
+                    )
                     Divider()
                         .frame(height: 34)
-                    TeslaHeroMetric(title: "最高速度", value: snapshot.state.maximumSpeedText, systemImage: "speedometer")
+                    TeslaHeroMetric(
+                        title: snapshot.state.isCharging == true ? "电池温度" : "最高速度",
+                        value: snapshot.state.isCharging == true ? snapshot.state.batteryTemperatureText : snapshot.state.maximumSpeedText,
+                        systemImage: snapshot.state.isCharging == true ? "thermometer.medium" : "speedometer"
+                    )
                 }
             }
 
@@ -2665,11 +2673,11 @@ private struct VehicleChargingScene: View {
         // The vehicle image comes from the official vehicle interface URL, with
         // the existing locally cached official image as the offline fallback.
         ZStack(alignment: .topLeading) {
-            ChargingIndoorBackdrop(size: size, isDay: weather.isDay)
+            ChargingVillaBackdrop(size: size, isDay: weather.isDay)
 
             VehicleSceneHeader(
                 title: "正在充电",
-                subtitle: "电量正在快速回升",
+                subtitle: "预计约 \(snapshot.state.estimatedFullChargeTimeText) 充满 · \(snapshot.state.estimatedFullChargeClockText)",
                 tint: Color.teslaGreen
             )
             .padding(.leading, 20)
@@ -2699,55 +2707,191 @@ private struct VehicleChargingScene: View {
     }
 }
 
-/// Indoor charging scene based on the supplied reference. Daylight is driven
-/// by the location-aware weather value; warm lamps appear only at night.
-private struct ChargingIndoorBackdrop: View {
+/// Villa driveway charging scene. The weather service supplies the local
+/// day/night signal: windows and path lamps only glow after dark.
+private struct ChargingVillaBackdrop: View {
     var size: CGSize
     var isDay: Bool
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .bottom) {
             LinearGradient(
                 colors: isDay
-                    ? [Color(red: 0.86, green: 0.82, blue: 0.75), Color(red: 0.60, green: 0.59, blue: 0.56)]
-                    : [Color(red: 0.10, green: 0.085, blue: 0.075), Color(red: 0.055, green: 0.045, blue: 0.040)],
+                    ? [Color(red: 0.49, green: 0.74, blue: 0.91), Color(red: 0.80, green: 0.89, blue: 0.88)]
+                    : [Color(red: 0.025, green: 0.075, blue: 0.16), Color(red: 0.075, green: 0.13, blue: 0.23)],
                 startPoint: .top,
                 endPoint: .bottom
             )
 
-            ChargingRoomWindow(size: size, isDay: isDay)
-                .frame(width: size.width * 0.47, height: size.height * 0.66)
-                .position(x: size.width * 0.56, y: size.height * 0.34)
+            if isDay {
+                Circle()
+                    .fill(Color.yellow.opacity(0.90))
+                    .frame(width: size.width * 0.10, height: size.width * 0.10)
+                    .blur(radius: 1)
+                    .position(x: size.width * 0.16, y: size.height * 0.15)
+            } else {
+                ForEach(0..<22, id: \.self) { index in
+                    Circle()
+                        .fill(.white.opacity(0.35 + Double(index % 3) * 0.16))
+                        .frame(width: index.isMultiple(of: 3) ? 2 : 1, height: index.isMultiple(of: 3) ? 2 : 1)
+                        .position(x: size.width * (0.05 + CGFloat((index * 37) % 91) / 100), y: size.height * (0.06 + CGFloat((index * 23) % 37) / 100))
+                }
+            }
 
-            Rectangle()
-                .fill(Color.black.opacity(isDay ? 0.07 : 0.24))
-                .frame(width: size.width * 0.12, height: size.height * 0.66)
-                .position(x: size.width * 0.78, y: size.height * 0.34)
+            // Distant tree line and landscaped courtyard.
+            HStack(alignment: .bottom, spacing: -size.width * 0.035) {
+                ForEach(0..<10, id: \.self) { index in
+                    Circle()
+                        .fill(isDay ? Color(red: 0.16, green: 0.36, blue: 0.22) : Color(red: 0.035, green: 0.13, blue: 0.10))
+                        .frame(width: size.width * (0.14 + CGFloat(index % 3) * 0.025), height: size.height * (0.18 + CGFloat(index % 4) * 0.035))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .offset(y: -size.height * 0.25)
 
-            ChargingRoomSofa(size: size, isDay: isDay)
-                .position(x: size.width * 0.20, y: size.height * 0.70)
+            // Two-storey villa facade.
+            VStack(spacing: 0) {
+                HStack(spacing: size.width * 0.022) {
+                    villaWindow(width: size.width * 0.13, height: size.height * 0.145)
+                    villaWindow(width: size.width * 0.13, height: size.height * 0.145)
+                    villaWindow(width: size.width * 0.13, height: size.height * 0.145)
+                }
+                .padding(.top, size.height * 0.045)
 
-            ChargingRoomWallBox(size: size, isDay: isDay)
-                .position(x: size.width * 0.84, y: size.height * 0.42)
+                HStack(alignment: .bottom, spacing: size.width * 0.052) {
+                    villaWindow(width: size.width * 0.15, height: size.height * 0.19)
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isDay ? Color(red: 0.20, green: 0.17, blue: 0.14) : Color.black.opacity(0.76))
+                        .frame(width: size.width * 0.135, height: size.height * 0.24)
+                        .overlay(alignment: .top) {
+                            Circle().fill(isDay ? Color.black.opacity(0.20) : Color.orange.opacity(0.9)).frame(width: 5, height: 5).padding(.top, 13)
+                        }
+                    villaWindow(width: size.width * 0.15, height: size.height * 0.19)
+                }
+                .padding(.bottom, size.height * 0.035)
+            }
+            .frame(width: size.width * 0.78, height: size.height * 0.47)
+            .background(isDay ? Color(red: 0.86, green: 0.80, blue: 0.70) : Color(red: 0.13, green: 0.12, blue: 0.15))
+            .overlay(alignment: .top) {
+                TrapezoidRoof()
+                    .fill(isDay ? Color(red: 0.27, green: 0.24, blue: 0.25) : Color(red: 0.045, green: 0.04, blue: 0.06))
+                    .frame(width: size.width * 0.88, height: size.height * 0.13)
+                    .offset(y: -size.height * 0.12)
+            }
+            .shadow(color: .black.opacity(isDay ? 0.17 : 0.50), radius: 11, y: 5)
+            .offset(x: -size.width * 0.045, y: -size.height * 0.20)
 
-            ChargingRoomPlant(size: size, isDay: isDay)
-                .position(x: size.width * 0.92, y: size.height * 0.77)
-
+            // Stone driveway.
             Rectangle()
                 .fill(LinearGradient(
-                    colors: isDay
-                        ? [Color(red: 0.44, green: 0.40, blue: 0.35), Color(red: 0.22, green: 0.20, blue: 0.18)]
-                        : [Color(red: 0.10, green: 0.075, blue: 0.055), Color(red: 0.035, green: 0.028, blue: 0.023)],
+                    colors: isDay ? [Color(red: 0.57, green: 0.55, blue: 0.51), Color(red: 0.31, green: 0.31, blue: 0.30)] : [Color(red: 0.15, green: 0.16, blue: 0.18), Color(red: 0.075, green: 0.08, blue: 0.10)],
                     startPoint: .top,
                     endPoint: .bottom
                 ))
-                .frame(height: size.height * 0.28)
-                .frame(maxHeight: .infinity, alignment: .bottom)
+                .frame(height: size.height * 0.38)
+                .overlay {
+                    Path { path in
+                        for index in 1...4 {
+                            let y = size.height * CGFloat(index) * 0.072
+                            path.move(to: CGPoint(x: 0, y: y))
+                            path.addLine(to: CGPoint(x: size.width, y: y))
+                        }
+                    }
+                    .stroke(Color.white.opacity(isDay ? 0.13 : 0.06), lineWidth: 1)
+                }
 
-            if !isDay { ChargingRoomNightLight(size: size) }
+            ChargingVillaStation(size: size, isDay: isDay)
+                .position(x: size.width * 0.83, y: size.height * 0.64)
+
+            if !isDay {
+                HStack(spacing: size.width * 0.28) {
+                    villaPathLamp
+                    villaPathLamp
+                    villaPathLamp
+                }
+                .frame(maxWidth: .infinity)
+                .offset(y: -size.height * 0.17)
+            }
         }
         .frame(width: size.width, height: size.height)
         .clipped()
+    }
+
+    private func villaWindow(width: CGFloat, height: CGFloat) -> some View {
+        Rectangle()
+            .fill(isDay ? Color(red: 0.37, green: 0.62, blue: 0.72) : Color(red: 0.92, green: 0.62, blue: 0.27).opacity(0.82))
+            .frame(width: width, height: height)
+            .overlay {
+                HStack(spacing: 0) {
+                    Rectangle().fill(Color.black.opacity(0.38)).frame(width: 2)
+                    Spacer()
+                    Rectangle().fill(Color.black.opacity(0.38)).frame(width: 2)
+                }
+                Rectangle().fill(Color.black.opacity(0.38)).frame(height: 2)
+            }
+            .overlay(Rectangle().stroke(Color.black.opacity(0.48), lineWidth: 3))
+            .shadow(color: isDay ? .clear : Color.orange.opacity(0.35), radius: 8)
+    }
+
+    private var villaPathLamp: some View {
+        VStack(spacing: 0) {
+            Circle().fill(Color.orange.opacity(0.96)).frame(width: 8, height: 8).shadow(color: .orange, radius: 7)
+            Rectangle().fill(Color.black.opacity(0.68)).frame(width: 2, height: 18)
+        }
+    }
+}
+
+private struct TrapezoidRoof: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.14, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - rect.width * 0.14, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct ChargingVillaStation: View {
+    var size: CGSize
+    var isDay: Bool
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Path { path in
+                path.move(to: CGPoint(x: size.width * 0.01, y: size.height * 0.13))
+                path.addCurve(
+                    to: CGPoint(x: -size.width * 0.23, y: size.height * 0.44),
+                    control1: CGPoint(x: -size.width * 0.13, y: size.height * 0.15),
+                    control2: CGPoint(x: -size.width * 0.10, y: size.height * 0.43)
+                )
+            }
+            .stroke(Color.black.opacity(0.77), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+            .offset(y: size.height * 0.05)
+
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(LinearGradient(colors: [Color(red: 0.18, green: 0.20, blue: 0.23), Color.black.opacity(0.92)], startPoint: .top, endPoint: .bottom))
+                .frame(width: size.width * 0.115, height: size.height * 0.28)
+                .overlay {
+                    VStack(spacing: 6) {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(Color.teslaGreen)
+                        Capsule().fill(Color.teslaGreen.opacity(0.78)).frame(width: size.width * 0.052, height: 3)
+                        Text("EV")
+                            .font(.system(size: 7, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
+                }
+                .shadow(color: isDay ? .black.opacity(0.28) : Color.teslaGreen.opacity(0.42), radius: 10)
+
+            Rectangle()
+                .fill(Color.black.opacity(0.82))
+                .frame(width: size.width * 0.038, height: size.height * 0.17)
+                .offset(y: size.height * 0.20)
+        }
+        .frame(width: size.width * 0.26, height: size.height * 0.50)
     }
 }
 
@@ -5534,28 +5678,73 @@ private struct RideTrackExperiencePanel: View {
     }
 
     private var renderedPoints: [TrackSpeedPoint] {
-        guard !hasSourcePointSpeeds,
-              let speedEstimationDurationSeconds,
-              speedEstimationDurationSeconds > 1 else {
-            return points
+        guard let estimatedPoints else { return points }
+
+        // Cloud records sometimes include only one speed, sparse speeds, or a
+        // repeated aggregate speed. In those cases the line used to become one
+        // colour even though the route itself clearly contains speed changes.
+        // Prefer the complete per-point feed only when it is both dense and
+        // varied; otherwise use geometry/time estimates as the visual fallback.
+        guard shouldUseSourceSpeeds else { return estimatedPoints }
+
+        return zip(points, estimatedPoints).map { source, estimate in
+            TrackSpeedPoint(
+                id: source.id,
+                coordinate: source.coordinate,
+                speedKmh: source.speedKmh ?? estimate.speedKmh
+            )
         }
-        return estimatedTrackSpeedPoints(from: points, durationSeconds: speedEstimationDurationSeconds) ?? points
+    }
+
+    private var estimatedPoints: [TrackSpeedPoint]? {
+        guard let speedEstimationDurationSeconds, speedEstimationDurationSeconds > 1 else {
+            return nil
+        }
+        return estimatedTrackSpeedPoints(from: points, durationSeconds: speedEstimationDurationSeconds)
+    }
+
+    private var sourceSpeedValues: [Double] {
+        points.compactMap(\.speedKmh).filter { $0.isFinite && $0 >= 0 }
     }
 
     private var hasSourcePointSpeeds: Bool {
-        points.contains { $0.speedKmh != nil }
+        !sourceSpeedValues.isEmpty
+    }
+
+    private var sourceSpeedsHaveUsefulVariation: Bool {
+        guard sourceSpeedValues.count > 1,
+              let slowest = sourceSpeedValues.min(),
+              let fastest = sourceSpeedValues.max() else {
+            return false
+        }
+        let colorBands = Set(sourceSpeedValues.map(speedTrackColorBand))
+        return fastest - slowest >= 3 || colorBands.count > 1
+    }
+
+    private var shouldUseSourceSpeeds: Bool {
+        let minimumUsableCount = max(3, points.count / 2)
+        return sourceSpeedValues.count >= minimumUsableCount && sourceSpeedsHaveUsefulVariation
     }
 
     private var hasEstimatedPointSpeeds: Bool {
-        !hasSourcePointSpeeds && renderedPoints.contains { $0.speedKmh != nil }
+        estimatedPoints?.contains { $0.speedKmh != nil } == true
+    }
+
+    private var isUsingEstimatedSpeeds: Bool {
+        hasEstimatedPointSpeeds && (!shouldUseSourceSpeeds || points.contains { $0.speedKmh == nil })
     }
 
     private var speedColorDescription: String {
-        if hasSourcePointSpeeds {
+        if shouldUseSourceSpeeds && isUsingEstimatedSpeeds {
+            return "路线优先按九号云逐点速度着色，缺失点已按定位间距和行程时长补全；回放会高亮已骑行路段。"
+        }
+        if shouldUseSourceSpeeds {
             return "路线根据九号云返回的逐点速度着色；回放时会高亮已骑行的路段。"
         }
-        if hasEstimatedPointSpeeds {
-            return "九号云未提供逐点速度，已按定位点间距和行程时长估算速度颜色。"
+        if isUsingEstimatedSpeeds {
+            return hasSourcePointSpeeds
+                ? "九号云逐点速度过少或重复，已按定位点间距和行程时长估算速度颜色。"
+                : "九号云未提供逐点速度，已按定位点间距和行程时长估算速度颜色。"
         }
         return "本次行程没有可用于估算的速度或时长数据，路线以默认绿色显示。"
     }
@@ -6038,6 +6227,9 @@ private func estimatedTrackSpeedPoints(
     let segmentSpeeds = zip(points, points.dropFirst()).map { start, end -> Double in
         let distance = CLLocation(latitude: start.coordinate.latitude, longitude: start.coordinate.longitude)
             .distance(from: CLLocation(latitude: end.coordinate.latitude, longitude: end.coordinate.longitude))
+        // Discard impossible GPS jumps so one bad sample neither paints a false
+        // red segment nor distorts nearby estimated speeds.
+        guard distance <= maximumRideRouteSegmentDistanceMeters else { return 0 }
         // A point stream sampled at roughly even intervals can provide a useful
         // fallback for route colours when Ninebot omits raw point speeds.
         return min(max(distance / sampleInterval * 3.6, 0), 160)
@@ -6058,12 +6250,21 @@ private func estimatedTrackSpeedPoints(
     }
 }
 
+private let maximumRideRouteSegmentDistanceMeters: CLLocationDistance = 1_500
+
 private func makeSpeedTrackSegments(from points: [TrackSpeedPoint]) -> [TrackSpeedSegment] {
     guard points.count > 1 else { return [] }
 
-    return (0..<(points.count - 1)).map { index in
+    return (0..<(points.count - 1)).compactMap { index in
         let start = points[index]
         let end = points[index + 1]
+        let distance = CLLocation(latitude: start.coordinate.latitude, longitude: start.coordinate.longitude)
+            .distance(from: CLLocation(latitude: end.coordinate.latitude, longitude: end.coordinate.longitude))
+
+        // A corrupted location sample must not draw a long diagonal across the
+        // map. The legitimate route resumes at the next nearby sample.
+        guard distance <= maximumRideRouteSegmentDistanceMeters else { return nil }
+
         let availableSpeeds = [start.speedKmh, end.speedKmh].compactMap { $0 }
         let speed = availableSpeeds.isEmpty
             ? nil
@@ -6082,19 +6283,24 @@ private func bestSpeedTrackPoint(from points: [TrackSpeedPoint]) -> TrackSpeedPo
         .max { ($0.speedKmh ?? 0) < ($1.speedKmh ?? 0) }
 }
 
+private func speedTrackColorBand(_ speed: Double) -> Int {
+    switch speed {
+    case ..<10: return 0
+    case ..<25: return 1
+    case ..<40: return 2
+    case ..<55: return 3
+    default: return 4
+    }
+}
+
 private func speedTrackColor(_ speed: Double?) -> Color {
     guard let speed else { return Color.teslaGreen.opacity(0.78) }
-    switch speed {
-    case ..<10:
-        return .blue
-    case ..<25:
-        return .cyan
-    case ..<40:
-        return Color.teslaGreen
-    case ..<55:
-        return .orange
-    default:
-        return .red
+    switch speedTrackColorBand(speed) {
+    case 0: return .blue
+    case 1: return .cyan
+    case 2: return Color.teslaGreen
+    case 3: return .orange
+    default: return .red
     }
 }
 
