@@ -1619,13 +1619,19 @@ private struct RideWeatherSnapshot: Equatable {
     var windSpeedKmh: Double?
     var ultravioletIndex: Double?
     var airQualityIndex: Double?
+    /// Open-Meteo determines this from the vehicle's location, which is more
+    /// accurate than using the phone's clock when the two are in different time zones.
+    var reportedIsDay: Bool?
     var fetchedAt: Date
 
-    /// The scene uses the device clock instead of a value frozen at the last
-    /// weather request. This lets the primary card switch immediately between
-    /// the day and night scene even when the vehicle is parked for hours or
-    /// the weather service is temporarily unavailable.
+    /// Prefer the weather service's location-aware daylight value right after
+    /// a successful request. Once it becomes stale, fall back to the device
+    /// clock so a scene that stays open still changes by itself at day/night.
     var isDay: Bool {
+        if let reportedIsDay, Date().timeIntervalSince(fetchedAt) < 8 * 60 {
+            return reportedIsDay
+        }
+
         let hour = Calendar.autoupdatingCurrent.component(.hour, from: Date())
         return (7...18).contains(hour)
     }
@@ -1637,6 +1643,7 @@ private struct RideWeatherSnapshot: Equatable {
             windSpeedKmh: nil,
             ultravioletIndex: nil,
             airQualityIndex: nil,
+            reportedIsDay: nil,
             fetchedAt: Date()
         )
     }
@@ -1741,7 +1748,7 @@ private final class RideWeatherProvider: NSObject, ObservableObject, CLLocationM
         components.queryItems = [
             URLQueryItem(name: "latitude", value: String(format: "%.5f", coordinate.latitude)),
             URLQueryItem(name: "longitude", value: String(format: "%.5f", coordinate.longitude)),
-            URLQueryItem(name: "current", value: "temperature_2m,weather_code,wind_speed_10m,uv_index"),
+            URLQueryItem(name: "current", value: "temperature_2m,weather_code,wind_speed_10m,uv_index,is_day"),
             URLQueryItem(name: "timezone", value: "auto")
         ]
         guard let url = components.url else { throw URLError(.badURL) }
@@ -1758,6 +1765,7 @@ private final class RideWeatherProvider: NSObject, ObservableObject, CLLocationM
             windSpeedKmh: current.windSpeed,
             ultravioletIndex: current.uvIndex,
             airQualityIndex: await fetchAirQuality(coordinate: coordinate),
+            reportedIsDay: current.isDay.map { $0 != 0 },
             fetchedAt: Date()
         )
     }
@@ -1801,12 +1809,14 @@ private struct OpenMeteoWeatherResponse: Decodable {
         var weatherCode: Int?
         var windSpeed: Double?
         var uvIndex: Double?
+        var isDay: Int?
 
         enum CodingKeys: String, CodingKey {
             case temperature = "temperature_2m"
             case weatherCode = "weather_code"
             case windSpeed = "wind_speed_10m"
             case uvIndex = "uv_index"
+            case isDay = "is_day"
         }
     }
 }
@@ -1980,10 +1990,12 @@ private struct VehicleMotionScene: View {
         GeometryReader { proxy in
             Group {
                 if reduceMotion || mode != .riding {
-                    // Charging deliberately renders as a static scene. It keeps the
-                    // charging screen smooth on older iPhones and removes the former
-                    // per-frame material, shadow, particle, and dash-path work.
-                    scene(size: proxy.size, phase: 0)
+                    // Charging deliberately remains static. This once-per-minute
+                    // redraw is only for the clock-driven day/night handoff; it does
+                    // not introduce continuous animation or refresh vehicle data.
+                    TimelineView(.periodic(from: .now, by: 60)) { _ in
+                        scene(size: proxy.size, phase: 0)
+                    }
                 } else {
                     TimelineView(.animation(minimumInterval: 1.0 / 15.0)) { timeline in
                         scene(size: proxy.size, phase: timeline.date.timeIntervalSinceReferenceDate)
@@ -2673,16 +2685,22 @@ private struct VehicleChargingScene: View {
                 .padding(.top, 17)
                 .padding(.trailing, 15)
 
+            // Keep the charge information no larger than the compact parked
+            // scene controls. This preserves open space around the scooter and
+            // avoids the oversized card competing with the weather card.
             ChargingTelemetryHUD(state: snapshot.state)
-                .frame(width: min(size.width * 0.41, 168), alignment: .leading)
-                .padding(10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .frame(width: min(max(size.width * 0.285, 106), 122), alignment: .leading)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .background(Color.black.opacity(weather.isDay ? 0.10 : 0.22), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(.white.opacity(0.18), lineWidth: 0.8)
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .stroke(.white.opacity(weather.isDay ? 0.16 : 0.24), lineWidth: 0.8)
                 }
-                .padding(.leading, 16)
-                .padding(.top, 80)
+                .shadow(color: .black.opacity(weather.isDay ? 0.16 : 0.30), radius: 9, x: 0, y: 5)
+                .padding(.leading, 18)
+                .padding(.top, 91)
 
             ChargingSceneCaption(state: snapshot.state)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -2744,40 +2762,46 @@ private struct ChargingTelemetryHUD: View {
     var state: NinebotVehicleState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
                 ZStack {
                     Circle()
-                        .stroke(.white.opacity(0.16), lineWidth: 5)
+                        .stroke(.white.opacity(0.16), lineWidth: 4)
                     Circle()
                         .trim(from: 0, to: state.batteryFraction)
-                        .stroke(Color.teslaGreen, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .stroke(Color.teslaGreen, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                     Image(systemName: "bolt.fill")
-                        .font(.system(size: 13, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Color.teslaGreen)
                 }
-                .frame(width: 42, height: 42)
+                .frame(width: 34, height: 34)
 
                 VStack(alignment: .leading, spacing: 0) {
                     Text("当前电量")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.66))
+                        .font(.system(size: 8.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.64))
                     Text(state.batteryText)
-                        .font(.system(size: 27, weight: .bold, design: .rounded).monospacedDigit())
+                        .font(.system(size: 22, weight: .bold, design: .rounded).monospacedDigit())
                         .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
                 }
             }
 
             Rectangle()
-                .fill(Color.teslaGreen.opacity(0.8))
-                .frame(width: 48, height: 2)
+                .fill(Color.teslaGreen.opacity(0.78))
+                .frame(width: 34, height: 1.5)
 
-            HStack(spacing: 15) {
-                ChargingTelemetryValue(title: "预计充满", value: state.estimatedFullChargeClockText, icon: "clock")
-                ChargingTelemetryValue(title: "充电功率", value: state.chargingPowerText, icon: "waveform.path.ecg")
+            HStack(spacing: 6) {
+                ChargingTelemetryValue(title: "预计", value: state.estimatedFullChargeClockText, icon: "clock")
+                Rectangle()
+                    .fill(.white.opacity(0.16))
+                    .frame(width: 0.5, height: 24)
+                ChargingTelemetryValue(title: "功率", value: state.chargingPowerText, icon: "bolt")
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("当前电量 \(state.batteryText)，预计 \(state.estimatedFullChargeClockText) 充满，充电功率 \(state.chargingPowerText)")
     }
@@ -2789,17 +2813,18 @@ private struct ChargingTelemetryValue: View {
     var icon: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 2) {
             Label(title, systemImage: icon)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.63))
+                .font(.system(size: 7.5, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.61))
                 .lineLimit(1)
             Text(value)
-                .font(.system(size: 14, weight: .semibold, design: .rounded).monospacedDigit())
+                .font(.system(size: 11.5, weight: .semibold, design: .rounded).monospacedDigit())
                 .foregroundStyle(.white)
                 .lineLimit(1)
-                .minimumScaleFactor(0.68)
+                .minimumScaleFactor(0.48)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
