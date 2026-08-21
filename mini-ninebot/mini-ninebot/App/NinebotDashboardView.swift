@@ -2669,11 +2669,11 @@ private struct VehicleChargingScene: View {
     var size: CGSize
 
     var body: some View {
-        // Charging occupies the same compact scene slot as a parked vehicle.
-        // The vehicle image comes from the official vehicle interface URL, with
-        // the existing locally cached official image as the offline fallback.
+        // The vehicle itself always comes from the official vehicle interface.
+        // The scene deliberately contains no second vehicle, road markings, or
+        // cable crossing the bike so the wallbox is unmistakably separate.
         ZStack(alignment: .topLeading) {
-            ChargingVillaBackdrop(size: size, isDay: weather.isDay)
+            ChargingVillaBackyardBackdrop(size: size, isDay: weather.isDay)
 
             VehicleSceneHeader(
                 title: "正在充电",
@@ -2688,210 +2688,126 @@ private struct VehicleChargingScene: View {
                 .padding(.top, 17)
                 .padding(.trailing, 15)
 
+            // A compact wallbox on the far right is deliberately kept outside
+            // the vehicle silhouette. Its cable stays holstered on the unit,
+            // avoiding the previous tangled line across the bike.
+            ChargingWallboxStation(size: size, isDay: weather.isDay)
+                .position(x: size.width * 0.885, y: size.height * 0.715)
+
             Ellipse()
-                .fill(Color.black.opacity(weather.isDay ? 0.24 : 0.42))
-                .frame(width: size.width * 0.57, height: size.height * 0.065)
-                .blur(radius: 9)
-                .offset(x: size.width * 0.12, y: size.height * 0.82)
+                .fill(Color.black.opacity(weather.isDay ? 0.19 : 0.38))
+                .frame(width: size.width * 0.56, height: size.height * 0.055)
+                .blur(radius: 11)
+                .position(x: size.width * 0.41, y: size.height * 0.85)
 
             VehicleImage(
                 urlString: snapshot.vehicle.imageURLString,
                 sn: snapshot.vehicle.sn,
-                size: min(size.width * 0.72, 280),
+                size: min(size.width * 0.66, 258),
                 showsBackground: false
             )
-            .shadow(color: .black.opacity(weather.isDay ? 0.32 : 0.48), radius: 15, x: 0, y: 10)
-            .position(x: size.width * 0.47, y: size.height * 0.70)
-        }
-        .frame(width: size.width, height: size.height)
-    }
-}
-
-/// Villa driveway charging scene. The weather service supplies the local
-/// day/night signal: windows and path lamps only glow after dark.
-private struct ChargingVillaBackdrop: View {
-    var size: CGSize
-    var isDay: Bool
-
-    var body: some View {
-        ZStack(alignment: .bottom) {
-            LinearGradient(
-                colors: isDay
-                    ? [Color(red: 0.49, green: 0.74, blue: 0.91), Color(red: 0.80, green: 0.89, blue: 0.88)]
-                    : [Color(red: 0.025, green: 0.075, blue: 0.16), Color(red: 0.075, green: 0.13, blue: 0.23)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            if isDay {
-                Circle()
-                    .fill(Color.yellow.opacity(0.90))
-                    .frame(width: size.width * 0.10, height: size.width * 0.10)
-                    .blur(radius: 1)
-                    .position(x: size.width * 0.16, y: size.height * 0.15)
-            } else {
-                ForEach(0..<22, id: \.self) { index in
-                    Circle()
-                        .fill(.white.opacity(0.35 + Double(index % 3) * 0.16))
-                        .frame(width: index.isMultiple(of: 3) ? 2 : 1, height: index.isMultiple(of: 3) ? 2 : 1)
-                        .position(x: size.width * (0.05 + CGFloat((index * 37) % 91) / 100), y: size.height * (0.06 + CGFloat((index * 23) % 37) / 100))
-                }
-            }
-
-            // Distant tree line and landscaped courtyard.
-            HStack(alignment: .bottom, spacing: -size.width * 0.035) {
-                ForEach(0..<10, id: \.self) { index in
-                    Circle()
-                        .fill(isDay ? Color(red: 0.16, green: 0.36, blue: 0.22) : Color(red: 0.035, green: 0.13, blue: 0.10))
-                        .frame(width: size.width * (0.14 + CGFloat(index % 3) * 0.025), height: size.height * (0.18 + CGFloat(index % 4) * 0.035))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .offset(y: -size.height * 0.25)
-
-            // Two-storey villa facade.
-            VStack(spacing: 0) {
-                HStack(spacing: size.width * 0.022) {
-                    villaWindow(width: size.width * 0.13, height: size.height * 0.145)
-                    villaWindow(width: size.width * 0.13, height: size.height * 0.145)
-                    villaWindow(width: size.width * 0.13, height: size.height * 0.145)
-                }
-                .padding(.top, size.height * 0.045)
-
-                HStack(alignment: .bottom, spacing: size.width * 0.052) {
-                    villaWindow(width: size.width * 0.15, height: size.height * 0.19)
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isDay ? Color(red: 0.20, green: 0.17, blue: 0.14) : Color.black.opacity(0.76))
-                        .frame(width: size.width * 0.135, height: size.height * 0.24)
-                        .overlay(alignment: .top) {
-                            Circle().fill(isDay ? Color.black.opacity(0.20) : Color.orange.opacity(0.9)).frame(width: 5, height: 5).padding(.top, 13)
-                        }
-                    villaWindow(width: size.width * 0.15, height: size.height * 0.19)
-                }
-                .padding(.bottom, size.height * 0.035)
-            }
-            .frame(width: size.width * 0.78, height: size.height * 0.47)
-            .background(isDay ? Color(red: 0.86, green: 0.80, blue: 0.70) : Color(red: 0.13, green: 0.12, blue: 0.15))
-            .overlay(alignment: .top) {
-                TrapezoidRoof()
-                    .fill(isDay ? Color(red: 0.27, green: 0.24, blue: 0.25) : Color(red: 0.045, green: 0.04, blue: 0.06))
-                    .frame(width: size.width * 0.88, height: size.height * 0.13)
-                    .offset(y: -size.height * 0.12)
-            }
-            .shadow(color: .black.opacity(isDay ? 0.17 : 0.50), radius: 11, y: 5)
-            .offset(x: -size.width * 0.045, y: -size.height * 0.20)
-
-            // Stone driveway.
-            Rectangle()
-                .fill(LinearGradient(
-                    colors: isDay ? [Color(red: 0.57, green: 0.55, blue: 0.51), Color(red: 0.31, green: 0.31, blue: 0.30)] : [Color(red: 0.15, green: 0.16, blue: 0.18), Color(red: 0.075, green: 0.08, blue: 0.10)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                ))
-                .frame(height: size.height * 0.38)
-                .overlay {
-                    Path { path in
-                        for index in 1...4 {
-                            let y = size.height * CGFloat(index) * 0.072
-                            path.move(to: CGPoint(x: 0, y: y))
-                            path.addLine(to: CGPoint(x: size.width, y: y))
-                        }
-                    }
-                    .stroke(Color.white.opacity(isDay ? 0.13 : 0.06), lineWidth: 1)
-                }
-
-            ChargingVillaStation(size: size, isDay: isDay)
-                .position(x: size.width * 0.83, y: size.height * 0.64)
-
-            if !isDay {
-                HStack(spacing: size.width * 0.28) {
-                    villaPathLamp
-                    villaPathLamp
-                    villaPathLamp
-                }
-                .frame(maxWidth: .infinity)
-                .offset(y: -size.height * 0.17)
-            }
+            .shadow(color: .black.opacity(weather.isDay ? 0.26 : 0.48), radius: 15, x: 0, y: 10)
+            .position(x: size.width * 0.42, y: size.height * 0.70)
         }
         .frame(width: size.width, height: size.height)
         .clipped()
     }
-
-    private func villaWindow(width: CGFloat, height: CGFloat) -> some View {
-        Rectangle()
-            .fill(isDay ? Color(red: 0.37, green: 0.62, blue: 0.72) : Color(red: 0.92, green: 0.62, blue: 0.27).opacity(0.82))
-            .frame(width: width, height: height)
-            .overlay {
-                HStack(spacing: 0) {
-                    Rectangle().fill(Color.black.opacity(0.38)).frame(width: 2)
-                    Spacer()
-                    Rectangle().fill(Color.black.opacity(0.38)).frame(width: 2)
-                }
-                Rectangle().fill(Color.black.opacity(0.38)).frame(height: 2)
-            }
-            .overlay(Rectangle().stroke(Color.black.opacity(0.48), lineWidth: 3))
-            .shadow(color: isDay ? .clear : Color.orange.opacity(0.35), radius: 8)
-    }
-
-    private var villaPathLamp: some View {
-        VStack(spacing: 0) {
-            Circle().fill(Color.orange.opacity(0.96)).frame(width: 8, height: 8).shadow(color: .orange, radius: 7)
-            Rectangle().fill(Color.black.opacity(0.68)).frame(width: 2, height: 18)
-        }
-    }
 }
 
-private struct TrapezoidRoof: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.14, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX - rect.width * 0.14, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.closeSubpath()
-        return path
-    }
-}
-
-private struct ChargingVillaStation: View {
+/// Real villa backyard photographs provide the charging scene. The source
+/// images contain no vehicle or charger so the official vehicle image and
+/// separate wallbox remain clear and never overlap.
+private struct ChargingVillaBackyardBackdrop: View {
     var size: CGSize
     var isDay: Bool
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Path { path in
-                path.move(to: CGPoint(x: size.width * 0.01, y: size.height * 0.13))
-                path.addCurve(
-                    to: CGPoint(x: -size.width * 0.23, y: size.height * 0.44),
-                    control1: CGPoint(x: -size.width * 0.13, y: size.height * 0.15),
-                    control2: CGPoint(x: -size.width * 0.10, y: size.height * 0.43)
-                )
-            }
-            .stroke(Color.black.opacity(0.77), style: StrokeStyle(lineWidth: 4, lineCap: .round))
-            .offset(y: size.height * 0.05)
+        ZStack {
+            Image(isDay ? "ChargingVillaDay" : "ChargingVillaNight")
+                .resizable()
+                .scaledToFill()
+                .frame(width: size.width, height: size.height)
+                .scaleEffect(isDay ? 1.14 : 1.10)
+                .clipped()
 
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(LinearGradient(colors: [Color(red: 0.18, green: 0.20, blue: 0.23), Color.black.opacity(0.92)], startPoint: .top, endPoint: .bottom))
-                .frame(width: size.width * 0.115, height: size.height * 0.28)
+            // Legibility treatment only: it preserves the photo and introduces
+            // no artificial road. Day has no added lights; the night photo
+            // contains naturally lit villa windows and garden lighting.
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(isDay ? 0.28 : 0.40),
+                    .clear,
+                    Color.black.opacity(isDay ? 0.18 : 0.42)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            LinearGradient(
+                colors: [Color.black.opacity(0.10), .clear, Color.black.opacity(isDay ? 0.10 : 0.22)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        }
+        .frame(width: size.width, height: size.height)
+        .clipped()
+        .accessibilityHidden(true)
+    }
+}
+
+/// A separate, neat wallbox: it intentionally has a holstered cable rather
+/// than a line drawn across the vehicle.
+private struct ChargingWallboxStation: View {
+    var size: CGSize
+    var isDay: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color(red: 0.20, green: 0.23, blue: 0.25), Color(red: 0.055, green: 0.065, blue: 0.075)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: size.width * 0.125, height: size.height * 0.235)
                 .overlay {
-                    VStack(spacing: 6) {
+                    VStack(spacing: 7) {
                         Image(systemName: "bolt.fill")
-                            .font(.system(size: 14, weight: .bold))
+                            .font(.system(size: 17, weight: .bold))
                             .foregroundStyle(Color.teslaGreen)
-                        Capsule().fill(Color.teslaGreen.opacity(0.78)).frame(width: size.width * 0.052, height: 3)
-                        Text("EV")
-                            .font(.system(size: 7, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.72))
+                        Capsule()
+                            .fill(Color.teslaGreen.opacity(0.92))
+                            .frame(width: size.width * 0.057, height: 4)
+                        Text("CHARGE")
+                            .font(.system(size: 6, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.65))
                     }
                 }
-                .shadow(color: isDay ? .black.opacity(0.28) : Color.teslaGreen.opacity(0.42), radius: 10)
+                .overlay(alignment: .bottomTrailing) {
+                    // The short loop remains on the charger; no cable crosses
+                    // the bike or merges with its silhouette.
+                    Circle()
+                        .trim(from: 0.08, to: 0.78)
+                        .stroke(Color.black.opacity(0.74), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .frame(width: size.width * 0.060, height: size.width * 0.060)
+                        .padding(7)
+                }
+                .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(.white.opacity(0.17), lineWidth: 1))
+                .shadow(color: isDay ? .black.opacity(0.28) : Color.teslaGreen.opacity(0.38), radius: 11, y: 6)
 
-            Rectangle()
-                .fill(Color.black.opacity(0.82))
-                .frame(width: size.width * 0.038, height: size.height * 0.17)
-                .offset(y: size.height * 0.20)
+            RoundedRectangle(cornerRadius: 1, style: .continuous)
+                .fill(Color.black.opacity(0.76))
+                .frame(width: size.width * 0.042, height: size.height * 0.12)
+
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color.black.opacity(0.67))
+                .frame(width: size.width * 0.135, height: 7)
         }
-        .frame(width: size.width * 0.26, height: size.height * 0.50)
+        .frame(width: size.width * 0.18, height: size.height * 0.41, alignment: .bottom)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("独立充电桩，充电线已收纳")
     }
 }
 
