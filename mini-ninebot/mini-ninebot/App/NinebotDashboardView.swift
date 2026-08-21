@@ -44,7 +44,8 @@ struct NinebotDashboardView: View {
                                     snapshot: primary,
                                     canSwitchVehicle: model.hasVehicles,
                                     resolvedAddress: model.resolvedAddressText(for: primary),
-                                    showsUpdateTime: !model.isAddressGeocodingEnabled,
+                                    dashboardUpdatedAt: model.dashboard.updatedAt,
+                                    isRefreshing: model.isLoading || model.isRefreshingDashboard,
                                     isLoading: model.isLoading,
                                     onRingBell: {
                                         performVehicleAction(.bell, sn: primary.vehicle.sn)
@@ -1358,7 +1359,8 @@ private struct VehicleControlHero: View {
     var snapshot: NinebotVehicleSnapshot
     var canSwitchVehicle: Bool
     var resolvedAddress: String?
-    var showsUpdateTime: Bool
+    var dashboardUpdatedAt: Date
+    var isRefreshing: Bool
     var isLoading: Bool
     var onRingBell: () -> Void
     var onSwitchVehicle: () -> Void
@@ -1421,12 +1423,16 @@ private struct VehicleControlHero: View {
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                         }
-                    } else if showsUpdateTime {
-                        Text("更新 \(formatDate(snapshot.state.updatedAt))")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(Color.teslaSecondaryText)
-                            .lineLimit(1)
                     }
+
+                    HStack(spacing: 4) {
+                        Image(systemName: isRefreshing ? "arrow.triangle.2.circlepath" : "clock")
+                        Text(isRefreshing ? "正在更新…" : "更新于 \(formatTime(dashboardUpdatedAt))")
+                    }
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.teslaSecondaryText)
+                    .lineLimit(1)
+                    .accessibilityLabel(isRefreshing ? "正在更新车辆状态" : "数据更新于 \(formatDate(dashboardUpdatedAt))")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 

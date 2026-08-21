@@ -1,6 +1,6 @@
 # mini-ninebot
 
-NineBot+ iOS app, **A1 UI redesign**, version **15** (build **15**).
+NineBot+ iOS app, **A1 UI redesign**, version **16** (build **16**).
 
 The app's first screen is the **NinePlus account login**. The service URL can be
 entered in the app, and an installation-wide Bearer Token can be supplied when
@@ -19,6 +19,12 @@ password. Cached vehicle data may be kept locally for a smoother dashboard.
 - 保留原有登录、Bearer Token、车辆控制、充电反馈、地图、行程、报警和推送功能；本次只调整视觉层、背景、间距、层级和反馈表现。
 - 主仪表盘加入轻量连接状态顶栏、动态光晕背景、玻璃表面和更清晰的车辆状态层级。
 - 不增加蓝牙能力；动画继续遵守“减少动态效果”系统设置，避免使用高频复杂粒子造成卡顿。
+
+## v16 前台刷新与更新时间
+
+- 主车辆卡片始终显示本次 App 数据更新时间；后台静默更新时会显示“正在更新…”。
+- App 每次启动和重新回到前台都会立即请求最新车况，不再因上次前台会话的节流而跳过。
+- App 仅在前台轮询：充电中每 3 秒更新一次，其他状态每 6 秒更新一次；进入后台或非活跃状态立即停止轮询。
 
 ## v13 充电主页与刷新优化
 

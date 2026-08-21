@@ -143,6 +143,7 @@ final class NinebotViewModel: ObservableObject {
     @Published var portalLoginResult: NinePlusPortalLoginResult?
     @Published var dashboard: NinebotDashboard
     @Published var isLoading = false
+    @Published private(set) var isRefreshingDashboard = false
     @Published var loadingMessage: String?
     @Published var errorMessage: String?
     @Published var statusMessage: String?
@@ -159,7 +160,13 @@ final class NinebotViewModel: ObservableObject {
     private let store = NinebotSharedStore()
     private var lastAutomaticRefreshAt: Date?
     private var isPerformingSilentDashboardRefresh = false
+    private var foregroundRefreshTask: Task<Void, Never>?
     private var dashboardEnrichmentTask: Task<Void, Never>?
+
+    private var automaticRefreshInterval: TimeInterval {
+        // Keep charging feedback prompt while avoiding unnecessary requests when parked.
+        dashboard.primaryVehicle?.state.isCharging == true ? 3 : 6
+    }
 
     init() {
         let configuration = store.loadConfiguration()
@@ -253,7 +260,10 @@ final class NinebotViewModel: ObservableObject {
             guard let self else { return }
             await self.syncPushDeviceTokenIfPossible()
         }
-        await refreshAutomaticallyIfPossible(force: false)
+        startForegroundRefreshLoop()
+        // A launch must always request fresh vehicle data instead of being
+        // suppressed by a timestamp from the previous foreground session.
+        await refreshAutomaticallyIfPossible(force: true)
     }
 
     /// Called by ContentView whenever scenePhase returns to `.active`.
@@ -264,18 +274,48 @@ final class NinebotViewModel: ObservableObject {
             guard let self else { return }
             await self.syncPushDeviceTokenIfPossible()
         }
-        // Avoid the launch task and the active-scene callback issuing two
-        // identical vehicle reads a few seconds apart. A foreground return
-        // after the short throttle window still gets a fresh dashboard.
-        await refreshAutomaticallyIfPossible(force: false)
+        startForegroundRefreshLoop()
+        // Refresh immediately on every foreground entry. The in-flight guard
+        // below coalesces the launch task and the active-scene callback.
+        await refreshAutomaticallyIfPossible(force: true)
+    }
+
+    func stopForegroundRefreshLoop() {
+        foregroundRefreshTask?.cancel()
+        foregroundRefreshTask = nil
+    }
+
+    private func startForegroundRefreshLoop() {
+        guard hasConnectionSession, foregroundRefreshTask == nil else { return }
+
+        foregroundRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let interval = self.automaticRefreshInterval
+
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                } catch {
+                    return
+                }
+
+                guard !Task.isCancelled else { return }
+                await self.refreshAutomaticallyIfPossible(force: false)
+            }
+        }
     }
 
     private func refreshAutomaticallyIfPossible(force: Bool) async {
         guard hasConfiguration, activeSessionToken?.trimmed.isEmpty == false else { return }
+
+        // Launch and scene activation can arrive together. A request already
+        // in flight is the fresh read we need, so never issue a duplicate.
         guard !isLoading, !isPerformingSilentDashboardRefresh else { return }
 
         let now = Date()
-        if !force, let lastAutomaticRefreshAt, now.timeIntervalSince(lastAutomaticRefreshAt) < 8 {
+        if !force,
+           let lastAutomaticRefreshAt,
+           now.timeIntervalSince(lastAutomaticRefreshAt) < automaticRefreshInterval {
             return
         }
 
@@ -286,7 +326,11 @@ final class NinebotViewModel: ObservableObject {
     private func refreshDashboardSilently() async {
         guard !isPerformingSilentDashboardRefresh else { return }
         isPerformingSilentDashboardRefresh = true
-        defer { isPerformingSilentDashboardRefresh = false }
+        isRefreshingDashboard = true
+        defer {
+            isPerformingSilentDashboardRefresh = false
+            isRefreshingDashboard = false
+        }
 
         do {
             let refreshedDashboard = try await fetchDashboardWithSessionRecovery(selectedSN: dashboard.selectedSN)

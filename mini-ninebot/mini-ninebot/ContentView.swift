@@ -32,7 +32,10 @@ struct ContentView: View {
             await model.refreshOnLaunchIfPossible()
         }
         .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active else { return }
+            guard newPhase == .active else {
+                model.stopForegroundRefreshLoop()
+                return
+            }
             Task { await model.refreshWhenActiveIfPossible() }
         }
     }

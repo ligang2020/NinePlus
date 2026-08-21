@@ -21,9 +21,9 @@ server boundary instead of embedding an unsupported executable into iOS.
 
 ## Build and IPA
 
-Version **15**, build **15** is configured in the Xcode project.
+Version **16**, build **16** is configured in the Xcode project.
 GitHub Actions builds an unsigned device IPA and publishes it as both an
-Actions artifact and, for tag `v15` or a manual release build, a GitHub
+Actions artifact and, for tag `v16` or a manual release build, a GitHub
 Release asset. No `NINEPLUS_ACCESS_TOKEN` secret is required.
 
 The local machine used for this checkout currently has only Command Line Tools,
