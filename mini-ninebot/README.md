@@ -1,6 +1,6 @@
 # mini-ninebot
 
-NineBot+ iOS app, **A1 UI redesign**, version **18** (build **18**).
+NineBot+ iOS app, **A1 UI redesign**, version **19** (build **19**).
 
 The app's first screen is the **NinePlus account login**. The service URL can be
 entered in the app, and an installation-wide Bearer Token can be supplied when
@@ -19,6 +19,12 @@ password. Cached vehicle data may be kept locally for a smoother dashboard.
 - 保留原有登录、Bearer Token、车辆控制、充电反馈、地图、行程、报警和推送功能；本次只调整视觉层、背景、间距、层级和反馈表现。
 - 主仪表盘加入轻量连接状态顶栏、动态光晕背景、玻璃表面和更清晰的车辆状态层级。
 - 不增加蓝牙能力；动画继续遵守“减少动态效果”系统设置，避免使用高频复杂粒子造成卡顿。
+
+## v19 车辆落地感修复
+
+- 充电场景的官方车辆图片下移至庭院地面，并将原来距离车轮较远的大阴影改为与前、后轮精准对齐的接地阴影。
+- 进一步降低车辆外层投影的偏移和模糊，车轮在实拍庭院地面上具有更明确的落地接触感，不再显得悬浮。
+- 充电桩调整为右侧外墙上的壁挂式设备，取消落地支架；增加一根从桩体下方沿地面弧线连接至车辆后侧充电口的线缆。线缆层位于车辆图片后方，中段会自然被车身遮挡，不会横穿车辆。
 
 ## v18 实拍别墅后院充电场景
 

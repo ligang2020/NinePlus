@@ -2688,17 +2688,17 @@ private struct VehicleChargingScene: View {
                 .padding(.top, 17)
                 .padding(.trailing, 15)
 
-            // A compact wallbox on the far right is deliberately kept outside
-            // the vehicle silhouette. Its cable stays holstered on the unit,
-            // avoiding the previous tangled line across the bike.
+            // The wallbox stays on the far-right exterior wall. Its one clean
+            // cable runs behind the vehicle and reaches the rear-side charge
+            // port, so it reads as connected without cutting across the bike.
+            ChargingWallboxConnectionCable(size: size, isDay: weather.isDay)
             ChargingWallboxStation(size: size, isDay: weather.isDay)
-                .position(x: size.width * 0.885, y: size.height * 0.715)
+                .position(x: size.width * 0.865, y: size.height * 0.650)
 
-            Ellipse()
-                .fill(Color.black.opacity(weather.isDay ? 0.19 : 0.38))
-                .frame(width: size.width * 0.56, height: size.height * 0.055)
-                .blur(radius: 11)
-                .position(x: size.width * 0.41, y: size.height * 0.85)
+            // Contact shadows are aligned with the two tyres rather than
+            // placed as one distant oval. This visually seats the transparent
+            // official vehicle image on the patio instead of making it float.
+            ChargingVehicleContactShadows(size: size, isDay: weather.isDay)
 
             VehicleImage(
                 urlString: snapshot.vehicle.imageURLString,
@@ -2706,11 +2706,39 @@ private struct VehicleChargingScene: View {
                 size: min(size.width * 0.66, 258),
                 showsBackground: false
             )
-            .shadow(color: .black.opacity(weather.isDay ? 0.26 : 0.48), radius: 15, x: 0, y: 10)
-            .position(x: size.width * 0.42, y: size.height * 0.70)
+            .shadow(color: .black.opacity(weather.isDay ? 0.18 : 0.34), radius: 7, x: 0, y: 5)
+            .position(x: size.width * 0.42, y: size.height * 0.725)
         }
         .frame(width: size.width, height: size.height)
         .clipped()
+    }
+}
+
+private struct ChargingVehicleContactShadows: View {
+    var size: CGSize
+    var isDay: Bool
+
+    var body: some View {
+        ZStack {
+            Ellipse()
+                .fill(Color.black.opacity(isDay ? 0.25 : 0.44))
+                .frame(width: size.width * 0.17, height: size.height * 0.027)
+                .blur(radius: 4)
+                .position(x: size.width * 0.275, y: size.height * 0.902)
+
+            Ellipse()
+                .fill(Color.black.opacity(isDay ? 0.29 : 0.48))
+                .frame(width: size.width * 0.19, height: size.height * 0.029)
+                .blur(radius: 4)
+                .position(x: size.width * 0.555, y: size.height * 0.905)
+
+            Ellipse()
+                .fill(Color.black.opacity(isDay ? 0.11 : 0.20))
+                .frame(width: size.width * 0.47, height: size.height * 0.045)
+                .blur(radius: 10)
+                .position(x: size.width * 0.415, y: size.height * 0.913)
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -2755,23 +2783,71 @@ private struct ChargingVillaBackyardBackdrop: View {
     }
 }
 
-/// A separate, neat wallbox: it intentionally has a holstered cable rather
-/// than a line drawn across the vehicle.
+/// One intentionally short cable: from the wallbox lower-left corner to the
+/// rear-side charging port. It is rendered before the official vehicle image,
+/// so the middle section correctly disappears behind the scooter body.
+private struct ChargingWallboxConnectionCable: View {
+    var size: CGSize
+    var isDay: Bool
+
+    var body: some View {
+        ZStack {
+            Path { path in
+                path.move(to: CGPoint(x: size.width * 0.812, y: size.height * 0.773))
+                path.addCurve(
+                    to: CGPoint(x: size.width * 0.642, y: size.height * 0.835),
+                    control1: CGPoint(x: size.width * 0.800, y: size.height * 0.820),
+                    control2: CGPoint(x: size.width * 0.710, y: size.height * 0.858)
+                )
+            }
+            .stroke(Color.black.opacity(isDay ? 0.76 : 0.88), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+
+            Path { path in
+                path.move(to: CGPoint(x: size.width * 0.812, y: size.height * 0.773))
+                path.addCurve(
+                    to: CGPoint(x: size.width * 0.642, y: size.height * 0.835),
+                    control1: CGPoint(x: size.width * 0.800, y: size.height * 0.820),
+                    control2: CGPoint(x: size.width * 0.710, y: size.height * 0.858)
+                )
+            }
+            .stroke(.white.opacity(isDay ? 0.14 : 0.08), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+
+            // Compact plug at the visible end; the actual port sits just under
+            // the rendered scooter so the connection feels physically correct.
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(Color.black.opacity(0.90))
+                .frame(width: 12, height: 7)
+                .rotationEffect(.degrees(-14))
+                .position(x: size.width * 0.642, y: size.height * 0.835)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// A clearly wall-mounted charging unit. It has no pole or ground base: the
+/// backing plate, small shadow, and cable origin are all located on the villa's
+/// right-side wall instead of overlapping the vehicle.
 private struct ChargingWallboxStation: View {
     var size: CGSize
     var isDay: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
+        ZStack(alignment: .bottomTrailing) {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .fill(Color.black.opacity(isDay ? 0.23 : 0.42))
+                .frame(width: size.width * 0.160, height: size.height * 0.255)
+                .offset(x: 4, y: 6)
+                .blur(radius: 5)
+
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(
                     LinearGradient(
-                        colors: [Color(red: 0.20, green: 0.23, blue: 0.25), Color(red: 0.055, green: 0.065, blue: 0.075)],
+                        colors: [Color(red: 0.24, green: 0.27, blue: 0.29), Color(red: 0.055, green: 0.065, blue: 0.075)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
                 )
-                .frame(width: size.width * 0.125, height: size.height * 0.235)
+                .frame(width: size.width * 0.145, height: size.height * 0.235)
                 .overlay {
                     VStack(spacing: 7) {
                         Image(systemName: "bolt.fill")
@@ -2779,35 +2855,25 @@ private struct ChargingWallboxStation: View {
                             .foregroundStyle(Color.teslaGreen)
                         Capsule()
                             .fill(Color.teslaGreen.opacity(0.92))
-                            .frame(width: size.width * 0.057, height: 4)
+                            .frame(width: size.width * 0.058, height: 4)
                         Text("CHARGE")
                             .font(.system(size: 6, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.65))
+                            .foregroundStyle(.white.opacity(0.68))
                     }
                 }
-                .overlay(alignment: .bottomTrailing) {
-                    // The short loop remains on the charger; no cable crosses
-                    // the bike or merges with its silhouette.
+                .overlay(alignment: .bottomLeading) {
                     Circle()
-                        .trim(from: 0.08, to: 0.78)
-                        .stroke(Color.black.opacity(0.74), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                        .frame(width: size.width * 0.060, height: size.width * 0.060)
-                        .padding(7)
+                        .fill(Color.black.opacity(0.86))
+                        .frame(width: 13, height: 13)
+                        .overlay(Circle().stroke(.white.opacity(0.20), lineWidth: 1))
+                        .padding(8)
                 }
-                .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(.white.opacity(0.17), lineWidth: 1))
-                .shadow(color: isDay ? .black.opacity(0.28) : Color.teslaGreen.opacity(0.38), radius: 11, y: 6)
-
-            RoundedRectangle(cornerRadius: 1, style: .continuous)
-                .fill(Color.black.opacity(0.76))
-                .frame(width: size.width * 0.042, height: size.height * 0.12)
-
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .fill(Color.black.opacity(0.67))
-                .frame(width: size.width * 0.135, height: 7)
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.white.opacity(0.18), lineWidth: 1))
+                .shadow(color: isDay ? .black.opacity(0.22) : Color.teslaGreen.opacity(0.33), radius: 8, y: 4)
         }
-        .frame(width: size.width * 0.18, height: size.height * 0.41, alignment: .bottom)
+        .frame(width: size.width * 0.18, height: size.height * 0.29)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("独立充电桩，充电线已收纳")
+        .accessibilityLabel("壁挂式充电桩，已连接车辆")
     }
 }
 
