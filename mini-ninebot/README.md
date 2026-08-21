@@ -1,6 +1,6 @@
 # mini-ninebot
 
-NineBot+ iOS app, version **10.0.0** (build **10**).
+NineBot+ iOS app, **A1 UI redesign**, version **13** (build **13**).
 
 The app's first screen is the **NinePlus account login**. The service URL can be
 entered in the app, and an installation-wide Bearer Token can be supplied when
@@ -13,12 +13,20 @@ developer API. The official Ninebot cloud binding is configured once on the
 server and reused by every device; the iOS app never asks each device for that
 password. Cached vehicle data may be kept locally for a smoother dashboard.
 
-## v10 充电主页
+## A1 全局 UI 重构（Apple 磨砂玻璃风格）
 
-- 充电状态改为无卡片的科技感场景：电量、预计充满和充电功率使用轻量 HUD 排版，主页不再堆叠充电信息卡片。
-- 车辆旁边增加带 DC/01 状态屏的充电桩，充电线使用流动电流粒子表现能量从充电桩进入车辆。
-- 车辆进入充电状态时触发一次中等强度触觉反馈和系统提示音，同时显示从电池接口向外扩散的声波环。
-- 电量上升时显示轻量粒子烟花；动画帧率降为 15 fps，并在系统开启“减弱动态效果”时完全停用时间线动画，降低主页卡顿。
+- NinePlus 主界面、车辆状态、车辆概览、行程入口和车辆详情统一采用 Apple 风格的 Material 磨砂玻璃层级。
+- 保留原有登录、Bearer Token、车辆控制、充电反馈、地图、行程、报警和推送功能；本次只调整视觉层、背景、间距、层级和反馈表现。
+- 主仪表盘加入轻量连接状态顶栏、动态光晕背景、玻璃表面和更清晰的车辆状态层级。
+- 不增加蓝牙能力；动画继续遵守“减少动态效果”系统设置，避免使用高频复杂粒子造成卡顿。
+
+## v13 充电主页与刷新优化
+
+- 充电状态复用“车辆已停稳”的静态场景，并在车辆右侧增加已连接的充电桩和静态充电线；不再使用独立的科技网格背景。
+- 充电页面保留电量、预计充满与充电功率信息，并继续提供完整车辆控制、位置、行程、电池、车辆信息、多车辆概览和底部 Tab。
+- 仪表盘拿到车辆快照后会立即保存并显示；图片下载和地址反查改为可取消的并行后台补全，不再拖慢首次打开 App、下拉刷新、登录和控制指令后的车况更新。
+- App 回到前台时会使用短节流避免与启动任务重复请求同一份车辆数据。
+- 修复 AppIcon 资源清单，补齐 iPhone / iPad 所需尺寸，确保安装后可正常显示应用图标。
 
 
 ## v9 行程详情
@@ -29,7 +37,7 @@ password. Cached vehicle data may be kept locally for a smoother dashboard.
 
 ## 配置服务器地址并连接 App
 
-当前 v10 App 支持在登录页和「我的 → 服务器连接」中修改后端地址。地址只需要填写协议、主机和端口，不要附加 `/healthz` 或其他接口路径：
+当前 A1 / v13 App 支持在登录页和「我的 → 服务器连接」中修改后端地址。地址只需要填写协议、主机和端口，不要附加 `/healthz` 或其他接口路径：
 
 - 局域网后端：`http://服务器局域网IP:8765`，例如 `http://192.168.1.100:8765`
 - HTTPS 反向代理：`https://你的域名`

@@ -159,6 +159,7 @@ final class NinebotViewModel: ObservableObject {
     private let store = NinebotSharedStore()
     private var lastAutomaticRefreshAt: Date?
     private var isPerformingSilentDashboardRefresh = false
+    private var dashboardEnrichmentTask: Task<Void, Never>?
 
     init() {
         let configuration = store.loadConfiguration()
@@ -246,8 +247,12 @@ final class NinebotViewModel: ObservableObject {
     }
 
     func refreshOnLaunchIfPossible() async {
-        await syncPushDeviceTokenIfPossible()
-        await refreshResolvedAddressesIfNeeded(for: dashboard)
+        // The dashboard cache is assigned during init. Do not block its first
+        // live update on APNs registration or reverse geocoding.
+        Task { [weak self] in
+            guard let self else { return }
+            await self.syncPushDeviceTokenIfPossible()
+        }
         await refreshAutomaticallyIfPossible(force: false)
     }
 
@@ -255,9 +260,14 @@ final class NinebotViewModel: ObservableObject {
     /// It reads the persisted dashboard immediately (during init) and then
     /// updates it in the background without replacing it with an empty state.
     func refreshWhenActiveIfPossible() async {
-        await syncPushDeviceTokenIfPossible()
-        await refreshResolvedAddressesIfNeeded(for: dashboard)
-        await refreshAutomaticallyIfPossible(force: true)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.syncPushDeviceTokenIfPossible()
+        }
+        // Avoid the launch task and the active-scene callback issuing two
+        // identical vehicle reads a few seconds apart. A foreground return
+        // after the short throttle window still gets a fresh dashboard.
+        await refreshAutomaticallyIfPossible(force: false)
     }
 
     private func refreshAutomaticallyIfPossible(force: Bool) async {
@@ -323,8 +333,7 @@ final class NinebotViewModel: ObservableObject {
             let client = try self.makeClient()
             let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            self.scheduleDashboardEnrichment(for: archivedDashboard)
             self.errorMessage = nil
             self.statusMessage = archivedDashboard.vehicles.isEmpty ? "服务已连接，但没有车辆数据" : "服务已连接，已获取车辆信息"
             WidgetCenter.shared.reloadAllTimelines()
@@ -361,8 +370,7 @@ final class NinebotViewModel: ObservableObject {
             let client = try makeClient()
             let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            self.scheduleDashboardEnrichment(for: archivedDashboard)
             self.errorMessage = nil
             self.statusMessage = "已更新 \(Self.timeFormatter.string(from: archivedDashboard.updatedAt))"
             WidgetCenter.shared.reloadAllTimelines()
@@ -383,8 +391,7 @@ final class NinebotViewModel: ObservableObject {
 
             let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: vehicleSN)
             let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            self.scheduleDashboardEnrichment(for: archivedDashboard)
 
             if page.total == 0 {
                 self.statusMessage = "\(Self.displayMonth(month)) 暂无行程"
@@ -466,8 +473,7 @@ final class NinebotViewModel: ObservableObject {
 
             let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            self.scheduleDashboardEnrichment(for: archivedDashboard)
             store.saveConfiguration(currentConfiguration)
             errorMessage = nil
             statusMessage = archivedDashboard.vehicles.isEmpty ? "NinePlus 登录成功，但未找到车辆" : "NinePlus 登录成功，已获取车辆信息"
@@ -507,8 +513,7 @@ final class NinebotViewModel: ObservableObject {
 
             let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: sn)
             let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            self.scheduleDashboardEnrichment(for: archivedDashboard)
             WidgetCenter.shared.reloadAllTimelines()
         }
     }
@@ -828,6 +833,20 @@ final class NinebotViewModel: ObservableObject {
 
     private func refreshResolvedAddressesIfNeeded(for dashboard: NinebotDashboard) async {
         try? await resolveAddresses(for: dashboard, force: false)
+    }
+
+    /// Vehicle state is the only data needed to draw the dashboard. Reverse
+    /// geocoding and remote image caching are best-effort enhancements, so run
+    /// them concurrently after the new snapshot has already been persisted and
+    /// published to SwiftUI.
+    private func scheduleDashboardEnrichment(for dashboard: NinebotDashboard) {
+        dashboardEnrichmentTask?.cancel()
+        dashboardEnrichmentTask = Task { [weak self] in
+            guard let self else { return }
+            async let imageCaching: Void = self.cacheVehicleImages(for: dashboard)
+            async let addressResolution: Void = self.refreshResolvedAddressesIfNeeded(for: dashboard)
+            _ = await (imageCaching, addressResolution)
+        }
     }
 
     private func cacheVehicleImages(for dashboard: NinebotDashboard) async {

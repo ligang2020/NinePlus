@@ -103,5 +103,5 @@ jobs:
           else
             gh release create "$TAG_NAME" "$IPA_PATH" "$CHECKSUM_PATH" \
               --title "NinePlus LiveRide $TAG_NAME" \
-              --notes "NinePlus v10 unsigned IPA built by GitHub Actions from ${GITHUB_SHA}."
+              --notes "Unsigned NinePlus IPA for ${TAG_NAME}, built by GitHub Actions from ${GITHUB_SHA}."
           fi
