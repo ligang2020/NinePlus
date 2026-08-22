@@ -162,6 +162,7 @@ struct NinebotProxyClient {
         let vehicleValues = Self.arrayPayload(from: vehiclesPayload, preferredKeys: ["vehicles", "data"])
         let vehicles = vehicleValues.compactMap(Self.vehicleInfo)
         let currentMonth = Self.currentMonthString()
+        let fetchedAt = Date()
 
         var snapshots: [NinebotVehicleSnapshot] = []
         for vehicle in vehicles {
@@ -190,7 +191,7 @@ struct NinebotProxyClient {
                 status: status,
                 travel: travel,
                 battery: battery,
-                updatedAt: Date()
+                updatedAt: fetchedAt
             )
             let resolvedVehicle = Self.vehicleInfo(vehicle, addingImageFrom: status, battery: battery)
             snapshots.append(NinebotVehicleSnapshot(vehicle: resolvedVehicle, state: state))
@@ -206,7 +207,7 @@ struct NinebotProxyClient {
         return NinebotDashboard(
             vehicles: snapshots,
             selectedSN: resolvedSelectedSN,
-            updatedAt: Date()
+            updatedAt: fetchedAt
         )
     }
 
@@ -268,7 +269,11 @@ struct NinebotProxyClient {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = 20
+        // The dashboard is explicitly a live read. Do not let URLSession reuse
+        // an older cached HTTP response when the app returns from background.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
 
         // An optional deployment Bearer token protects the entire API,
         // including APNs device registration. It is never embedded at build
@@ -401,12 +406,21 @@ private extension NinebotProxyClient {
         )
     }
 
+    static func dateValue(_ value: JSONValue) -> Date? {
+        guard let number = value.doubleValue ?? value.stringValue.flatMap(Double.init), number > 0 else {
+            return nil
+        }
+        let seconds = number > 1_000_000_000_000 ? number / 1000 : number
+        return Date(timeIntervalSince1970: seconds)
+    }
+
     static func dashboard(from value: JSONValue, selectedSN: String?) -> NinebotDashboard? {
         guard let object = value.objectValue,
               let entries = object["vehicles"]?.arrayValue else {
             return nil
         }
 
+        let fetchedAt = object["updated_at"].flatMap(Self.dateValue) ?? Date()
         let snapshots = entries.compactMap { entry -> NinebotVehicleSnapshot? in
             guard let row = entry.objectValue,
                   let vehicleValue = row["vehicle"],
@@ -421,7 +435,7 @@ private extension NinebotProxyClient {
                 status: status,
                 travel: travel,
                 battery: battery,
-                updatedAt: Date()
+                updatedAt: fetchedAt
             )
             let resolvedVehicle = vehicleInfo(vehicle, addingImageFrom: status, battery: battery)
             return NinebotVehicleSnapshot(vehicle: resolvedVehicle, state: state)
@@ -439,7 +453,7 @@ private extension NinebotProxyClient {
         return NinebotDashboard(
             vehicles: snapshots,
             selectedSN: resolvedSelectedSN,
-            updatedAt: Date()
+            updatedAt: fetchedAt
         )
     }
 

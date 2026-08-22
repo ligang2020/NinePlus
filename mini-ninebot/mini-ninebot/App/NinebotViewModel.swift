@@ -144,6 +144,7 @@ final class NinebotViewModel: ObservableObject {
     @Published var dashboard: NinebotDashboard
     @Published var isLoading = false
     @Published private(set) var isRefreshingDashboard = false
+    @Published private(set) var lastRefreshFailureAt: Date?
     @Published var loadingMessage: String?
     @Published var errorMessage: String?
     @Published var statusMessage: String?
@@ -162,6 +163,7 @@ final class NinebotViewModel: ObservableObject {
     private var isPerformingSilentDashboardRefresh = false
     private var foregroundRefreshTask: Task<Void, Never>?
     private var dashboardEnrichmentTask: Task<Void, Never>?
+    private var pendingAutomaticRefresh = false
 
     private var automaticRefreshInterval: TimeInterval {
         // Keep charging feedback prompt while avoiding unnecessary requests when parked.
@@ -263,7 +265,14 @@ final class NinebotViewModel: ObservableObject {
         startForegroundRefreshLoop()
         // A launch must always request fresh vehicle data instead of being
         // suppressed by a timestamp from the previous foreground session.
-        await refreshAutomaticallyIfPossible(force: true)
+        let refreshed = await refreshAutomaticallyIfPossible(force: true)
+        if !refreshed, hasConnectionSession {
+            // Do not leave a many-hours-old cached timestamp on screen after a
+            // transient wake/network failure. The normal poll will recover too,
+            // but this short retry makes cold starts deterministic.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            _ = await refreshAutomaticallyIfPossible(force: true)
+        }
     }
 
     /// Called by ContentView whenever scenePhase returns to `.active`.
@@ -305,26 +314,31 @@ final class NinebotViewModel: ObservableObject {
         }
     }
 
-    private func refreshAutomaticallyIfPossible(force: Bool) async {
-        guard hasConfiguration, activeSessionToken?.trimmed.isEmpty == false else { return }
+    private func refreshAutomaticallyIfPossible(force: Bool) async -> Bool {
+        guard hasConfiguration, activeSessionToken?.trimmed.isEmpty == false else { return false }
 
         // Launch and scene activation can arrive together. A request already
         // in flight is the fresh read we need, so never issue a duplicate.
-        guard !isLoading, !isPerformingSilentDashboardRefresh else { return }
+        if isLoading {
+            pendingAutomaticRefresh = true
+            return false
+        }
+        guard !isPerformingSilentDashboardRefresh else { return false }
 
         let now = Date()
         if !force,
            let lastAutomaticRefreshAt,
            now.timeIntervalSince(lastAutomaticRefreshAt) < automaticRefreshInterval {
-            return
+            return false
         }
 
         lastAutomaticRefreshAt = now
-        await refreshDashboardSilently()
+        return await refreshDashboardSilently()
     }
 
-    private func refreshDashboardSilently() async {
-        guard !isPerformingSilentDashboardRefresh else { return }
+    private func refreshDashboardSilently() async -> Bool {
+        guard !isPerformingSilentDashboardRefresh else { return false }
+        lastRefreshFailureAt = nil
         isPerformingSilentDashboardRefresh = true
         isRefreshingDashboard = true
         defer {
@@ -340,13 +354,21 @@ final class NinebotViewModel: ObservableObject {
             errorMessage = nil
             statusMessage = "已静默更新 \(Self.timeFormatter.string(from: archivedDashboard.updatedAt))"
             WidgetCenter.shared.reloadAllTimelines()
+            return true
         } catch {
-            // Keep cached vehicle data visible. A transient network/401 error
-            // must never turn a previously logged-in dashboard into an empty UI.
+            // Keep cached vehicle data visible, but do not hide the failure:
+            // otherwise the UI can look connected while showing a snapshot from
+            // hours ago (for example phone 16:06, data 10:24).
+            lastRefreshFailureAt = Date()
+            let message = error.localizedDescription
+            statusMessage = dashboard.vehicles.isEmpty
+                ? nil
+                : "自动刷新失败，显示缓存（更新于 \(Self.timeFormatter.string(from: dashboard.updatedAt))）"
             if dashboard.vehicles.isEmpty {
-                errorMessage = error.localizedDescription
-                store.saveLastError(error.localizedDescription)
+                errorMessage = message
+                store.saveLastError(message)
             }
+            return false
         }
     }
 
@@ -514,6 +536,7 @@ final class NinebotViewModel: ObservableObject {
             portalLoginResult = result
             store.savePortalLoginResult(result)
             portalPassword = ""
+            startForegroundRefreshLoop()
 
             let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
@@ -1014,6 +1037,14 @@ final class NinebotViewModel: ObservableObject {
 
         isLoading = false
         loadingMessage = nil
+
+        if pendingAutomaticRefresh {
+            pendingAutomaticRefresh = false
+            Task { [weak self] in
+                guard let self else { return }
+                _ = await self.refreshAutomaticallyIfPossible(force: true)
+            }
+        }
     }
 
     private static func isUnauthorized(_ error: Error) -> Bool {
