@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>NineBot+</string>
+	<string>Tesla</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -13,17 +13,17 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>Tesla</string>
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>NINEPLUS_BASE_URL</key>
-	<string>https://9hao.ligangs2025.top:16689</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NINEPLUS_BASE_URL</key>
+	<string>https://9hao.ligangs2025.top:16689</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
@@ -31,10 +31,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	<key>NSSiriUsageDescription</key>
-	<string>用于通过 Siri 和快捷指令刷新车况、查询电量、查询位置、寻车铃、开座桶、上电和熄火。</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>用于记录骑行轨迹、实时速度和加速 G 值，并在车辆没有位置时获取天气信息。</string>
+	<key>NSSiriUsageDescription</key>
+	<string>用于通过 Siri 和快捷指令刷新车况、查询电量、查询位置、寻车铃、开座桶、上电和熄火。</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

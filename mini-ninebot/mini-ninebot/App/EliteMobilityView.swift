@@ -295,22 +295,41 @@ private struct EliteHomeHeader: View {
     }
 }
 
+private func eliteTeslaImageName(for state: NinebotVehicleState) -> String {
+    if state.isCharging == true {
+        return "TeslaCybertruckCharging"
+    }
+    return state.isRiding == true ? "TeslaCybertruckRiding" : "TeslaCybertruckParked"
+}
+
 private struct EliteVehicleStage: View {
     var snapshot: NinebotVehicleSnapshot
 
+    private var imageName: String {
+        eliteTeslaImageName(for: snapshot.state)
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
-            RoundedRectangle(cornerRadius: 32, style: .continuous)
-                .fill(
+            Image(imageName)
+                .resizable()
+                .scaledToFill()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay {
                     LinearGradient(
-                        colors: [Color.eliteSurfaceHigh, Color.eliteSurface, Color.eliteSurfaceLowest],
+                        colors: [
+                            Color.black.opacity(0.10),
+                            Color.eliteSurfaceLowest.opacity(0.12),
+                            Color.eliteSurfaceLowest.opacity(0.94)
+                        ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
-                )
+                }
+                .clipped()
 
             EliteGridGlow()
-                .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+                .opacity(0.18)
 
             VStack(spacing: 0) {
                 HStack {
@@ -328,22 +347,9 @@ private struct EliteVehicleStage: View {
 
                 Spacer(minLength: 0)
 
-                Image("LoginVehicle")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: 330)
-                    .padding(.horizontal, 18)
-                    .shadow(color: Color.black.opacity(0.42), radius: 28, y: 18)
-                    .overlay(alignment: .trailing) {
-                        if snapshot.state.isCharging == true {
-                            EliteChargingPort()
-                                .offset(x: -5, y: 5)
-                        }
-                    }
-
                 HStack(alignment: .bottom) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(snapshot.state.isRiding == true ? "骑行中" : "车辆已停稳")
+                        Text(snapshot.state.isRiding == true ? "车辆行驶中" : "车辆已停稳")
                             .font(.system(size: 19, weight: .bold))
                             .foregroundStyle(Color.elitePrimaryText)
                         Text(snapshot.state.locationText)
@@ -352,7 +358,7 @@ private struct EliteVehicleStage: View {
                             .lineLimit(1)
                     }
                     Spacer()
-                    Image(systemName: snapshot.state.isRiding == true ? "figure.outdoor.cycle" : "parkingsign.circle.fill")
+                    Image(systemName: snapshot.state.isRiding == true ? "car.fill" : "parkingsign.circle.fill")
                         .font(.system(size: 26, weight: .semibold))
                         .foregroundStyle(Color.elitePrimaryLight)
                 }
@@ -360,6 +366,7 @@ private struct EliteVehicleStage: View {
             }
         }
         .frame(height: 264)
+        .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
         .eliteCard(cornerRadius: 32, glow: true)
     }
 }
@@ -685,7 +692,7 @@ private struct EliteEmptyVehicleCard: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "scooter")
+            Image(systemName: "car.rear.fill")
                 .font(.system(size: 45, weight: .medium))
                 .foregroundStyle(Color.elitePrimaryLight)
             Text("暂未获取到车辆")
@@ -726,10 +733,11 @@ private struct EliteVehiclePicker: View {
                     dismiss()
                 } label: {
                     HStack(spacing: 13) {
-                        Image("LoginVehicle")
+                        Image(eliteTeslaImageName(for: vehicle.state))
                             .resizable()
-                            .scaledToFit()
-                            .frame(width: 68, height: 42)
+                            .scaledToFill()
+                            .frame(width: 68, height: 46)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         VStack(alignment: .leading, spacing: 3) {
                             Text(vehicle.vehicle.name)
                                 .font(.headline)
@@ -828,18 +836,20 @@ private struct EliteChargingHero: View {
                             endPoint: .bottom
                         )
                     )
-                EliteGridGlow()
-                Image("LoginVehicle")
+                Image(state.isCharging == true ? "TeslaCybertruckCharging" : eliteTeslaImageName(for: state))
                     .resizable()
-                    .scaledToFit()
-                    .padding(.horizontal, 24)
-                    .padding(.top, 25)
-                    .padding(.bottom, 16)
-                    .overlay(alignment: .trailing) {
-                        EliteChargingPort()
-                            .scaleEffect(1.35)
-                            .offset(x: -24, y: 22)
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay {
+                        LinearGradient(
+                            colors: [.clear, Color.eliteSurfaceLowest.opacity(0.52)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
                     }
+                    .clipped()
+                EliteGridGlow()
+                    .opacity(0.14)
             }
             .frame(height: 230)
             .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
