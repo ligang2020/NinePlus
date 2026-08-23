@@ -6,18 +6,10 @@
 import SwiftUI
 import UIKit
 
-private enum NinebotRootTab: Hashable {
-    case dashboard
-    case trips
-    case recording
-    case security
-    case settings
-}
 
 struct ContentView: View {
     @StateObject private var model = NinebotViewModel()
     @Environment(\.scenePhase) private var scenePhase
-    @State private var selectedTab: NinebotRootTab = .dashboard
 
     var body: some View {
         Group {
@@ -27,7 +19,8 @@ struct ContentView: View {
                 NinebotCloudLoginView(model: model)
             }
         }
-        .tint(Color(red: 0.13, green: 0.82, blue: 0.28))
+        .tint(Color(red: 0.153, green: 0.369, blue: 0.996))
+        .preferredColorScheme(.dark)
         .task {
             await model.refreshOnLaunchIfPossible()
         }
@@ -41,58 +34,9 @@ struct ContentView: View {
     }
 
     private var authenticatedContent: some View {
-        TabView(selection: $selectedTab) {
-            NavigationStack {
-                NinebotDashboardView(model: model) {
-                    selectedTab = .trips
-                }
-                .navigationTitle("")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar(.hidden, for: .navigationBar)
-                .toolbarBackground(.hidden, for: .navigationBar)
-            }
-            .tabItem {
-                Label("车控", systemImage: "dot.circle.and.cursorarrow")
-            }
-            .tag(NinebotRootTab.dashboard)
-
-            NavigationStack {
-                NinebotTripsTabView(model: model)
-            }
-            .tabItem {
-                Label("行程", systemImage: "road.lanes")
-            }
-            .tag(NinebotRootTab.trips)
-
-            NavigationStack {
-                NinebotRecordingView(model: model)
-            }
-            .tabItem {
-                Label("记录", systemImage: "gauge.with.dots.needle.67percent")
-            }
-            .tag(NinebotRootTab.recording)
-
-            NavigationStack {
-                NinebotSecurityView(model: model)
-                    .navigationTitle("安全")
-                    .toolbar(.visible, for: .navigationBar)
-            }
-            .tabItem {
-                Label("安全", systemImage: "shield.lefthalf.filled")
-            }
-            .tag(NinebotRootTab.security)
-
-            NavigationStack {
-                NinebotSettingsView(model: model)
-                    .navigationTitle("我的")
-                    .toolbar(.visible, for: .navigationBar)
-            }
-            .tabItem {
-                Label("我的", systemImage: "person.crop.circle")
-            }
-            .tag(NinebotRootTab.settings)
-        }
+        EliteMobilityShell(model: model)
     }
+
 }
 
 private enum NinebotCloudLoginField: Hashable {
@@ -120,10 +64,7 @@ struct NinebotCloudLoginView: View {
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [
-                    Color(uiColor: .systemGroupedBackground),
-                    Color(uiColor: .secondarySystemGroupedBackground)
-                ],
+                colors: [Color.eliteBackground, Color.eliteSurfaceLowest],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -131,11 +72,11 @@ struct NinebotCloudLoginView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    Image(systemName: "car.side.and.exclamationmark.fill")
+                    Image(systemName: "scooter")
                         .font(.system(size: 42, weight: .bold))
-                        .foregroundStyle(Color(red: 0.13, green: 0.72, blue: 0.24))
+                        .foregroundStyle(Color.elitePrimaryLight)
                         .frame(width: 78, height: 78)
-                        .background(Color(uiColor: .secondarySystemBackground))
+                        .background(Color.eliteSurfaceHigh)
                         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 8) {
@@ -236,7 +177,7 @@ struct NinebotCloudLoginView: View {
                             .frame(maxWidth: .infinity)
                             .frame(height: 54)
                             .foregroundStyle(.white)
-                            .background(canLogin ? Color(red: 0.13, green: 0.72, blue: 0.24) : Color.gray.opacity(0.35))
+                            .background(canLogin ? Color.elitePrimary : Color.eliteSurfaceBright)
                             .clipShape(Capsule())
                         }
                         .buttonStyle(.plain)
@@ -249,9 +190,10 @@ struct NinebotCloudLoginView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(24)
-                .background(Color(uiColor: .systemBackground).opacity(0.96))
+                .background(Color.eliteSurface.opacity(0.96))
                 .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
-                .shadow(color: .black.opacity(0.08), radius: 24, x: 0, y: 14)
+                .overlay { RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(Color.white.opacity(0.10), lineWidth: 1) }
+                .shadow(color: Color.elitePrimary.opacity(0.14), radius: 24, x: 0, y: 14)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 32)
             }
@@ -299,7 +241,7 @@ private struct CloudLoginField<Field: Hashable>: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 52)
-            .background(Color(uiColor: .tertiarySystemFill))
+            .background(Color.eliteSurfaceHigh)
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }

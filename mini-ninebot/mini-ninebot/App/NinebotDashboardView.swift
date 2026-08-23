@@ -6542,36 +6542,38 @@ private struct RawPayloadCopyPanel: View {
 }
 
 extension Color {
+    // Kept under the existing names so all legacy detail views inherit the
+    // redesigned premium dark palette without duplicating presentation logic.
     static let teslaPageBackground = dynamic(
-        light: UIColor(red: 0.945, green: 0.952, blue: 0.96, alpha: 1),
-        dark: UIColor(red: 0.025, green: 0.029, blue: 0.035, alpha: 1)
+        light: UIColor(red: 0.055, green: 0.055, blue: 0.063, alpha: 1),
+        dark: UIColor(red: 0.055, green: 0.055, blue: 0.063, alpha: 1)
     )
     static let teslaCardBackground = dynamic(
-        light: UIColor(red: 0.995, green: 0.995, blue: 1.0, alpha: 1),
-        dark: UIColor(red: 0.075, green: 0.08, blue: 0.092, alpha: 1)
+        light: UIColor(red: 0.105, green: 0.105, blue: 0.114, alpha: 1),
+        dark: UIColor(red: 0.105, green: 0.105, blue: 0.114, alpha: 1)
     )
     static let teslaControlBackground = dynamic(
-        light: UIColor(red: 0.91, green: 0.925, blue: 0.94, alpha: 1),
-        dark: UIColor(red: 0.125, green: 0.135, blue: 0.152, alpha: 1)
+        light: UIColor(red: 0.145, green: 0.145, blue: 0.157, alpha: 1),
+        dark: UIColor(red: 0.145, green: 0.145, blue: 0.157, alpha: 1)
     )
     static let teslaPrimaryText = dynamic(
-        light: UIColor(red: 0.055, green: 0.065, blue: 0.08, alpha: 1),
-        dark: UIColor(red: 0.94, green: 0.95, blue: 0.965, alpha: 1)
+        light: UIColor(red: 0.894, green: 0.886, blue: 0.894, alpha: 1),
+        dark: UIColor(red: 0.894, green: 0.886, blue: 0.894, alpha: 1)
     )
     static let teslaSecondaryText = dynamic(
-        light: UIColor(red: 0.42, green: 0.45, blue: 0.49, alpha: 1),
-        dark: UIColor(red: 0.62, green: 0.65, blue: 0.69, alpha: 1)
+        light: UIColor(red: 0.765, green: 0.773, blue: 0.851, alpha: 1),
+        dark: UIColor(red: 0.765, green: 0.773, blue: 0.851, alpha: 1)
     )
     static let teslaGreen = dynamic(
-        light: UIColor(red: 0.13, green: 0.82, blue: 0.28, alpha: 1),
-        dark: UIColor(red: 0.20, green: 0.93, blue: 0.38, alpha: 1)
+        light: UIColor(red: 0.153, green: 0.369, blue: 0.996, alpha: 1),
+        dark: UIColor(red: 0.153, green: 0.369, blue: 0.996, alpha: 1)
     )
     static let teslaActionThumb = dynamic(
-        light: UIColor(red: 0.055, green: 0.065, blue: 0.08, alpha: 1),
-        dark: UIColor(red: 0.13, green: 0.82, blue: 0.28, alpha: 1)
+        light: UIColor(red: 0.718, green: 0.769, blue: 1.0, alpha: 1),
+        dark: UIColor(red: 0.718, green: 0.769, blue: 1.0, alpha: 1)
     )
     static let teslaHairline = dynamic(
-        light: UIColor(red: 0, green: 0, blue: 0, alpha: 0.06),
+        light: UIColor(red: 1, green: 1, blue: 1, alpha: 0.10),
         dark: UIColor(red: 1, green: 1, blue: 1, alpha: 0.10)
     )
 

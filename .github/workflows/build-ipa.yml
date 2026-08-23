@@ -9,19 +9,20 @@ on:
         default: true
         type: boolean
       release_tag:
-        description: Optional release tag; blank uses the app version
+        description: "Release tag (must match the app version; default: v1)"
         required: false
-        default: ''
+        default: v1
   push:
     branches: [main, master]
     tags: ['v*']
 
+# Lets the workflow create or update the GitHub Release that contains the IPA.
 permissions:
   contents: write
 
 jobs:
   build-ipa:
-    name: Build iOS IPA
+    name: Build unsigned iOS IPA
     runs-on: macos-15
     timeout-minutes: 45
 
@@ -29,25 +30,34 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Verify Xcode and app version
+      - name: Verify Xcode and release version
+        id: version
+        shell: bash
         run: |
           set -euo pipefail
           xcodebuild -version
+
           PROJECT=mini-ninebot/mini-ninebot.xcodeproj/project.pbxproj
           VERSION="$(awk -F ' = ' '/MARKETING_VERSION = / { gsub(/;/, "", $2); print $2; exit }' "$PROJECT")"
           BUILD="$(awk -F ' = ' '/CURRENT_PROJECT_VERSION = / { gsub(/;/, "", $2); print $2; exit }' "$PROJECT")"
           test -n "$VERSION"
           test -n "$BUILD"
+
+          TAG_NAME="v${VERSION}"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            test "v$VERSION" = "$GITHUB_REF_NAME"
+            test "$GITHUB_REF_NAME" = "$TAG_NAME"
           fi
-          echo "Building NinePlus v$VERSION ($BUILD)."
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "Building unsigned NinePlus IPA $TAG_NAME (build $BUILD)."
 
       - name: Build and package unsigned IPA
         id: package
         env:
           ARTIFACT_DIR: ${{ runner.temp }}/NinePlusIPA
           DERIVED_DATA: ${{ runner.temp }}/NinePlusDerivedData
+        shell: bash
         run: |
           set -euo pipefail
           IPA_PATH="$(scripts/package-unsigned-ipa.sh --output "$ARTIFACT_DIR" --derived-data "$DERIVED_DATA")"
@@ -65,23 +75,23 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Resolve release tag
+      - name: Resolve GitHub Release target
         id: release
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           PUBLISH_RELEASE: ${{ inputs.publish_release }}
           REQUESTED_TAG: ${{ inputs.release_tag }}
+          EXPECTED_TAG: ${{ steps.version.outputs.tag_name }}
         run: |
           set -euo pipefail
-          VERSION="$(awk -F ' = ' '/MARKETING_VERSION = / { gsub(/;/, "", $2); print $2; exit }' mini-ninebot/mini-ninebot.xcodeproj/project.pbxproj)"
-          EXPECTED_TAG="v${VERSION}"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            test "$GITHUB_REF_NAME" = "$EXPECTED_TAG"
             echo "publish=true" >> "$GITHUB_OUTPUT"
             echo "tag=$EXPECTED_TAG" >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == workflow_dispatch && "$PUBLISH_RELEASE" == true ]]; then
-            if [[ -n "$REQUESTED_TAG" ]]; then test "$REQUESTED_TAG" = "$EXPECTED_TAG"; fi
+            if [[ -n "$REQUESTED_TAG" ]]; then
+              test "$REQUESTED_TAG" = "$EXPECTED_TAG"
+            fi
             echo "publish=true" >> "$GITHUB_OUTPUT"
             echo "tag=$EXPECTED_TAG" >> "$GITHUB_OUTPUT"
           else
@@ -96,12 +106,14 @@ jobs:
           IPA_PATH: ${{ steps.package.outputs.ipa_path }}
           CHECKSUM_PATH: ${{ steps.package.outputs.checksum_path }}
           TAG_NAME: ${{ steps.release.outputs.tag }}
+        shell: bash
         run: |
           set -euo pipefail
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" "$IPA_PATH" "$CHECKSUM_PATH" --clobber
           else
             gh release create "$TAG_NAME" "$IPA_PATH" "$CHECKSUM_PATH" \
+              --target "$GITHUB_SHA" \
               --title "NinePlus LiveRide $TAG_NAME" \
-              --notes "Unsigned NinePlus IPA for ${TAG_NAME}, built by GitHub Actions from ${GITHUB_SHA}."
+              --notes "Unsigned NinePlus IPA for $TAG_NAME, built by GitHub Actions from $GITHUB_SHA."
           fi
