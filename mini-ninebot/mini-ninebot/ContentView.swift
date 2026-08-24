@@ -20,7 +20,6 @@ struct ContentView: View {
             }
         }
         .tint(Color(red: 0.153, green: 0.369, blue: 0.996))
-        .preferredColorScheme(.dark)
         .task {
             await model.refreshOnLaunchIfPossible()
         }

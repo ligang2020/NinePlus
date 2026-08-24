@@ -1,4 +1,5 @@
 import SwiftUI
+import MapKit
 
 /// The primary app shell follows the supplied premium mobility reference: a
 /// dark OLED canvas, four focused destinations, and electric-blue energy
@@ -18,11 +19,12 @@ struct EliteMobilityShell: View {
                 switch selectedTab {
                 case .home:
                     NavigationStack {
-                        EliteHomeView(model: model) {
-                            selectedTab = .records
-                        } onOpenSettings: {
-                            showsSettings = true
-                        }
+                        EliteHomeView(
+                            model: model,
+                            onOpenRecords: { selectedTab = .records },
+                            onOpenMap: { selectedTab = .map },
+                            onOpenSettings: { showsSettings = true }
+                        )
                         .toolbar(.hidden, for: .navigationBar)
                     }
                 case .map:
@@ -31,7 +33,6 @@ struct EliteMobilityShell: View {
                             .navigationTitle("车辆位置")
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbarBackground(Color.eliteBackground, for: .navigationBar)
-                            .toolbarColorScheme(.dark, for: .navigationBar)
                     }
                 case .charge:
                     EliteChargeView(model: model) {
@@ -52,7 +53,6 @@ struct EliteMobilityShell: View {
                                 }
                             }
                             .toolbarBackground(Color.eliteBackground, for: .navigationBar)
-                            .toolbarColorScheme(.dark, for: .navigationBar)
                     }
                 }
             }
@@ -66,9 +66,7 @@ struct EliteMobilityShell: View {
                     .navigationTitle("设置")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbarBackground(Color.eliteBackground, for: .navigationBar)
-                    .toolbarColorScheme(.dark, for: .navigationBar)
             }
-            .preferredColorScheme(.dark)
         }
     }
 }
@@ -153,9 +151,11 @@ private struct EliteTabBar: View {
 private struct EliteHomeView: View {
     @ObservedObject var model: NinebotViewModel
     var onOpenRecords: () -> Void
+    var onOpenMap: () -> Void
     var onOpenSettings: () -> Void
 
     @State private var isShowingVehiclePicker = false
+    @State private var isShowingRideMode = false
     @State private var pendingAction: NinebotVehicleAction?
 
     private var snapshot: NinebotVehicleSnapshot? {
@@ -174,29 +174,40 @@ private struct EliteHomeView: View {
                 )
 
                 if let snapshot {
-                    EliteVehicleStage(snapshot: snapshot)
+                    EliteVehicleStage(
+                        snapshot: snapshot,
+                        onOpenMap: onOpenMap,
+                        onOpenRideMode: { isShowingRideMode = true }
+                    )
+
+                    if let message = model.latestVehicleActionMessage {
+                        EliteVehicleActionFeedback(
+                            message: message,
+                            isError: model.isLatestVehicleActionError
+                        )
+                    }
 
                     EliteQuickControls(
-                        snapshot: snapshot,
                         activeAction: model.activeVehicleAction,
-                        isLoading: model.isLoading,
                         onAction: requestAction
                     )
 
-                    NavigationLink {
-                        EliteChargeDetailView(snapshot: snapshot)
-                    } label: {
-                        EliteBatteryCard(snapshot: snapshot)
+                    HStack(alignment: .top, spacing: 12) {
+                        NavigationLink {
+                            EliteChargeDetailView(snapshot: snapshot)
+                        } label: {
+                            EliteBatteryCard(snapshot: snapshot)
+                        }
+                        .buttonStyle(.plain)
+
+                        EliteLocationMapCard(
+                            snapshot: snapshot,
+                            address: model.resolvedAddressText(for: snapshot),
+                            onOpenMap: onOpenMap
+                        )
                     }
-                    .buttonStyle(.plain)
 
                     EliteStatusPair(snapshot: snapshot)
-
-                    EliteLiveLocationCard(
-                        snapshot: snapshot,
-                        address: model.resolvedAddressText(for: snapshot)
-                    )
-
                     EliteRideSummaryCard(snapshot: snapshot, onOpenRecords: onOpenRecords)
                 } else {
                     EliteEmptyVehicleCard(isRefreshing: model.isLoading) {
@@ -206,22 +217,24 @@ private struct EliteHomeView: View {
             }
             .padding(.horizontal, 20)
             .padding(.top, 12)
-            .padding(.bottom, 24)
+            .padding(.bottom, 112)
         }
         .background(Color.eliteBackground)
         .sheet(isPresented: $isShowingVehiclePicker) {
             EliteVehiclePicker(model: model)
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
-                .preferredColorScheme(.dark)
+        }
+        .fullScreenCover(isPresented: $isShowingRideMode) {
+            if let snapshot {
+                EliteRideModeView(snapshot: snapshot, onOpenMap: onOpenMap)
+            }
         }
         .alert(item: $pendingAction) { action in
             Alert(
                 title: Text(action.confirmationTitle),
                 message: Text(action.confirmationMessage),
-                primaryButton: .default(Text("确认")) {
-                    perform(action)
-                },
+                primaryButton: .default(Text("确认")) { perform(action) },
                 secondaryButton: .cancel(Text("取消"))
             )
         }
@@ -297,17 +310,17 @@ private struct EliteHomeHeader: View {
 
 private func eliteTeslaImageName(for state: NinebotVehicleState) -> String {
     if state.isCharging == true {
-        return "TeslaCybertruckCharging"
+        return "EliteChargingVehicle"
     }
     return state.isRiding == true ? "TeslaCybertruckRiding" : "TeslaCybertruckParked"
 }
 
 private struct EliteVehicleStage: View {
     var snapshot: NinebotVehicleSnapshot
+    var onOpenMap: () -> Void
+    var onOpenRideMode: () -> Void
 
-    private var imageName: String {
-        eliteTeslaImageName(for: snapshot.state)
-    }
+    private var imageName: String { eliteTeslaImageName(for: snapshot.state) }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -317,19 +330,14 @@ private struct EliteVehicleStage: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay {
                     LinearGradient(
-                        colors: [
-                            Color.black.opacity(0.10),
-                            Color.eliteSurfaceLowest.opacity(0.12),
-                            Color.eliteSurfaceLowest.opacity(0.94)
-                        ],
+                        colors: [.clear, Color.black.opacity(0.24), Color.black.opacity(0.76)],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 }
                 .clipped()
 
-            EliteGridGlow()
-                .opacity(0.18)
+            EliteGridGlow().opacity(0.18)
 
             VStack(spacing: 0) {
                 HStack {
@@ -340,34 +348,61 @@ private struct EliteVehicleStage: View {
                     Spacer()
                     Text("更新于 \(eliteTime(snapshot.state.updatedAt))")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.eliteSecondaryText)
+                        .foregroundStyle(.white.opacity(0.82))
                 }
                 .padding(.horizontal, 18)
                 .padding(.top, 16)
 
                 Spacer(minLength: 0)
 
-                HStack(alignment: .bottom) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(snapshot.state.isRiding == true ? "车辆行驶中" : "车辆已停稳")
-                            .font(.system(size: 19, weight: .bold))
-                            .foregroundStyle(Color.elitePrimaryText)
-                        Text(snapshot.state.locationText)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Color.eliteSecondaryText)
-                            .lineLimit(1)
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .bottom) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(snapshot.state.isRiding == true ? "车辆行驶中" : "车辆已停稳")
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundStyle(.white)
+                            Text(snapshot.state.locationText)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.78))
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Image(systemName: snapshot.state.isRiding == true ? "gauge.with.dots.needle.67percent" : "parkingsign.circle.fill")
+                            .font(.system(size: 25, weight: .semibold))
+                            .foregroundStyle(Color.elitePrimaryLight)
                     }
-                    Spacer()
-                    Image(systemName: snapshot.state.isRiding == true ? "car.fill" : "parkingsign.circle.fill")
-                        .font(.system(size: 26, weight: .semibold))
-                        .foregroundStyle(Color.elitePrimaryLight)
+
+                    HStack(spacing: 10) {
+                        EliteStageButton(title: "地图", systemImage: "map.fill", action: onOpenMap)
+                        EliteStageButton(title: "骑行模式", systemImage: "figure.outdoor.cycle", isPrimary: true, action: onOpenRideMode)
+                    }
                 }
                 .padding(18)
             }
         }
-        .frame(height: 264)
+        .frame(height: 294)
         .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
         .eliteCard(cornerRadius: 32, glow: true)
+    }
+}
+
+private struct EliteStageButton: View {
+    var title: String
+    var systemImage: String
+    var isPrimary = false
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(isPrimary ? .white : Color.elitePrimaryText)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(isPrimary ? Color.elitePrimary : Color.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 }
 
@@ -423,39 +458,25 @@ private struct EliteChargingPort: View {
 }
 
 private struct EliteQuickControls: View {
-    var snapshot: NinebotVehicleSnapshot
     var activeAction: NinebotVehicleAction?
-    var isLoading: Bool
     var onAction: (NinebotVehicleAction) -> Void
 
-    private var primaryAction: NinebotVehicleAction {
-        snapshot.state.isPoweredOn == true ? .engineStop : .engineStart
-    }
+    private let actions: [NinebotVehicleAction] = [.bell, .engineStart, .engineStop, .openBucket]
 
     var body: some View {
-        HStack(spacing: 10) {
-            EliteControlButton(
-                title: "寻车",
-                systemImage: "bell.fill",
-                isLoading: activeAction == .bell,
-                action: { onAction(.bell) }
-            )
-            EliteControlButton(
-                title: primaryAction == .engineStart ? "上电" : "熄火",
-                systemImage: primaryAction.systemImage,
-                isPrimary: true,
-                isLoading: activeAction == primaryAction,
-                action: { onAction(primaryAction) }
-            )
-            EliteControlButton(
-                title: "座桶",
-                systemImage: "shippingbox.fill",
-                isLoading: activeAction == .openBucket,
-                action: { onAction(.openBucket) }
-            )
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+            ForEach(actions) { action in
+                EliteControlButton(
+                    title: action == .bell ? "寻车" : (action == .openBucket ? "打开座桶" : (action == .engineStart ? "启动" : "熄火")),
+                    systemImage: action.systemImage,
+                    isPrimary: action == .engineStart,
+                    isLoading: activeAction == action,
+                    action: { onAction(action) }
+                )
+            }
         }
-        .disabled(isLoading)
-        .opacity(isLoading && activeAction == nil ? 0.62 : 1)
+        .disabled(activeAction != nil)
+        .opacity(activeAction == nil ? 1 : 0.84)
     }
 }
 
@@ -468,33 +489,50 @@ private struct EliteControlButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 9) {
+            HStack(spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .fill(isPrimary ? Color.elitePrimary : Color.eliteSurfaceHigh)
-                        .frame(width: 50, height: 50)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(isPrimary ? Color.elitePrimary : Color.elitePrimary.opacity(0.14))
+                        .frame(width: 46, height: 46)
                     if isLoading {
-                        ProgressView().tint(.white)
+                        ProgressView().tint(isPrimary ? .white : Color.elitePrimary)
                     } else {
                         Image(systemName: systemImage)
-                            .font(.system(size: 19, weight: .semibold))
-                            .foregroundStyle(isPrimary ? .white : Color.elitePrimaryLight)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(isPrimary ? .white : Color.elitePrimary)
                     }
                 }
                 Text(title)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(Color.elitePrimaryText)
+                Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
+            .padding(12)
             .background(Color.eliteSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(Color.eliteOutline, lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+}
+
+private struct EliteVehicleActionFeedback: View {
+    var message: String
+    var isError: Bool
+
+    var body: some View {
+        Label(message, systemImage: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(isError ? Color.eliteError : Color.eliteSuccess)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background((isError ? Color.eliteError : Color.eliteSuccess).opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .accessibilityLabel(message)
     }
 }
 
@@ -504,66 +542,58 @@ private struct EliteBatteryCard: View {
     private var state: NinebotVehicleState { snapshot.state }
 
     var body: some View {
-        HStack(spacing: 18) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 7) {
-                    Image(systemName: state.isCharging == true ? "bolt.fill" : "battery.100percent")
-                        .foregroundStyle(Color.elitePrimaryLight)
-                    Text(state.isCharging == true ? "充电状态" : "电池状态")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.eliteSecondaryText)
-                }
+        VStack(alignment: .leading, spacing: 12) {
+            Label(state.isCharging == true ? "充电状态" : "电池状态", systemImage: state.isCharging == true ? "bolt.fill" : "battery.100percent")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.eliteSecondaryText)
 
-                HStack(alignment: .lastTextBaseline, spacing: 4) {
-                    Text(state.battery.map { String($0) } ?? "--")
-                        .font(.system(size: 54, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.elitePrimaryLight)
-                    Text("%")
-                        .font(.system(size: 23, weight: .bold))
-                        .foregroundStyle(Color.elitePrimaryText)
-                }
-
-                Text(state.isCharging == true ? state.chargeSummaryText : "预计续航：\(state.enduranceText)")
-                    .font(.system(size: 15, weight: .medium))
+            HStack(alignment: .lastTextBaseline, spacing: 3) {
+                Text(state.battery.map(String.init) ?? "--")
+                    .font(.system(size: 35, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.elitePrimary)
+                Text("%")
+                    .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(Color.elitePrimaryText)
             }
 
-            Spacer(minLength: 0)
+            EliteEnergyProgressBar(fraction: state.batteryFraction, isCharging: state.isCharging == true)
+                .frame(height: 10)
 
-            EliteBatteryRing(fraction: state.batteryFraction, isCharging: state.isCharging == true)
+            Text(state.isCharging == true ? state.chargeSummaryText : state.enduranceText)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.eliteSecondaryText)
+                .lineLimit(2)
         }
-        .padding(20)
-        .eliteCard(cornerRadius: 30, glow: state.isCharging == true)
+        .frame(maxWidth: .infinity, minHeight: 176, alignment: .leading)
+        .padding(16)
+        .eliteCard(cornerRadius: 26, glow: state.isCharging == true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("当前电量")
+        .accessibilityValue("\(Int((state.batteryFraction * 100).rounded()))%")
     }
 }
 
-private struct EliteBatteryRing: View {
+private struct EliteEnergyProgressBar: View {
     var fraction: Double
     var isCharging: Bool
 
     var body: some View {
-        ZStack {
-            Circle()
-                .stroke(Color.white.opacity(0.12), lineWidth: 12)
-            Circle()
-                .trim(from: 0, to: max(min(fraction, 1), 0.025))
-                .stroke(
-                    AngularGradient(
-                        colors: [Color.elitePrimaryDark, Color.elitePrimary, Color.elitePrimaryLight],
-                        center: .center
-                    ),
-                    style: StrokeStyle(lineWidth: 12, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-                .shadow(color: Color.elitePrimary.opacity(isCharging ? 0.52 : 0.28), radius: isCharging ? 12 : 5)
-            Image(systemName: isCharging ? "bolt.fill" : "battery.100percent")
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(Color.elitePrimaryLight)
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.eliteTrack)
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: isCharging ? [Color.eliteSuccess, Color.elitePrimary] : [Color.eliteWarning, Color.elitePrimary],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: max(proxy.size.width * min(max(fraction, 0), 1), 5))
+                    .shadow(color: (isCharging ? Color.eliteSuccess : Color.elitePrimary).opacity(0.32), radius: isCharging ? 8 : 4)
+            }
         }
-        .frame(width: 126, height: 126)
-        .accessibilityLabel("当前电量")
-        .accessibilityValue("\(Int((fraction * 100).rounded()))%")
     }
 }
 
@@ -619,39 +649,64 @@ private struct EliteMetricTile: View {
     }
 }
 
-private struct EliteLiveLocationCard: View {
+private struct EliteLocationMapCard: View {
     var snapshot: NinebotVehicleSnapshot
     var address: String?
+    var onOpenMap: () -> Void
+
+    private var coordinate: CLLocationCoordinate2D? {
+        guard let latitude = snapshot.state.latitude, let longitude = snapshot.state.longitude else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    private var region: MKCoordinateRegion {
+        guard let coordinate else { return MKCoordinateRegion() }
+        return MKCoordinateRegion(center: coordinate, latitudinalMeters: 900, longitudinalMeters: 900)
+    }
 
     var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .fill(Color.elitePrimary.opacity(0.18))
-                    .frame(width: 56, height: 56)
-                Image(systemName: "location.fill")
-                    .font(.system(size: 21, weight: .semibold))
-                    .foregroundStyle(Color.elitePrimaryLight)
+        Button(action: onOpenMap) {
+            ZStack(alignment: .bottomLeading) {
+                if let coordinate {
+                    Map(initialPosition: .region(region), interactionModes: []) {
+                        Marker("车辆位置", coordinate: coordinate)
+                            .tint(Color.elitePrimary)
+                    }
+                    .allowsHitTesting(false)
+                } else {
+                    LinearGradient(
+                        colors: [Color.elitePrimary.opacity(0.20), Color.eliteSurfaceHigh],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    Image(systemName: "map")
+                        .font(.system(size: 34, weight: .medium))
+                        .foregroundStyle(Color.elitePrimary.opacity(0.78))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+
+                LinearGradient(colors: [.clear, Color.black.opacity(0.68)], startPoint: .top, endPoint: .bottom)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Label("车辆位置 · 地图", systemImage: "location.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text(address ?? snapshot.state.locationText)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.82))
+                        .lineLimit(1)
+                }
+                .padding(13)
             }
-            VStack(alignment: .leading, spacing: 5) {
-                Text("车辆位置")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.eliteSecondaryText)
-                Text(address ?? snapshot.state.locationText)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color.elitePrimaryText)
-                    .lineLimit(1)
-                Text("最后同步 \(eliteTime(snapshot.state.updatedAt))")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.eliteSecondaryText)
+            .frame(maxWidth: .infinity, minHeight: 176)
+            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .stroke(Color.eliteOutline, lineWidth: 1)
             }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(Color.eliteSecondaryText)
         }
-        .padding(14)
-        .eliteCard(cornerRadius: 24)
+        .buttonStyle(.plain)
+        .accessibilityLabel("车辆位置地图")
     }
 }
 
@@ -764,6 +819,129 @@ private struct EliteVehiclePicker: View {
     }
 }
 
+private struct EliteRideModeView: View {
+    var snapshot: NinebotVehicleSnapshot
+    var onOpenMap: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var state: NinebotVehicleState { snapshot.state }
+
+    var body: some View {
+        ZStack {
+            Color.eliteBackground.ignoresSafeArea()
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 18) {
+                    HStack {
+                        Button { dismiss() } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(Color.elitePrimaryText)
+                                .frame(width: 44, height: 44)
+                                .background(Color.eliteSurfaceHigh, in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                        VStack(spacing: 2) {
+                            Text("骑行模式")
+                                .font(.system(size: 21, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color.elitePrimaryText)
+                            Text(snapshot.vehicle.name)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Color.eliteSecondaryText)
+                        }
+                        Spacer()
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(state.isRiding == true ? Color.eliteSuccess : Color.elitePrimary)
+                            .frame(width: 44, height: 44)
+                            .background(Color.eliteSurfaceHigh, in: Circle())
+                    }
+
+                    ZStack(alignment: .bottom) {
+                        Image(eliteTeslaImageName(for: state))
+                            .resizable()
+                            .scaledToFill()
+                            .frame(height: 260)
+                            .overlay(LinearGradient(colors: [.clear, Color.black.opacity(0.72)], startPoint: .top, endPoint: .bottom))
+                            .clipped()
+                        HStack(alignment: .lastTextBaseline, spacing: 8) {
+                            Text(state.currentSpeedKmh.map { String(format: "%.0f", $0) } ?? "--")
+                                .font(.system(size: 70, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                            Text("km/h")
+                                .font(.system(size: 17, weight: .bold))
+                                .padding(.bottom, 14)
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.bottom, 22)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+
+                    HStack(spacing: 12) {
+                        EliteRideMetric(title: "电量", value: state.batteryText, systemImage: "battery.100percent")
+                        EliteRideMetric(title: "续航", value: state.enduranceText, systemImage: "road.lanes")
+                        EliteRideMetric(title: "状态", value: state.primaryStatusText, systemImage: state.isRiding == true ? "figure.outdoor.cycle" : "parkingsign.circle")
+                    }
+
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack {
+                            Label("能量", systemImage: "bolt.fill")
+                            Spacer()
+                            Text(state.batteryText)
+                        }
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.eliteSecondaryText)
+                        EliteEnergyProgressBar(fraction: state.batteryFraction, isCharging: state.isCharging == true)
+                            .frame(height: 12)
+                    }
+                    .padding(17)
+                    .eliteCard(cornerRadius: 24, glow: state.isCharging == true)
+
+                    Button {
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { onOpenMap() }
+                    } label: {
+                        Label("查看车辆位置地图", systemImage: "map.fill")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(Color.elitePrimary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(20)
+                .padding(.bottom, 32)
+            }
+        }
+    }
+}
+
+private struct EliteRideMetric: View {
+    var title: String
+    var value: String
+    var systemImage: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.elitePrimary)
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.eliteSecondaryText)
+            Text(value)
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.elitePrimaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .eliteCard(cornerRadius: 20)
+    }
+}
+
 private struct EliteChargeView: View {
     @ObservedObject var model: NinebotViewModel
     var onOpenHome: () -> Void
@@ -836,7 +1014,7 @@ private struct EliteChargingHero: View {
                             endPoint: .bottom
                         )
                     )
-                Image(state.isCharging == true ? "TeslaCybertruckCharging" : eliteTeslaImageName(for: state))
+                Image(state.isCharging == true ? "EliteChargingVehicle" : eliteTeslaImageName(for: state))
                     .resizable()
                     .scaledToFill()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1002,7 +1180,6 @@ private struct EliteChargeDetailView: View {
             .navigationTitle("电池详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Color.eliteBackground, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
     }
 }
 
@@ -1049,16 +1226,21 @@ private extension View {
 }
 
 extension Color {
-    static let eliteBackground = Color(red: 0.055, green: 0.055, blue: 0.063)
-    static let eliteSurfaceLowest = Color(red: 0.040, green: 0.040, blue: 0.047)
-    static let eliteSurface = Color(red: 0.105, green: 0.105, blue: 0.114)
-    static let eliteSurfaceHigh = Color(red: 0.145, green: 0.145, blue: 0.157)
-    static let eliteSurfaceBright = Color(red: 0.205, green: 0.205, blue: 0.220)
-    static let elitePrimary = Color(red: 0.153, green: 0.369, blue: 0.996)
-    static let elitePrimaryDark = Color(red: 0.015, green: 0.149, blue: 0.510)
-    static let elitePrimaryLight = Color(red: 0.718, green: 0.769, blue: 1.0)
-    static let elitePrimaryText = Color(red: 0.894, green: 0.886, blue: 0.894)
-    static let eliteSecondaryText = Color(red: 0.765, green: 0.773, blue: 0.851)
+    static let eliteBackground = Color(uiColor: .systemGroupedBackground)
+    static let eliteSurfaceLowest = Color(uiColor: .secondarySystemGroupedBackground)
+    static let eliteSurface = Color(uiColor: .secondarySystemGroupedBackground)
+    static let eliteSurfaceHigh = Color(uiColor: .tertiarySystemGroupedBackground)
+    static let eliteSurfaceBright = Color(uiColor: .quaternarySystemFill)
+    static let elitePrimary = Color(uiColor: .systemBlue)
+    static let elitePrimaryDark = Color(uiColor: .systemIndigo)
+    static let elitePrimaryLight = Color(uiColor: .systemBlue)
+    static let elitePrimaryText = Color(uiColor: .label)
+    static let eliteSecondaryText = Color(uiColor: .secondaryLabel)
+    static let eliteOutline = Color(uiColor: .separator).opacity(0.55)
+    static let eliteTrack = Color(uiColor: .systemFill)
+    static let eliteSuccess = Color(uiColor: .systemGreen)
+    static let eliteWarning = Color(uiColor: .systemOrange)
+    static let eliteError = Color(uiColor: .systemRed)
 }
 
 private func eliteTime(_ date: Date) -> String {

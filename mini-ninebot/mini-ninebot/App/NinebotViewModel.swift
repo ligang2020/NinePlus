@@ -150,6 +150,8 @@ final class NinebotViewModel: ObservableObject {
     @Published var statusMessage: String?
     @Published private(set) var activeVehicleAction: NinebotVehicleAction?
     @Published private(set) var activeVehicleActionSN: String?
+    @Published private(set) var latestVehicleActionMessage: String?
+    @Published private(set) var isLatestVehicleActionError = false
     @Published private(set) var history: [String: [NinebotVehicleHistoryPoint]] = [:]
     @Published private(set) var resolvedAddresses: [String: NinebotResolvedAddress] = [:]
     @Published private(set) var recordedRides: [NinebotRecordedRide] = []
@@ -557,6 +559,9 @@ final class NinebotViewModel: ObservableObject {
     func perform(_ action: NinebotVehicleAction, sn: String) async {
         activeVehicleAction = action
         activeVehicleActionSN = sn
+        latestVehicleActionMessage = nil
+        isLatestVehicleActionError = false
+        errorMessage = nil
         defer {
             activeVehicleAction = nil
             activeVehicleActionSN = nil
@@ -575,13 +580,29 @@ final class NinebotViewModel: ObservableObject {
                 _ = try await client.engineStop(sn: sn)
             }
 
+            // The command itself has succeeded at this point. A follow-up
+            // refresh is best-effort so intermittent dashboard sync failures
+            // never make an already-sent bucket/control command look failed.
             self.statusMessage = action.resultTitle
+            self.latestVehicleActionMessage = action.resultTitle
+            self.isLatestVehicleActionError = false
             self.errorMessage = nil
 
-            let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: sn)
-            let archivedDashboard = self.saveDashboard(dashboard)
-            self.scheduleDashboardEnrichment(for: archivedDashboard)
-            WidgetCenter.shared.reloadAllTimelines()
+            do {
+                let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: sn)
+                let archivedDashboard = self.saveDashboard(dashboard)
+                self.scheduleDashboardEnrichment(for: archivedDashboard)
+                WidgetCenter.shared.reloadAllTimelines()
+            } catch {
+                self.statusMessage = "\(action.resultTitle)，车辆状态将在下次同步时更新"
+                self.latestVehicleActionMessage = self.statusMessage
+                self.isLatestVehicleActionError = false
+            }
+        }
+
+        if let errorMessage = self.errorMessage {
+            self.latestVehicleActionMessage = errorMessage
+            self.isLatestVehicleActionError = true
         }
     }
 
