@@ -140,12 +140,16 @@ struct NinebotProxyClient {
         try await request(method: "POST", path: ["vehicles", sn, "engine", "stop"])
     }
 
-    func fetchDashboard(selectedSN: String? = nil) async throws -> NinebotDashboard {
+    func fetchDashboard(selectedSN: String? = nil, forceRefresh: Bool = true) async throws -> NinebotDashboard {
         // Newer NinePlus servers aggregate the three live reads per vehicle and
         // apply a short session cache. Keep a 404/405 fallback so this app can
         // still work with an older container during a rolling deployment.
         do {
-            let aggregatePayload = try await request(method: "GET", path: ["dashboard"])
+            let aggregatePayload = try await request(
+                method: "GET",
+                path: ["dashboard"],
+                queryItems: forceRefresh ? [URLQueryItem(name: "fresh", value: "1")] : []
+            )
             if let dashboard = Self.dashboard(from: aggregatePayload, selectedSN: selectedSN) {
                 return dashboard
             }

@@ -1602,7 +1602,14 @@ async def dashboard(
     token, session = await auth_from_request(request, nineplus_session)
     owner = sessions[token].username
     normalized_month = normalize_month(month) or current_month_string()
-    raw_vehicles = await cloud_call(session, "vehicles", cache_ttl=CACHE_TTL_VEHICLES)
+    # The mobile app sends fresh=1 for foreground/manual refreshes. Bypass the
+    # short server-side live-data cache so the UI reflects vehicle changes
+    # immediately instead of waiting for the normal TTL to expire.
+    force_refresh = request.query_params.get("fresh", "").lower() in {"1", "true", "yes"}
+    vehicles_ttl = 0.0 if force_refresh else CACHE_TTL_VEHICLES
+    status_ttl = 0.0 if force_refresh else CACHE_TTL_STATUS
+    battery_ttl = 0.0 if force_refresh else CACHE_TTL_BATTERY
+    raw_vehicles = await cloud_call(session, "vehicles", cache_ttl=vehicles_ttl)
 
     entries: list[dict[str, Any]] = []
     notification_vehicles: list[dict[str, Any]] = []
@@ -1611,9 +1618,9 @@ async def dashboard(
         if not isinstance(sn_value, str) or not SN_PATTERN.fullmatch(sn_value):
             continue
         sn = validate_sn(sn_value)
-        status = await dashboard_read(session, ("status", sn), CACHE_TTL_STATUS)
+        status = await dashboard_read(session, ("status", sn), status_ttl)
         status = normalize_status_location(status)
-        battery = await dashboard_read(session, ("battery", sn), CACHE_TTL_BATTERY)
+        battery = await dashboard_read(session, ("battery", sn), battery_ttl)
         travel = await dashboard_read(
             session,
             ("travel", sn, "--month", normalized_month),

@@ -299,91 +299,88 @@ private struct EliteHomeHeader: View {
     }
 }
 
-private func eliteTeslaImageName(for state: NinebotVehicleState) -> String {
+private func eliteIsDay(at date: Date = Date()) -> Bool {
+    let hour = Calendar.autoupdatingCurrent.component(.hour, from: date)
+    return (7...18).contains(hour)
+}
+
+private func eliteTeslaImageName(for state: NinebotVehicleState, isDay: Bool = eliteIsDay()) -> String {
     if state.isCharging == true {
-        return "EliteChargingVehicle"
+        return isDay ? "EliteChargingVehicleDay" : "EliteChargingVehicle"
     }
-    return state.isRideActive ? "TeslaCybertruckRiding" : "TeslaCybertruckParked"
+    if state.isRideActive {
+        return isDay ? "TeslaCybertruckRidingDay" : "TeslaCybertruckRiding"
+    }
+    return isDay ? "TeslaCybertruckParkedDay" : "TeslaCybertruckParked"
 }
 
 private struct EliteVehicleStage: View {
-    @Environment(\.colorScheme) private var colorScheme
-
     var snapshot: NinebotVehicleSnapshot
 
     private var isCharging: Bool { snapshot.state.isCharging == true }
     private var isRideActive: Bool { snapshot.state.isRideActive }
 
-    private var imageName: String {
-        guard colorScheme != .dark else {
-            return eliteTeslaImageName(for: snapshot.state)
-        }
-        if isCharging { return "EliteChargingVehicleDay" }
-        return isRideActive ? "TeslaCybertruckRidingDay" : "TeslaCybertruckParkedDay"
-    }
-
-    private var imageOverlayColors: [Color] {
-        colorScheme == .dark
-            ? [.clear, Color.black.opacity(0.24), Color.black.opacity(0.76)]
-            : [Color.white.opacity(0.12), Color.white.opacity(0.02), Color.black.opacity(0.24)]
-    }
-
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Image(imageName)
-                .resizable()
-                .scaledToFill()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay {
-                    LinearGradient(
-                        colors: imageOverlayColors,
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                }
-                .clipped()
-
-            EliteGridGlow().opacity(colorScheme == .dark ? 0.18 : 0.08)
-
-            VStack(spacing: 0) {
-                HStack {
-                    EliteStatusChip(
-                        title: isCharging ? "正在充电" : (isRideActive ? "车辆正在行驶中" : snapshot.state.primaryStatusText),
-                        systemImage: isCharging ? "bolt.fill" : (isRideActive ? "figure.outdoor.cycle" : (snapshot.state.isLocked == true ? "lock.fill" : "power"))
-                    )
-                    Spacer()
-                    Text("更新于 \(eliteTime(snapshot.state.updatedAt))")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.82))
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 16)
-
-                Spacer(minLength: 0)
-
-                if !isCharging {
-                    HStack(alignment: .bottom) {
-                        if !isRideActive {
-                            Text("车辆已停稳")
-                                .font(.system(size: 20, weight: .bold))
-                                .foregroundStyle(.white)
-                        }
-
-                        Spacer()
-
-                        if isRideActive {
-                            Text("D")
-                                .font(.system(size: 25, weight: .semibold, design: .rounded))
-                                .foregroundStyle(Color.elitePrimaryLight)
-                                .frame(width: 25, height: 25)
-                                .accessibilityLabel("行驶挡位 D")
-                        } else {
-                            Image(systemName: "parkingsign.circle.fill")
-                                .font(.system(size: 25, weight: .semibold))
-                                .foregroundStyle(Color.elitePrimaryLight)
-                        }
+        TimelineView(.periodic(from: .now, by: 60)) { timeline in
+            let isDay = eliteIsDay(at: timeline.date)
+            ZStack(alignment: .bottom) {
+                Image(eliteTeslaImageName(for: snapshot.state, isDay: isDay))
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay {
+                        LinearGradient(
+                            colors: isDay
+                                ? [Color.white.opacity(0.10), Color.clear, Color.black.opacity(0.25)]
+                                : [Color.clear, Color.black.opacity(0.25), Color.black.opacity(0.78)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
                     }
-                    .padding(18)
+                    .clipped()
+
+                EliteGridGlow().opacity(isDay ? 0.08 : 0.18)
+
+                VStack(spacing: 0) {
+                    HStack {
+                        EliteStatusChip(
+                            title: isCharging ? "正在充电" : (isRideActive ? "车辆正在行驶中" : snapshot.state.primaryStatusText),
+                            systemImage: isCharging ? "bolt.fill" : (isRideActive ? "figure.outdoor.cycle" : (snapshot.state.isLocked == true ? "lock.fill" : "power"))
+                        )
+                        Spacer()
+                        Text("更新于 \(eliteTime(snapshot.state.updatedAt))")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.82))
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 16)
+
+                    Spacer(minLength: 0)
+
+                    if !isCharging {
+                        HStack(alignment: .bottom) {
+                            if !isRideActive {
+                                Text("车辆已停稳")
+                                    .font(.system(size: 20, weight: .bold))
+                                    .foregroundStyle(.white)
+                            }
+
+                            Spacer()
+
+                            if isRideActive {
+                                Text("D")
+                                    .font(.system(size: 25, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.elitePrimaryLight)
+                                    .frame(width: 25, height: 25)
+                                    .accessibilityLabel("行驶挡位 D")
+                            } else {
+                                Image(systemName: "parkingsign.circle.fill")
+                                    .font(.system(size: 25, weight: .semibold))
+                                    .foregroundStyle(Color.elitePrimaryLight)
+                            }
+                        }
+                        .padding(18)
+                    }
                 }
             }
         }
@@ -775,7 +772,7 @@ private struct EliteVehiclePicker: View {
                     dismiss()
                 } label: {
                     HStack(spacing: 13) {
-                        Image(eliteTeslaImageName(for: vehicle.state))
+                        Image(eliteTeslaImageName(for: vehicle.state, isDay: eliteIsDay()))
                             .resizable()
                             .scaledToFill()
                             .frame(width: 68, height: 46)
@@ -878,18 +875,22 @@ private struct EliteChargingHero: View {
                             endPoint: .bottom
                         )
                     )
-                Image(state.isCharging == true ? "EliteChargingVehicle" : eliteTeslaImageName(for: state))
-                    .resizable()
-                    .scaledToFill()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay {
-                        LinearGradient(
-                            colors: [.clear, Color.eliteSurfaceLowest.opacity(0.52)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    }
-                    .clipped()
+
+                TimelineView(.periodic(from: .now, by: 60)) { timeline in
+                    Image(eliteTeslaImageName(for: state, isDay: eliteIsDay(at: timeline.date)))
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay {
+                            LinearGradient(
+                                colors: [.clear, Color.eliteSurfaceLowest.opacity(0.52)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        }
+                        .clipped()
+                }
+
                 EliteGridGlow()
                     .opacity(0.14)
             }
