@@ -74,6 +74,11 @@ password. Cached vehicle data may be kept locally for a smoother dashboard.
 - 白天时段定义为每天 06:00–18:59，避免早上 06:00 仍被天气接口的日出判断锁在夜间素材。
 - GitHub Actions 使用 `v8` 版本构建 unsigned IPA，并将 IPA 和 SHA-256 校验文件上传到 Actions artifact；推送 `v8` 标签时同步上传到 GitHub Release。
 
+## v9 地图卡片定位修复
+
+- 首页地图卡片将车辆 WGS-84 定位转换为 MapKit 使用的 GCJ-02，并在刷新后同步更新地图中心与标记。
+- GitHub Actions 使用 `v9` 版本构建 unsigned IPA，并将 IPA 和 SHA-256 校验文件上传到 Actions artifact；推送 `v9` 标签时同步上传到 GitHub Release。
+
 
 ## v9 行程详情
 

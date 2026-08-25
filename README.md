@@ -26,16 +26,16 @@ switch between the supplied daytime and nighttime artwork by local time. The
 daytime window is 06:00–18:59, and the existing static route map and vehicle
 controls remain available.
 
-Version **8**, build **8** is configured in the Xcode project. GitHub Actions
+Version **9**, build **9** is configured in the Xcode project. GitHub Actions
 builds an unsigned device IPA and uploads it to the workflow artifacts. Pushing
-tag `v8` also creates or updates the matching GitHub Release with the IPA and
+tag `v9` also creates or updates the matching GitHub Release with the IPA and
 its SHA-256 checksum. No `NINEPLUS_ACCESS_TOKEN` secret is required.
 
 For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v8 --derived-data build/DerivedData-v8
+  scripts/package-unsigned-ipa.sh --output build/ipa-v9 --derived-data build/DerivedData-v9
 ```
 
 ## Backend

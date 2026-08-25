@@ -652,8 +652,21 @@ private struct EliteLocationMapCard: View {
     var onOpenMap: () -> Void
 
     private var coordinate: CLLocationCoordinate2D? {
-        guard let latitude = snapshot.state.latitude, let longitude = snapshot.state.longitude else { return nil }
-        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        guard let latitude = snapshot.state.latitude,
+              let longitude = snapshot.state.longitude,
+              (-90...90).contains(latitude),
+              (-180...180).contains(longitude) else {
+            return nil
+        }
+
+        // Ninebot reports WGS-84 coordinates while Apple's mainland-China map
+        // tiles use GCJ-02. The dashboard status parser intentionally keeps the
+        // source fix for weather/geofencing, so the home map card must convert it
+        // exactly once before plotting the marker and centering the map.
+        return NinebotCoordinateTransform.mapKitCoordinate(
+            latitude: latitude,
+            longitude: longitude
+        )
     }
 
     private var region: MKCoordinateRegion {
@@ -665,7 +678,9 @@ private struct EliteLocationMapCard: View {
         Button(action: onOpenMap) {
             ZStack(alignment: .bottomLeading) {
                 if let coordinate {
-                    Map(initialPosition: .region(region), interactionModes: []) {
+                    // Use a binding rather than initialPosition so a fresh
+                    // dashboard response recenters the card on the new fix.
+                    Map(position: .constant(.region(region)), interactionModes: []) {
                         Marker("车辆位置", coordinate: coordinate)
                             .tint(Color.elitePrimary)
                     }
