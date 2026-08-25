@@ -174,10 +174,7 @@ private struct EliteHomeView: View {
                 )
 
                 if let snapshot {
-                    EliteVehicleStage(
-                        snapshot: snapshot,
-                        onOpenMap: onOpenMap
-                    )
+                    EliteVehicleStage(snapshot: snapshot)
 
                     if let message = model.latestVehicleActionMessage {
                         EliteVehicleActionFeedback(
@@ -310,10 +307,26 @@ private func eliteTeslaImageName(for state: NinebotVehicleState) -> String {
 }
 
 private struct EliteVehicleStage: View {
-    var snapshot: NinebotVehicleSnapshot
-    var onOpenMap: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
 
-    private var imageName: String { eliteTeslaImageName(for: snapshot.state) }
+    var snapshot: NinebotVehicleSnapshot
+
+    private var isCharging: Bool { snapshot.state.isCharging == true }
+    private var isRideActive: Bool { snapshot.state.isRideActive }
+
+    private var imageName: String {
+        guard colorScheme != .dark else {
+            return eliteTeslaImageName(for: snapshot.state)
+        }
+        if isCharging { return "EliteChargingVehicleDay" }
+        return isRideActive ? "TeslaCybertruckRidingDay" : "TeslaCybertruckParkedDay"
+    }
+
+    private var imageOverlayColors: [Color] {
+        colorScheme == .dark
+            ? [.clear, Color.black.opacity(0.24), Color.black.opacity(0.76)]
+            : [Color.white.opacity(0.12), Color.white.opacity(0.02), Color.black.opacity(0.24)]
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -323,20 +336,20 @@ private struct EliteVehicleStage: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay {
                     LinearGradient(
-                        colors: [.clear, Color.black.opacity(0.24), Color.black.opacity(0.76)],
+                        colors: imageOverlayColors,
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 }
                 .clipped()
 
-            EliteGridGlow().opacity(0.18)
+            EliteGridGlow().opacity(colorScheme == .dark ? 0.18 : 0.08)
 
             VStack(spacing: 0) {
                 HStack {
                     EliteStatusChip(
-                        title: snapshot.state.isCharging == true ? "正在充电" : (snapshot.state.isRideActive ? "骑行状态" : snapshot.state.primaryStatusText),
-                        systemImage: snapshot.state.isCharging == true ? "bolt.fill" : (snapshot.state.isRideActive ? "figure.outdoor.cycle" : (snapshot.state.isLocked == true ? "lock.fill" : "power"))
+                        title: isCharging ? "正在充电" : (isRideActive ? "车辆正在行驶中" : snapshot.state.primaryStatusText),
+                        systemImage: isCharging ? "bolt.fill" : (isRideActive ? "figure.outdoor.cycle" : (snapshot.state.isLocked == true ? "lock.fill" : "power"))
                     )
                     Spacer()
                     Text("更新于 \(eliteTime(snapshot.state.updatedAt))")
@@ -348,53 +361,35 @@ private struct EliteVehicleStage: View {
 
                 Spacer(minLength: 0)
 
-                VStack(alignment: .leading, spacing: 14) {
+                if !isCharging {
                     HStack(alignment: .bottom) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(snapshot.state.isRideActive ? "骑行状态" : "车辆已停稳")
+                        if !isRideActive {
+                            Text("车辆已停稳")
                                 .font(.system(size: 20, weight: .bold))
                                 .foregroundStyle(.white)
-                            Text(snapshot.state.locationText)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.78))
-                                .lineLimit(1)
                         }
-                        Spacer()
-                        Image(systemName: snapshot.state.isRideActive ? "figure.outdoor.cycle" : "parkingsign.circle.fill")
-                            .font(.system(size: 25, weight: .semibold))
-                            .foregroundStyle(Color.elitePrimaryLight)
-                    }
 
-                    HStack(spacing: 10) {
-                        EliteStageButton(title: "地图", systemImage: "map.fill", isPrimary: true, action: onOpenMap)
+                        Spacer()
+
+                        if isRideActive {
+                            Text("D")
+                                .font(.system(size: 25, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Color.elitePrimaryLight)
+                                .frame(width: 25, height: 25)
+                                .accessibilityLabel("行驶挡位 D")
+                        } else {
+                            Image(systemName: "parkingsign.circle.fill")
+                                .font(.system(size: 25, weight: .semibold))
+                                .foregroundStyle(Color.elitePrimaryLight)
+                        }
                     }
+                    .padding(18)
                 }
-                .padding(18)
             }
         }
         .frame(height: 294)
         .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
         .eliteCard(cornerRadius: 32, glow: true)
-    }
-}
-
-private struct EliteStageButton: View {
-    var title: String
-    var systemImage: String
-    var isPrimary = false
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(isPrimary ? .white : Color.elitePrimaryText)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 11)
-                .background(isPrimary ? Color.elitePrimary : Color.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title)
     }
 }
 

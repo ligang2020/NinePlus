@@ -1,6 +1,6 @@
 # mini-ninebot
 
-NineBot+ iOS app, **A1 UI redesign**, version **4** (build **4**).
+NineBot+ iOS app, **A1 UI redesign**, version **5** (build **5**).
 
 The app's first screen is the **NinePlus account login**. The service URL can be
 entered in the app, and an installation-wide Bearer Token can be supplied when
@@ -13,12 +13,13 @@ developer API. The official Ninebot cloud binding is configured once on the
 server and reused by every device; the iOS app never asks each device for that
 password. Cached vehicle data may be kept locally for a smoother dashboard.
 
-## v4 首页状态与记录主题
+## v5 首页状态与记录主题
 
-- 首页已移除「骑行模式」入口卡片，仅保留地图入口。
-- 车辆未锁且未充电时统一显示为「骑行状态」；即使当前速度为 0，也不会错误显示为停稳/停车状态。
-- 行程和本地记录页面使用同一套自适应色板，浅色与深色模式下的页面、卡片、文字、分割线和导航栏保持一致。
-- GitHub Actions 会将 unsigned IPA 上传为 Actions artifact；推送 `v4` 标签时同步发布到 GitHub Release。
+- 首页已移除「骑行模式」入口卡片；车辆大卡片按静止、行驶、充电状态显示对应内容。
+- 车辆未锁且未充电时统一显示为「车辆正在行驶中」；即使当前速度为 0，也不会错误显示为停稳/停车状态。
+- 车辆大卡片在浅色模式使用明亮车辆素材，深色模式保留夜间素材；静止状态移除位置与地图入口，行驶状态移除底部骑行文案并显示 D 挡位，充电状态移除底部信息。
+- 行程记录保留静态轨迹、起终点和速度分段信息，移除行程轨迹回放控件。
+- GitHub Actions 会将 unsigned IPA 上传为 Actions artifact；推送 `v5` 标签时同步发布到 GitHub Release。
 
 ## A1 全局 UI 重构（Apple 磨砂玻璃风格）
 
@@ -71,7 +72,7 @@ password. Cached vehicle data may be kept locally for a smoother dashboard.
 
 - 行程详情会显示轨迹起点、终点的反向地理编码地址和对应时间；无网络或无法解析时回退显示坐标。
 - 轨迹线按速度分段着色：九号云返回逐点速度时优先采用真实值；如果上游只返回定位坐标，App 会按相邻定位点间距与行程总时长估算速度并明确标注为“估算”，避免整条路线退回默认绿色。颜色范围为蓝色（0–10 km/h）、青色（10–25 km/h）、绿色（25–40 km/h）、橙色（40–55 km/h）、红色（55+ km/h）。
-- 支持从起点到终点回放轨迹，地图会使用电瓶车图标显示当前位置，并提供播放、暂停、重播和进度拖动。
+- 保留静态轨迹地图、起终点地址和速度分段展示。
 
 ## 配置服务器地址并连接 App
 

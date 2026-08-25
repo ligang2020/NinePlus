@@ -5527,10 +5527,6 @@ private struct RideTrackExperiencePanel: View {
     @State private var startAddress: String?
     @State private var endAddress: String?
     @State private var isResolvingAddresses = false
-    @State private var showsPlaybackVehicle = false
-    @State private var isPlaying = false
-    @State private var playbackProgress: Double = 0
-    @State private var playbackTask: Task<Void, Never>?
 
     init(
         title: String,
@@ -5577,16 +5573,8 @@ private struct RideTrackExperiencePanel: View {
                 Map(position: $cameraPosition) {
                     ForEach(speedSegments) { segment in
                         MapPolyline(coordinates: segment.coordinates)
-                            .stroke(segment.color.opacity(showsPlaybackVehicle ? 0.32 : 1), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                            .stroke(segment.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
                     }
-
-                    if showsPlaybackVehicle {
-                        ForEach(playedSpeedSegments) { segment in
-                            MapPolyline(coordinates: segment.coordinates)
-                                .stroke(segment.color, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
-                        }
-                    }
-
                     if let firstPoint = renderedPoints.first {
                         Marker("起点", systemImage: "flag.fill", coordinate: firstPoint.coordinate)
                             .tint(.green)
@@ -5600,22 +5588,6 @@ private struct RideTrackExperiencePanel: View {
                             TrackMaxSpeedBadge(speed: maxSpeedPoint.speedKmh)
                         }
                     }
-                    if showsPlaybackVehicle, let playbackCoordinate {
-                        Annotation("电瓶车回放", coordinate: playbackCoordinate) {
-                            RidePlaybackVehicleMarker(speed: playbackSpeed)
-                        }
-                    }
-                }
-
-                if showsPlaybackVehicle {
-                    Text(playbackTimestampText)
-                        .font(.caption2.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(Color.teslaPrimaryText)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Capsule())
-                        .padding(10)
                 }
             }
             .frame(height: 270)
@@ -5637,10 +5609,6 @@ private struct RideTrackExperiencePanel: View {
                 endedAt: endedAt,
                 isResolving: isResolvingAddresses
             )
-
-            if canPlayback {
-                playbackControls
-            }
         }
         .padding(16)
         .background(Color.teslaCardBackground)
@@ -5648,9 +5616,6 @@ private struct RideTrackExperiencePanel: View {
         .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
         .task(id: endpointLookupKey) {
             await resolveEndpointAddresses()
-        }
-        .onDisappear {
-            stopPlayback()
         }
     }
 
@@ -5713,10 +5678,10 @@ private struct RideTrackExperiencePanel: View {
 
     private var speedColorDescription: String {
         if shouldUseSourceSpeeds && isUsingEstimatedSpeeds {
-            return "路线优先按九号云逐点速度着色，缺失点已按定位间距和行程时长补全；回放会高亮已骑行路段。"
+            return "路线优先按九号云逐点速度着色，缺失点已按定位间距和行程时长补全。"
         }
         if shouldUseSourceSpeeds {
-            return "路线根据九号云返回的逐点速度着色；回放时会高亮已骑行的路段。"
+            return "路线根据九号云返回的逐点速度着色。"
         }
         if isUsingEstimatedSpeeds {
             return hasSourcePointSpeeds
@@ -5734,167 +5699,11 @@ private struct RideTrackExperiencePanel: View {
         bestSpeedTrackPoint(from: renderedPoints)
     }
 
-    private var canPlayback: Bool {
-        renderedPoints.count > 1
-    }
-
     private var endpointLookupKey: String {
         guard let first = renderedPoints.first?.coordinate, let last = renderedPoints.last?.coordinate else {
             return "no-endpoints"
         }
         return String(format: "%.5f,%.5f|%.5f,%.5f", first.latitude, first.longitude, last.latitude, last.longitude)
-    }
-
-    private var playbackControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Label("轨迹回放", systemImage: "play.rectangle.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.teslaPrimaryText)
-
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(playbackSpeedLabel)
-                        .font(.caption2)
-                    Text(playbackSpeed.map(formatSpeed) ?? "-- km/h")
-                        .font(.caption.monospacedDigit().weight(.semibold))
-                }
-                .foregroundStyle(Color.teslaSecondaryText)
-            }
-
-            HStack(spacing: 10) {
-                Button(action: togglePlayback) {
-                    Label(
-                        isPlaying ? "暂停" : (playbackProgress >= 0.999 ? "重播" : "播放"),
-                        systemImage: isPlaying ? "pause.fill" : (playbackProgress >= 0.999 ? "arrow.counterclockwise" : "play.fill")
-                    )
-                    .font(.subheadline.weight(.semibold))
-                    .frame(minWidth: 70)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Color.teslaGreen)
-                .accessibilityLabel(isPlaying ? "暂停轨迹回放" : "开始轨迹回放")
-
-                Button {
-                    replayFromStart()
-                } label: {
-                    Image(systemName: "backward.end.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(width: 34, height: 34)
-                }
-                .buttonStyle(.bordered)
-                .tint(Color.teslaGreen)
-                .accessibilityLabel("从起点重新回放")
-
-                Slider(
-                    value: Binding(
-                        get: { playbackProgress },
-                        set: { newValue in
-                            stopPlayback()
-                            showsPlaybackVehicle = true
-                            playbackProgress = newValue
-                        }
-                    ),
-                    in: 0...1
-                )
-                .tint(Color.teslaGreen)
-                .accessibilityLabel("轨迹回放进度")
-            }
-        }
-        .padding(12)
-        .background(Color.teslaPageBackground.opacity(0.7))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    private var playbackCoordinate: CLLocationCoordinate2D? {
-        guard renderedPoints.count > 1 else { return renderedPoints.first?.coordinate }
-        let rawIndex = Double(renderedPoints.count - 1) * playbackProgress
-        let lowerIndex = min(max(Int(rawIndex.rounded(.down)), 0), renderedPoints.count - 2)
-        let progressWithinSegment = rawIndex - Double(lowerIndex)
-        return interpolate(
-            from: renderedPoints[lowerIndex].coordinate,
-            to: renderedPoints[lowerIndex + 1].coordinate,
-            progress: progressWithinSegment
-        )
-    }
-
-    private var playbackSpeed: Double? {
-        guard !renderedPoints.isEmpty else { return nil }
-        let index = min(max(Int((Double(renderedPoints.count - 1) * playbackProgress).rounded()), 0), renderedPoints.count - 1)
-        return renderedPoints[index].speedKmh
-    }
-
-    private var playbackSpeedLabel: String {
-        hasEstimatedPointSpeeds ? "估算速度" : "当前速度"
-    }
-
-    private var playedSpeedSegments: [TrackSpeedSegment] {
-        guard showsPlaybackVehicle, renderedPoints.count > 1, let playbackCoordinate else { return [] }
-        let rawIndex = Double(renderedPoints.count - 1) * playbackProgress
-        let fullSegmentCount = min(max(Int(rawIndex.rounded(.down)), 0), renderedPoints.count - 1)
-        var playedPoints = Array(renderedPoints.prefix(fullSegmentCount + 1))
-
-        if fullSegmentCount < renderedPoints.count - 1,
-           playbackProgress > 0,
-           !coordinatesMatch(playedPoints.last?.coordinate, playbackCoordinate) {
-            let source = renderedPoints[fullSegmentCount]
-            playedPoints.append(
-                TrackSpeedPoint(
-                    id: "playback-\(fullSegmentCount)",
-                    coordinate: playbackCoordinate,
-                    speedKmh: source.speedKmh
-                )
-            )
-        }
-        return makeSpeedTrackSegments(from: playedPoints)
-    }
-
-    private var playbackTimestampText: String {
-        guard let startedAt else { return "回放中" }
-        guard let endedAt else { return formatDate(startedAt) }
-        let duration = max(endedAt.timeIntervalSince(startedAt), 0)
-        return formatDate(startedAt.addingTimeInterval(duration * playbackProgress))
-    }
-
-    private func togglePlayback() {
-        isPlaying ? stopPlayback() : startPlayback()
-    }
-
-    private func replayFromStart() {
-        stopPlayback()
-        playbackProgress = 0
-        showsPlaybackVehicle = true
-        startPlayback()
-    }
-
-    private func startPlayback() {
-        guard canPlayback else { return }
-        if playbackProgress >= 0.999 {
-            playbackProgress = 0
-        }
-        showsPlaybackVehicle = true
-        isPlaying = true
-        playbackTask?.cancel()
-        playbackTask = Task { @MainActor in
-            // A 12-second preview keeps a full trip understandable while remaining interruptible.
-            let playbackDuration: Double = 12
-            let frameInterval: Double = 1.0 / 30.0
-            while !Task.isCancelled && isPlaying && playbackProgress < 1 {
-                try? await Task.sleep(nanoseconds: 33_333_333)
-                guard !Task.isCancelled, isPlaying else { break }
-                playbackProgress = min(playbackProgress + frameInterval / playbackDuration, 1)
-            }
-            if playbackProgress >= 1 {
-                isPlaying = false
-            }
-        }
-    }
-
-    private func stopPlayback() {
-        isPlaying = false
-        playbackTask?.cancel()
-        playbackTask = nil
     }
 
     private func resolveEndpointAddresses() async {
@@ -6041,53 +5850,6 @@ private struct RideEndpointAddressSection: View {
         }
         .padding(.vertical, 11)
     }
-}
-
-private struct RidePlaybackVehicleMarker: View {
-    var speed: Double?
-
-    var body: some View {
-        VStack(spacing: 2) {
-            Image(systemName: "scooter")
-                .font(.title3.weight(.bold))
-                .foregroundStyle(.white)
-                .frame(width: 34, height: 34)
-                .background(Color.teslaGreen)
-                .clipShape(Circle())
-                .overlay {
-                    Circle().stroke(.white, lineWidth: 2)
-                }
-                .shadow(color: Color.black.opacity(0.28), radius: 7, x: 0, y: 3)
-            if let speed {
-                Text(String(format: "%.0f", speed))
-                    .font(.caption2.monospacedDigit().weight(.bold))
-                    .foregroundStyle(Color.teslaPrimaryText)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(.ultraThinMaterial)
-                    .clipShape(Capsule())
-            }
-        }
-        .accessibilityLabel("电瓶车回放位置，速度 \(formatSpeed(speed))")
-    }
-}
-
-private func interpolate(
-    from start: CLLocationCoordinate2D,
-    to end: CLLocationCoordinate2D,
-    progress: Double
-) -> CLLocationCoordinate2D {
-    let clampedProgress = min(max(progress, 0), 1)
-    return CLLocationCoordinate2D(
-        latitude: start.latitude + (end.latitude - start.latitude) * clampedProgress,
-        longitude: start.longitude + (end.longitude - start.longitude) * clampedProgress
-    )
-}
-
-private func coordinatesMatch(_ lhs: CLLocationCoordinate2D?, _ rhs: CLLocationCoordinate2D) -> Bool {
-    guard let lhs else { return false }
-    return abs(lhs.latitude - rhs.latitude) < 0.0000001
-        && abs(lhs.longitude - rhs.longitude) < 0.0000001
 }
 
 private struct TrackSpeedPoint: Identifiable {

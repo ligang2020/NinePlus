@@ -21,16 +21,18 @@ server boundary instead of embedding an unsupported executable into iOS.
 
 ## Build and IPA
 
-Version **4**, build **4** is configured in the Xcode project. GitHub Actions
+Version 5 updates the vehicle stage for clearer parked, driving, and charging states, adds dedicated light-mode vehicle artwork, and removes trip playback controls while retaining the static route map.
+
+Version **5**, build **5** is configured in the Xcode project. GitHub Actions
 builds an unsigned device IPA and uploads it to the workflow artifacts. Pushing
-tag `v4` also creates or updates the matching GitHub Release with the IPA and
+tag `v5` also creates or updates the matching GitHub Release with the IPA and
 its SHA-256 checksum. No `NINEPLUS_ACCESS_TOKEN` secret is required.
 
 For a local package, run:
 
 ```bash
 DEVELOPER_DIR=/Volumes/SSD\ T5\ 500G/Xcode/Xcode.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v4 --derived-data build/DerivedData-v4
+  scripts/package-unsigned-ipa.sh --output build/ipa-v5 --derived-data build/DerivedData-v5
 ```
 
 ## Backend

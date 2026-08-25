@@ -963,7 +963,6 @@ private struct RecordedRideDetailHero: View {
 private struct RecordedRideTrackMap: View {
     var record: NinebotRecordedRide
     @State private var cameraPosition: MapCameraPosition
-    @State private var playbackProgress: Double = 1
 
     init(record: NinebotRecordedRide) {
         self.record = record
@@ -998,23 +997,6 @@ private struct RecordedRideTrackMap: View {
                         Marker("结束", systemImage: "stop.fill", coordinate: last)
                             .tint(.red)
                     }
-
-                    if let playbackCoordinate {
-                        Annotation("回放", coordinate: playbackCoordinate) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.teslaGreen.opacity(0.18))
-                                    .frame(width: 26, height: 26)
-                                Circle()
-                                    .fill(Color.teslaGreen)
-                                    .frame(width: 12, height: 12)
-                                    .overlay {
-                                        Circle()
-                                            .stroke(Color(.systemBackground), lineWidth: 2)
-                                    }
-                            }
-                        }
-                    }
                 }
 
                 if record.recordingCoordinates.isEmpty {
@@ -1032,20 +1014,6 @@ private struct RecordedRideTrackMap: View {
             }
             .frame(height: 300)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-            if record.recordingCoordinates.count > 1 {
-                HStack(spacing: 10) {
-                    Image(systemName: "play.circle.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.teslaGreen)
-                    Slider(value: $playbackProgress, in: 0...1)
-                        .tint(Color.teslaGreen)
-                    Text(playbackTimeText)
-                        .font(.caption.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(Color.teslaSecondaryText)
-                        .frame(width: 46, alignment: .trailing)
-                }
-            }
         }
         .padding(14)
         .background(Color.teslaCardBackground)
@@ -1054,18 +1022,6 @@ private struct RecordedRideTrackMap: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
-    }
-
-    private var playbackCoordinate: CLLocationCoordinate2D? {
-        let coordinates = record.recordingCoordinates
-        guard !coordinates.isEmpty else { return nil }
-        let index = min(max(Int((Double(coordinates.count - 1) * playbackProgress).rounded()), 0), coordinates.count - 1)
-        return coordinates[index]
-    }
-
-    private var playbackTimeText: String {
-        let seconds = record.durationSeconds * playbackProgress
-        return formatRecordingDuration(seconds)
     }
 
     private static func region(for coordinates: [CLLocationCoordinate2D]) -> MKCoordinateRegion {
