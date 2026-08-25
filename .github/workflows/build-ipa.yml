@@ -9,9 +9,9 @@ on:
         default: true
         type: boolean
       release_tag:
-        description: "Release tag (must match the app version; default: v7)"
+        description: "Release tag (must match the app version; default: v8)"
         required: false
-        default: v7
+        default: v8
   push:
     branches: [main, master]
     tags: ['v*']
@@ -23,8 +23,12 @@ permissions:
 jobs:
   build-ipa:
     name: Build unsigned iOS IPA
+    # Pin the hosted image's Xcode version so the synchronized Xcode project
+    # format and the iOS 18 SDK stay reproducible across runs.
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
 
     steps:
       - name: Check out source
@@ -35,6 +39,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -d "$DEVELOPER_DIR"
           xcodebuild -version
 
           PROJECT=mini-ninebot/mini-ninebot.xcodeproj/project.pbxproj

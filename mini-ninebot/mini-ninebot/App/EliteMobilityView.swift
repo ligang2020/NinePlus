@@ -299,9 +299,22 @@ private struct EliteHomeHeader: View {
     }
 }
 
+/// The supplied vehicle artwork treats 06:00 through 18:59 as daytime.
+/// Keep this decision local and deterministic so a weather API sunrise value
+/// cannot leave the dashboard on a night image after the app clock has passed
+/// the morning handoff.
+enum NinebotDaylight {
+    static let dayStartHour = 6
+    static let nightStartHour = 19
+
+    static func isDay(at date: Date = Date()) -> Bool {
+        let hour = Calendar.autoupdatingCurrent.component(.hour, from: date)
+        return (dayStartHour..<nightStartHour).contains(hour)
+    }
+}
+
 private func eliteIsDay(at date: Date = Date()) -> Bool {
-    let hour = Calendar.autoupdatingCurrent.component(.hour, from: date)
-    return (7...18).contains(hour)
+    NinebotDaylight.isDay(at: date)
 }
 
 private func eliteTeslaImageName(for state: NinebotVehicleState, isDay: Bool = eliteIsDay()) -> String {

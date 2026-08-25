@@ -1,6 +1,6 @@
 # mini-ninebot
 
-NineBot+ iOS app, **A1 UI redesign**, version **5** (build **5**).
+NineBot+ iOS app, **A1 UI redesign**, version **8** (build **8**).
 
 The app's first screen is the **NinePlus account login**. The service URL can be
 entered in the app, and an installation-wide Bearer Token can be supplied when
@@ -66,6 +66,13 @@ password. Cached vehicle data may be kept locally for a smoother dashboard.
 - 仪表盘拿到车辆快照后会立即保存并显示；图片下载和地址反查改为可取消的并行后台补全，不再拖慢首次打开 App、下拉刷新、登录和控制指令后的车况更新。
 - App 回到前台时会使用短节流避免与启动任务重复请求同一份车辆数据。
 - 修复 AppIcon 资源清单，补齐 iPhone / iPad 所需尺寸，确保安装后可正常显示应用图标。
+
+
+## v8 日夜车辆素材切换
+
+- 车辆已停稳、车辆正在行驶中和正在充电三种状态均按本地时间自动切换白天 / 夜间图片。
+- 白天时段定义为每天 06:00–18:59，避免早上 06:00 仍被天气接口的日出判断锁在夜间素材。
+- GitHub Actions 使用 `v8` 版本构建 unsigned IPA，并将 IPA 和 SHA-256 校验文件上传到 Actions artifact；推送 `v8` 标签时同步上传到 GitHub Release。
 
 
 ## v9 行程详情

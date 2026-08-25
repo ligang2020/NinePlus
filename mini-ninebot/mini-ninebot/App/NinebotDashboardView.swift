@@ -1628,16 +1628,12 @@ private struct RideWeatherSnapshot: Equatable {
     var reportedIsDay: Bool?
     var fetchedAt: Date
 
-    /// Prefer the weather service's location-aware daylight value right after
-    /// a successful request. Once it becomes stale, fall back to the device
-    /// clock so a scene that stays open still changes by itself at day/night.
+    /// Vehicle artwork follows the app's local day/night handoff. Do not let
+    /// a stale or location-based weather sunrise value override the visible
+    /// dashboard state: the supplied daytime assets must be shown from 06:00
+    /// through 18:59, including when the app is opened at 06:00.
     var isDay: Bool {
-        if let reportedIsDay, Date().timeIntervalSince(fetchedAt) < 8 * 60 {
-            return reportedIsDay
-        }
-
-        let hour = Calendar.autoupdatingCurrent.component(.hour, from: Date())
-        return (7...18).contains(hour)
+        NinebotDaylight.isDay()
     }
 
     static var fallback: RideWeatherSnapshot {
