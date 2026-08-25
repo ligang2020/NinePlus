@@ -1,6 +1,6 @@
 # mini-ninebot
 
-NineBot+ iOS app, **A1 UI redesign**, version **20** (build **20**).
+NineBot+ iOS app, **A1 UI redesign**, version **4** (build **4**).
 
 The app's first screen is the **NinePlus account login**. The service URL can be
 entered in the app, and an installation-wide Bearer Token can be supplied when
@@ -12,6 +12,13 @@ The app talks to the companion NinePlus service, which uses the community
 developer API. The official Ninebot cloud binding is configured once on the
 server and reused by every device; the iOS app never asks each device for that
 password. Cached vehicle data may be kept locally for a smoother dashboard.
+
+## v4 首页状态与记录主题
+
+- 首页已移除「骑行模式」入口卡片，仅保留地图入口。
+- 车辆未锁且未充电时统一显示为「骑行状态」；即使当前速度为 0，也不会错误显示为停稳/停车状态。
+- 行程和本地记录页面使用同一套自适应色板，浅色与深色模式下的页面、卡片、文字、分割线和导航栏保持一致。
+- GitHub Actions 会将 unsigned IPA 上传为 Actions artifact；推送 `v4` 标签时同步发布到 GitHub Release。
 
 ## A1 全局 UI 重构（Apple 磨砂玻璃风格）
 

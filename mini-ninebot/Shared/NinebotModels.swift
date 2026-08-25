@@ -1216,7 +1216,7 @@ struct NinebotVehicleState: Codable, Equatable {
 
     /// Server-provided movement status. Prefer explicit interface fields; a
     /// positive live speed is only a fallback and never treats “unlocked” as
-    /// riding.
+    /// moving.
     var isRiding: Bool? {
         let keys = ["isRiding", "riding", "is_riding", "isMoving", "moving", "is_moving", "inMotion", "in_motion", "driving"]
         for source in [rawStatus, rawTravel, rawBattery] {
@@ -1227,6 +1227,13 @@ struct NinebotVehicleState: Codable, Equatable {
         }
         if let currentSpeedKmh, currentSpeedKmh >= 3 { return true }
         return nil
+    }
+
+    /// The presentation state used by the home screen. An unlocked vehicle is
+    /// ready for riding even while its live speed is 0; charging takes priority
+    /// and is never shown as a riding state.
+    var isRideActive: Bool {
+        isCharging != true && (isRiding == true || isLocked == false)
     }
 
     var enduranceText: String {

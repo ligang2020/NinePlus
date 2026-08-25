@@ -837,8 +837,8 @@ final class NinebotViewModel: ObservableObject {
                 ), at: 0)
             }
 
-            let oldRiding = old?.state.isRiding == true
-            let newRiding = snapshot.state.isRiding == true
+            let oldRiding = old?.state.isRideActive == true
+            let newRiding = snapshot.state.isRideActive
             if !oldRiding && newRiding {
                 nextEvents.insert(NinebotVehicleEvent(
                     id: "ride-start-\(snapshot.vehicle.sn)-\(Int(now.timeIntervalSince1970))",
@@ -855,7 +855,7 @@ final class NinebotViewModel: ObservableObject {
                     batteryTemperature: snapshot.state.batteryTemperature,
                     voltage: snapshot.state.batteryVoltage
                 ), at: 0)
-            } else if oldRiding && !newRiding, snapshot.state.isRiding == false {
+            } else if oldRiding && !newRiding {
                 let matchingStart = nextEvents.first(where: { $0.vehicleSN == snapshot.vehicle.sn && $0.type == .rideStarted })
                 let duration = matchingStart.map { max(now.timeIntervalSince($0.occurredAt) / 60, 0) }
                 nextEvents.insert(NinebotVehicleEvent(

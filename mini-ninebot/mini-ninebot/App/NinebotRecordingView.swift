@@ -67,7 +67,8 @@ struct NinebotRecordingView: View {
         }
         .navigationTitle("记录")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarBackground(Color.teslaPageBackground, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .sheet(item: $pendingRecord) { record in
             RideAssociationSheet(snapshot: snapshot, record: record) { rideID in
                 var savedRecord = record
@@ -590,7 +591,7 @@ private struct RecordingControlPanel: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: 58)
-            .foregroundStyle(recorder.isRecording ? .white : .black)
+            .foregroundStyle(.white)
             .background(recorder.isRecording ? Color.red : Color.teslaGreen)
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .shadow(color: (recorder.isRecording ? Color.red : Color.teslaGreen).opacity(0.28), radius: 18, x: 0, y: 8)

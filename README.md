@@ -21,14 +21,17 @@ server boundary instead of embedding an unsupported executable into iOS.
 
 ## Build and IPA
 
-Version **20**, build **20** is configured in the Xcode project.
-GitHub Actions builds an unsigned device IPA and publishes it as both an
-Actions artifact and, for tag `v20` or a manual release build, a GitHub
-Release asset. No `NINEPLUS_ACCESS_TOKEN` secret is required.
+Version **4**, build **4** is configured in the Xcode project. GitHub Actions
+builds an unsigned device IPA and uploads it to the workflow artifacts. Pushing
+tag `v4` also creates or updates the matching GitHub Release with the IPA and
+its SHA-256 checksum. No `NINEPLUS_ACCESS_TOKEN` secret is required.
 
-The local machine used for this checkout currently has only Command Line Tools,
-not the full Xcode toolchain, so IPA generation must run on the macOS GitHub
-Actions runner unless full Xcode is installed locally.
+For a local package, run:
+
+```bash
+DEVELOPER_DIR=/Volumes/SSD\ T5\ 500G/Xcode/Xcode.app/Contents/Developer \
+  scripts/package-unsigned-ipa.sh --output build/ipa-v4 --derived-data build/DerivedData-v4
+```
 
 ## Backend
 
