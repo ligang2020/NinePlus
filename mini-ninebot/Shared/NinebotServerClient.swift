@@ -649,7 +649,9 @@ private extension NinebotServerClient {
             monthMileage: firstDouble(["total_mileages", "monthMileage"], in: travelObject),
             monthEnergy: firstDouble(["ec", "monthEnergy"], in: travelObject),
             monthUsedElectricity: firstDouble(["used_electricity", "usedElectricity"], in: travelObject),
-            lastMileage: lastRide?.mileage,
+            lastMileage: lastRide?.mileage
+                ?? firstDouble(["last_mileage", "lastMileage", "current_mileage", "currentMileage", "trip_mileage", "tripMileage", "ride_mileage", "rideMileage", "driving_mileage", "drivingMileage"], in: statusSources)
+                ?? firstDouble(["last_mileage", "lastMileage", "current_mileage", "currentMileage", "trip_mileage", "tripMileage", "ride_mileage", "rideMileage", "driving_mileage", "drivingMileage"], in: [travelObject]),
             lastEnergy: lastRide?.energy,
             lastUsedElectricity: lastRide?.usedElectricity,
             rideRecords: rideRecords.isEmpty ? nil : rideRecords,

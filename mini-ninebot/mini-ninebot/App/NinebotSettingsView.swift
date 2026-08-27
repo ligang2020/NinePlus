@@ -301,7 +301,26 @@ private struct VehicleNotificationRecordRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            RecordHeader(event: event, tint: tint)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: event.type.systemImage)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(tint)
+                    .frame(width: 34, height: 34)
+                    .background(tint.opacity(0.14), in: Circle())
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(event.vehicleName.isEmpty ? "未知车辆" : event.vehicleName)
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(Color.teslaPrimaryText)
+                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(event.title).font(.subheadline.weight(.semibold)).foregroundStyle(tint)
+                        Text("·").foregroundStyle(.secondary)
+                        Text(event.occurredAt.formatted(.dateTime.month().day().hour().minute()))
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 4)
+            }
             Text(event.detail)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -311,9 +330,12 @@ private struct VehicleNotificationRecordRow: View {
                (event.type == .rideEnded || event.type == .chargeEnded) {
                 EventValuePill(title: "持续时间", value: Self.durationText(durationMinutes), systemImage: "timer")
             }
+            if let power = event.chargingPower {
+                EventValuePill(title: "功率", value: formatNumber(power, unit: " W", maximumFractionDigits: 0), systemImage: "bolt.fill")
+            }
             EventLocationMap(event: event, tint: tint)
         }
-        .padding(12)
+        .padding(14)
         .background(Color.teslaControlBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 

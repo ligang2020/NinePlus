@@ -9,9 +9,9 @@ on:
         default: true
         type: boolean
       release_tag:
-        description: "Release tag (must match the app version; default: v11)"
+        description: "Release tag (must match the app version; default: v12)"
         required: false
-        default: v11
+        default: v12
   push:
     branches: [main, master]
     tags: ['v*']

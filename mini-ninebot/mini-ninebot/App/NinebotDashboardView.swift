@@ -68,6 +68,7 @@ struct NinebotDashboardView: View {
                             }
                             VehicleLocationRideSummaryPanel(
                                 snapshot: primary,
+                                history: model.history(for: primary.vehicle.sn),
                                 resolvedAddress: model.resolvedAddressText(for: primary),
                                 isLoading: model.isLoading,
                                 onOpenTrips: onOpenTrips,
@@ -518,11 +519,12 @@ private struct NinebotBatteryDetailView: View {
                 BatteryDetailHeroCard(snapshot: snapshot)
                 BatteryDetailMetricsCard(snapshot: snapshot)
 
-                if snapshot.state.isCharging == true || snapshot.state.isFullyCharged {
-                    BatteryChargingDetailCard(snapshot: snapshot)
+                if snapshot.state.isCharging == true {
+                    BatteryChargingDetailCard(snapshot: snapshot, points: points)
                 }
 
                 VehicleChargingAnalysisPanel(snapshot: snapshot, points: points)
+                ElectricityStatisticsCard(snapshot: snapshot, points: points)
             }
             .padding(16)
             .padding(.bottom, 12)
@@ -592,6 +594,7 @@ private struct BatteryDetailMetricsCard: View {
             BasicInfoTile(title: "电压", value: snapshot.state.batteryVoltageText, systemImage: "bolt.batteryblock.fill")
             BasicInfoTile(title: "温度", value: snapshot.state.batteryTemperatureText, systemImage: "thermometer.medium")
             BasicInfoTile(title: "循环次数", value: snapshot.state.batteryCycleCountText, systemImage: "arrow.trianglehead.2.clockwise")
+            BasicInfoTile(title: "储存电量", value: formatKWh(snapshot.state.storedEnergyKWh), systemImage: "bolt.circle.fill")
             BasicInfoTile(title: "更新时间", value: formatTime(snapshot.state.updatedAt), systemImage: "clock.fill")
         }
         .padding(16)
@@ -606,38 +609,504 @@ private struct BatteryDetailMetricsCard: View {
 
 private struct BatteryChargingDetailCard: View {
     var snapshot: NinebotVehicleSnapshot
+    var points: [NinebotVehicleHistoryPoint]
+
+    private var session: NinebotChargingSession {
+        NinebotChargingSession(snapshot: snapshot, points: points)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Label(snapshot.state.isFullyCharged ? "充电完成" : "正在充电", systemImage: snapshot.state.isFullyCharged ? "checkmark.circle.fill" : "bolt.fill")
-                    .font(.headline)
-                    .foregroundStyle(Color.teslaGreen)
-
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("正在充电", systemImage: "bolt.fill")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(Color.teslaGreen)
+                    Text("实时充电状态 · 自动跟随刷新")
+                        .font(.caption)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
                 Spacer()
-
-                Text(snapshot.state.estimatedFullChargeTimeText)
-                    .font(.subheadline.monospacedDigit().weight(.semibold))
+                Text(snapshot.state.chargingPowerText)
+                    .font(.title3.monospacedDigit().weight(.bold))
                     .foregroundStyle(Color.teslaPrimaryText)
             }
 
-            DetailSection(title: "充电信息") {
-                DetailRow(title: "充电功率", value: snapshot.state.chargingPowerText, systemImage: "bolt.fill")
-                DetailRow(title: "充电速度", value: snapshot.state.estimatedChargingSpeedText, systemImage: "bolt.car.fill")
-                DetailRow(title: "预计充满", value: snapshot.state.estimatedFullChargeTimeText, systemImage: "timer")
-                DetailRow(title: "满电时间", value: snapshot.state.estimatedFullChargeClockText, systemImage: "clock.badge.checkmark.fill")
-                DetailRow(title: "充至 80%", value: snapshot.state.estimatedChargeTo80TimeText, systemImage: "battery.75")
-                DetailRow(title: "接口剩余", value: snapshot.state.remainingChargeTimeText, systemImage: "clock.badge.questionmark")
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                BatteryDetailMiniMetric(title: "充电速度", value: snapshot.state.estimatedChargingSpeedText, systemImage: "bolt.car.fill")
+                BatteryDetailMiniMetric(title: "已充电时长", value: session.durationText, systemImage: "timer")
+                BatteryDetailMiniMetric(title: "开始时间", value: session.startTimeText, systemImage: "clock.fill")
+                BatteryDetailMiniMetric(title: "开始电量", value: session.startBatteryText, systemImage: "battery.25")
+                BatteryDetailMiniMetric(title: "距上次充电", value: session.distanceSinceLastChargeText, systemImage: "road.lanes")
+                BatteryDetailMiniMetric(title: "当前电量", value: snapshot.state.batteryText, systemImage: "battery.100")
             }
+
+            ChargingPowerCurveCard(points: session.points, currentPower: snapshot.state.chargingPower)
         }
         .padding(16)
         .background(Color.teslaCardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.teslaHairline, lineWidth: 1)
+                .stroke(Color.teslaGreen.opacity(0.28), lineWidth: 1)
         }
     }
+}
+
+
+private struct NinebotChargingSession {
+    var points: [NinebotVehicleHistoryPoint]
+    var startPoint: NinebotVehicleHistoryPoint?
+    var previousChargeEndPoint: NinebotVehicleHistoryPoint?
+    var snapshot: NinebotVehicleSnapshot
+    private var hasRecordedStart: Bool
+
+    init(snapshot: NinebotVehicleSnapshot, points: [NinebotVehicleHistoryPoint]) {
+        self.snapshot = snapshot
+        let sorted = points.sorted { $0.date < $1.date }
+        var recordedSession: [NinebotVehicleHistoryPoint] = []
+        for point in sorted.reversed() {
+            if point.isCharging == true {
+                recordedSession.append(point)
+            } else if !recordedSession.isEmpty {
+                break
+            }
+        }
+        recordedSession.sort { $0.date < $1.date }
+        self.hasRecordedStart = !recordedSession.isEmpty
+
+        // Include the just-fetched state immediately, so a live charging power
+        // reading is visible before the next persisted history refresh.
+        var displayPoints = recordedSession
+        let livePoint = NinebotVehicleHistoryPoint(sn: snapshot.vehicle.sn, state: snapshot.state)
+        if displayPoints.last?.id != livePoint.id {
+            displayPoints.append(livePoint)
+        }
+        self.points = displayPoints.sorted { $0.date < $1.date }
+        self.startPoint = recordedSession.first ?? self.points.first
+
+        // The distance requested is from the *end of the previous charge*, not
+        // merely from the last parked snapshot before plugging in.
+        if let first = recordedSession.first,
+           let index = sorted.firstIndex(where: { $0.id == first.id }) {
+            self.previousChargeEndPoint = sorted[..<index].last(where: { $0.isCharging == true })
+        } else {
+            self.previousChargeEndPoint = sorted.last(where: { $0.isCharging == true })
+        }
+    }
+
+    var startDate: Date { startPoint?.date ?? snapshot.state.updatedAt }
+    var startBattery: Int? { startPoint?.battery ?? snapshot.state.battery }
+    var durationText: String {
+        let latestDate = max(points.last?.date ?? snapshot.state.updatedAt, snapshot.state.updatedAt)
+        let minutes = max(latestDate.timeIntervalSince(startDate) / 60, 0)
+        return formatDuration(minutes)
+    }
+    var startTimeText: String { hasRecordedStart ? formatDate(startDate) : "刚刚开始" }
+    var startBatteryText: String { startBattery.map { "\($0)%" } ?? "接口未返回" }
+    var distanceSinceLastChargeText: String {
+        guard let current = snapshot.state.totalMileage,
+              let previous = previousChargeEndPoint?.totalMileage,
+              current >= previous else { return "暂无上次充电基准" }
+        return formatDistance(current - previous)
+    }
+}
+
+private struct ChargingPowerCurveCard: View {
+    var points: [NinebotVehicleHistoryPoint]
+    var currentPower: Double?
+
+    private var powerPoints: [NinebotVehicleHistoryPoint] {
+        points.filter { ($0.chargingPower ?? -1) >= 0 }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("充电功率曲线")
+                        .font(.headline.weight(.semibold))
+                    Text("功率随时间变化 · 快照越多越准确")
+                        .font(.caption)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+                Spacer()
+                Text(currentPower.map { formatNumber($0, unit: " W", maximumFractionDigits: 0) } ?? "等待数据")
+                    .font(.subheadline.monospacedDigit().weight(.bold))
+                    .foregroundStyle(Color.teslaGreen)
+            }
+
+            if powerPoints.isEmpty {
+                Text("正在等待第一条充电功率快照")
+                    .font(.subheadline)
+                    .foregroundStyle(Color.teslaSecondaryText)
+                    .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
+                    .background(Color.teslaControlBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            } else {
+                ChargingPowerChart(points: powerPoints)
+                    .frame(height: 168)
+            }
+        }
+        .padding(14)
+        .background(Color.teslaControlBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+private struct ChargingPowerChart: View {
+    var points: [NinebotVehicleHistoryPoint]
+
+    private var powers: [Double] { points.map { max($0.chargingPower ?? 0, 0) } }
+    private var maxPower: Double { max(powers.max() ?? 0, 1) }
+    private var startDate: Date { points.first?.date ?? Date() }
+    private var endDate: Date { points.last?.date ?? startDate }
+
+    var body: some View {
+        VStack(spacing: 7) {
+            GeometryReader { proxy in
+                ZStack(alignment: .bottomLeading) {
+                    HStack(spacing: 0) {
+                        ForEach(0..<4, id: \.self) { _ in
+                            Rectangle().fill(Color.teslaHairline.opacity(0.45)).frame(width: 0.7).frame(maxWidth: .infinity)
+                        }
+                    }
+                    VStack(spacing: 0) {
+                        ForEach(0..<4, id: \.self) { _ in
+                            Rectangle().fill(Color.teslaHairline.opacity(0.35)).frame(height: 0.7).frame(maxHeight: .infinity)
+                        }
+                    }
+                    PowerAreaShape(points: points, maxPower: maxPower, startDate: startDate, endDate: endDate)
+                        .fill(LinearGradient(colors: [Color.teslaGreen.opacity(0.25), Color.teslaGreen.opacity(0.02)], startPoint: .top, endPoint: .bottom))
+                    PowerLineShape(points: points, maxPower: maxPower, startDate: startDate, endDate: endDate)
+                        .stroke(Color.teslaGreen, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                    ForEach(points) { point in
+                        Circle()
+                            .fill(Color.teslaGreen)
+                            .frame(width: 7, height: 7)
+                            .position(x: x(for: point.date, width: proxy.size.width), y: y(for: point.chargingPower ?? 0, height: proxy.size.height))
+                    }
+                }
+            }
+            .padding(.horizontal, 3)
+
+            HStack {
+                Text(formatTime(startDate))
+                Spacer()
+                if endDate > startDate { Text(formatTime(endDate)) }
+            }
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(Color.teslaSecondaryText)
+        }
+    }
+
+    private func x(for date: Date, width: CGFloat) -> CGFloat {
+        guard endDate > startDate else { return width / 2 }
+        return CGFloat(date.timeIntervalSince(startDate) / endDate.timeIntervalSince(startDate)) * width
+    }
+    private func y(for power: Double, height: CGFloat) -> CGFloat {
+        height - CGFloat(min(max(power / maxPower, 0), 1)) * height
+    }
+}
+
+private struct PowerLineShape: Shape {
+    var points: [NinebotVehicleHistoryPoint]
+    var maxPower: Double
+    var startDate: Date
+    var endDate: Date
+    func path(in rect: CGRect) -> Path {
+        let locations = points.map { point in
+            let x: CGFloat = endDate > startDate
+                ? CGFloat(point.date.timeIntervalSince(startDate) / endDate.timeIntervalSince(startDate)) * rect.width
+                : rect.width / 2
+            let y = rect.height - CGFloat(min(max((point.chargingPower ?? 0) / maxPower, 0), 1)) * rect.height
+            return CGPoint(x: x, y: y)
+        }
+        guard let first = locations.first else { return Path() }
+        var path = Path()
+        path.move(to: first)
+        guard locations.count > 1 else { return path }
+
+        for index in 1..<locations.count {
+            let previous = locations[index - 1]
+            let current = locations[index]
+            let midpoint = CGPoint(x: (previous.x + current.x) / 2, y: (previous.y + current.y) / 2)
+            path.addQuadCurve(to: midpoint, control: previous)
+            if index == locations.count - 1 {
+                path.addQuadCurve(to: current, control: midpoint)
+            }
+        }
+        return path
+    }
+}
+
+private struct PowerAreaShape: Shape {
+    var points: [NinebotVehicleHistoryPoint]
+    var maxPower: Double
+    var startDate: Date
+    var endDate: Date
+    func path(in rect: CGRect) -> Path {
+        var path = PowerLineShape(points: points, maxPower: maxPower, startDate: startDate, endDate: endDate).path(in: rect)
+        guard let first = points.first, let last = points.last else { return path }
+        let firstX = endDate > startDate ? CGFloat(first.date.timeIntervalSince(startDate) / endDate.timeIntervalSince(startDate)) * rect.width : rect.width / 2
+        let lastX = endDate > startDate ? CGFloat(last.date.timeIntervalSince(startDate) / endDate.timeIntervalSince(startDate)) * rect.width : rect.width / 2
+        path.addLine(to: CGPoint(x: lastX, y: rect.height))
+        path.addLine(to: CGPoint(x: firstX, y: rect.height))
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct ElectricityStatisticsCard: View {
+    var snapshot: NinebotVehicleSnapshot
+    var points: [NinebotVehicleHistoryPoint]
+    @State private var selectedDays = 7
+
+    private var analysis: ElectricityStatisticsAnalysis {
+        ElectricityStatisticsAnalysis(snapshot: snapshot, history: points, days: selectedDays)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("用电统计")
+                        .font(.headline.weight(.semibold))
+                    Text("接口行程能耗优先，缺失时按电池容量换算")
+                        .font(.caption)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+                Spacer()
+                Picker("统计周期", selection: $selectedDays) {
+                    Text("7天").tag(7)
+                    Text("30天").tag(30)
+                    Text("90天").tag(90)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 152)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                BasicInfoTile(title: "消耗电量", value: formatNumber(analysis.percent, unit: "%", maximumFractionDigits: 1), systemImage: "battery.50")
+                BasicInfoTile(title: "耗电量", value: formatKWh(analysis.kWh), systemImage: "bolt.horizontal.fill")
+                BasicInfoTile(title: "度电", value: formatKWh(analysis.kWh), systemImage: "powerplug.fill")
+            }
+
+            ElectricityLineChart(samples: analysis.samples)
+                .frame(height: 178)
+
+            HStack(spacing: 14) {
+                ElectricityLegend(color: .orange, title: "百分比")
+                ElectricityLegend(color: Color.teslaGreen, title: "kWh / 度电")
+                Spacer()
+                Text(analysis.periodText)
+                    .font(.caption2)
+                    .foregroundStyle(Color.teslaSecondaryText)
+            }
+        }
+        .padding(16)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.teslaHairline, lineWidth: 1) }
+    }
+}
+
+private struct ElectricityLegend: View {
+    var color: Color
+    var title: String
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(title).font(.caption2.weight(.medium)).foregroundStyle(Color.teslaSecondaryText)
+        }
+    }
+}
+
+private struct ElectricitySample: Identifiable {
+    var date: Date
+    var percent: Double
+    var kWh: Double
+    var id: Date { date }
+}
+
+private struct ElectricityStatisticsAnalysis {
+    var snapshot: NinebotVehicleSnapshot
+    var history: [NinebotVehicleHistoryPoint]
+    var days: Int
+
+    var startDate: Date { Calendar.current.date(byAdding: .day, value: -(days - 1), to: Date()) ?? Date() }
+    var periodText: String { "最近 \(days) 天" }
+
+    /// Interface trip energy is the primary source. Battery percentage deltas
+    /// are used only for dates without ride records, avoiding double counting
+    /// the exact same ride once as a trip and again as a battery decline.
+    var samples: [ElectricitySample] {
+        let calendar = Calendar.current
+        let firstDay = calendar.startOfDay(for: startDate)
+        var daily: [Date: (percent: Double, kWh: Double)] = [:]
+        var daysWithRideMeasurement = Set<Date>()
+        let capacityWh = snapshot.state.batteryCapacityWh
+
+        for ride in snapshot.state.rides {
+            guard let date = ride.startedAt ?? ride.endedAt,
+                  date >= firstDay else { continue }
+            let percentFromInterface = normalizedRideUsedPercent(ride.usedElectricity)
+            let energy = recordEnergyKWh(ride, capacityWh: capacityWh)
+            guard percentFromInterface != nil || energy != nil else { continue }
+
+            let key = calendar.startOfDay(for: date)
+            let percent = percentFromInterface
+                ?? energy.flatMap { energy in
+                    guard let capacityWh, capacityWh > 0 else { return nil }
+                    return energy * 1000 / capacityWh * 100
+                }
+                ?? 0
+            daily[key, default: (0, 0)].percent += max(percent, 0)
+            daily[key, default: (0, 0)].kWh += max(energy ?? 0, 0)
+            daysWithRideMeasurement.insert(key)
+        }
+
+        let sortedHistory = history.sorted { $0.date < $1.date }
+        for pair in zip(sortedHistory, sortedHistory.dropFirst()) {
+            let previous = pair.0
+            let current = pair.1
+            let key = calendar.startOfDay(for: current.date)
+            guard current.date >= firstDay,
+                  !daysWithRideMeasurement.contains(key),
+                  current.isCharging != true,
+                  previous.isCharging != true,
+                  let before = previous.battery,
+                  let after = current.battery,
+                  before > after,
+                  let capacityWh, capacityWh > 0 else { continue }
+            let percent = Double(before - after)
+            daily[key, default: (0, 0)].percent += percent
+            daily[key, default: (0, 0)].kWh += percent * capacityWh / 100 / 1000
+        }
+
+        return (0..<days).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: offset, to: firstDay) else { return nil }
+            let value = daily[date] ?? (0, 0)
+            return ElectricitySample(date: date, percent: value.percent, kWh: value.kWh)
+        }
+    }
+
+    var percent: Double { samples.reduce(0) { $0 + $1.percent } }
+    var kWh: Double { samples.reduce(0) { $0 + $1.kWh } }
+}
+
+private func normalizedRideUsedPercent(_ value: Double?) -> Double? {
+    guard let value, value > 0, value <= 100 else { return nil }
+    return value
+}
+
+private struct ElectricityLineChart: View {
+    var samples: [ElectricitySample]
+    private var maxPercent: Double { max(samples.map(\.percent).max() ?? 0, 1) }
+    private var maxKWh: Double { max(samples.map(\.kWh).max() ?? 0, 0.01) }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            GeometryReader { proxy in
+                ZStack(alignment: .bottomLeading) {
+                    VStack(spacing: 0) {
+                        ForEach(0..<4, id: \.self) { _ in
+                            Rectangle()
+                                .fill(Color.teslaHairline.opacity(0.35))
+                                .frame(height: 0.7)
+                                .frame(maxHeight: .infinity)
+                        }
+                    }
+                    if samples.contains(where: { $0.percent > 0 || $0.kWh > 0 }) {
+                        ElectricitySeriesShape(samples: samples, value: { $0.percent }, maxValue: maxPercent)
+                            .stroke(Color.orange, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                        ElectricitySeriesShape(samples: samples, value: { $0.kWh }, maxValue: maxKWh)
+                            .stroke(Color.teslaGreen, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                    } else {
+                        Text("暂无足够的行程或电量快照")
+                            .font(.caption)
+                            .foregroundStyle(Color.teslaSecondaryText)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+
+                    HStack {
+                        Text("0–\(formatNumber(maxPercent, unit: "%", maximumFractionDigits: 0))")
+                        Spacer()
+                        Text("0–\(formatKWh(maxKWh))")
+                    }
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(Color.teslaSecondaryText)
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 3)
+                }
+            }
+
+            if samples.count == 7 {
+                HStack(spacing: 0) {
+                    ForEach(samples) { sample in
+                        Text(weekdayLabel(for: sample.date))
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(Color.teslaSecondaryText)
+            } else {
+                HStack {
+                    Text(calendarDayLabel(for: samples.first?.date))
+                    Spacer()
+                    Text(calendarDayLabel(for: samples.last?.date))
+                }
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(Color.teslaSecondaryText)
+                .padding(.horizontal, 4)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private func weekdayLabel(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "EE"
+        return formatter.string(from: date)
+    }
+
+    private func calendarDayLabel(for date: Date?) -> String {
+        guard let date else { return "" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = samples.count <= 30 ? "M/d" : "M月"
+        return formatter.string(from: date)
+    }
+}
+
+private struct ElectricitySeriesShape: Shape {
+    var samples: [ElectricitySample]
+    var value: (ElectricitySample) -> Double
+    var maxValue: Double
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for (index, sample) in samples.enumerated() {
+            let x = samples.count > 1 ? CGFloat(index) / CGFloat(samples.count - 1) * rect.width : rect.width / 2
+            let y = rect.height - CGFloat(min(max(value(sample) / maxValue, 0), 1)) * rect.height
+            if index == 0 { path.move(to: CGPoint(x: x, y: y)) } else { path.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        return path
+    }
+}
+
+private func recordEnergyKWh(_ record: NinebotRideRecord, capacityWh: Double?) -> Double? {
+    if let energy = record.energy, energy > 0 {
+        // The Ninebot travel endpoint reports ec/energy in Wh in current and
+        // legacy payloads (for example 200 means 200 Wh).
+        return energy / 1000
+    }
+    if let used = normalizedRideUsedPercent(record.usedElectricity), let capacityWh, capacityWh > 0 {
+        return used * capacityWh / 100 / 1000
+    }
+    return nil
+}
+
+private func formatKWh(_ value: Double?) -> String {
+    formatNumber(value, unit: " kWh", maximumFractionDigits: 2)
 }
 
 private struct BatteryDetailMiniMetric: View {
@@ -3271,6 +3740,7 @@ private struct ControlMetricPill: View {
 
 private struct VehicleLocationRideSummaryPanel: View {
     var snapshot: NinebotVehicleSnapshot
+    var history: [NinebotVehicleHistoryPoint]
     var resolvedAddress: String?
     var isLoading: Bool
     var onOpenTrips: () -> Void
@@ -3287,7 +3757,7 @@ private struct VehicleLocationRideSummaryPanel: View {
             .frame(maxWidth: .infinity)
 
             Button(action: onOpenTrips) {
-                VehicleRideSummaryGroupCard(snapshot: snapshot)
+                VehicleRideSummaryGroupCard(snapshot: snapshot, history: history)
             }
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
@@ -3446,6 +3916,30 @@ private struct VehicleLocationPreviewMap: View {
 
 private struct VehicleRideSummaryGroupCard: View {
     var snapshot: NinebotVehicleSnapshot
+    var history: [NinebotVehicleHistoryPoint]
+
+    /// The live API sometimes delays the in-progress trip field until the ride
+    /// is written to the travel endpoint. In that case use local odometer
+    /// snapshots from the current unlocked streak; if no baseline is available,
+    /// render a truthful 0.0 instead of a blank km value.
+    private var rideMileage: Double? {
+        if let direct = snapshot.state.rideMileageForDisplay { return max(direct, 0) }
+        guard snapshot.state.isRideActive else { return nil }
+        return mileageFromCurrentRideHistory ?? 0
+    }
+
+    private var mileageFromCurrentRideHistory: Double? {
+        guard let currentOdometer = snapshot.state.totalMileage else { return nil }
+        let sorted = history.sorted { $0.date < $1.date }
+        var activePoints: [NinebotVehicleHistoryPoint] = []
+        for point in sorted.reversed() {
+            guard point.isCharging != true, point.isLocked == false else { break }
+            activePoints.append(point)
+        }
+        guard let startOdometer = activePoints.last?.totalMileage,
+              currentOdometer >= startOdometer else { return nil }
+        return currentOdometer - startOdometer
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -3466,7 +3960,7 @@ private struct VehicleRideSummaryGroupCard: View {
             VStack(spacing: 8) {
                 VehicleRideSummaryTile(
                     title: "最近骑行",
-                    value: formatDistanceNumber(snapshot.state.lastMileage),
+                    value: formatDistanceNumber(rideMileage),
                     unit: "km",
                     systemImage: "arrow.left.arrow.right",
                     isPrimary: true
@@ -3694,7 +4188,7 @@ private struct VehicleHealthPanel: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("电池")
                         .font(.headline)
-                    Text(snapshot.state.isCharging == true ? snapshot.state.chargeSummaryText : "查看电压、温度和充电信息")
+                    Text(snapshot.state.isCharging == true ? snapshot.state.chargeSummaryText : snapshot.state.storedEnergyText)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -3711,6 +4205,28 @@ private struct VehicleHealthPanel: View {
                         .foregroundStyle(Color.teslaSecondaryText)
                 }
                 .frame(alignment: .center)
+            }
+
+            if let storedEnergy = snapshot.state.storedEnergyKWh {
+                HStack(spacing: 10) {
+                    Image(systemName: "bolt.circle.fill")
+                        .foregroundStyle(Color.teslaGreen)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("当前储存")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.teslaSecondaryText)
+                        Text("\(formatNumber(storedEnergy, unit: " kWh", maximumFractionDigits: 2)) · \(formatNumber(storedEnergy, unit: " 度电", maximumFractionDigits: 2))")
+                            .font(.subheadline.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(Color.teslaPrimaryText)
+                    }
+                    Spacer()
+                    Text("按电池容量计算")
+                        .font(.caption2)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(Color.teslaControlBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
 
             if !warnings.isEmpty {
@@ -5200,7 +5716,8 @@ private struct RideListSection: View {
                         } label: {
                             RideRecordRow(
                                 record: record,
-                                index: index
+                                index: index,
+                                batteryCapacityWh: snapshotCapacityWh
                             )
                         }
                         .buttonStyle(.plain)
@@ -5237,6 +5754,10 @@ private struct RideListSection: View {
         }
     }
 
+    private var snapshotCapacityWh: Double? {
+        model.dashboard.vehicles.first(where: { $0.vehicle.sn == vehicleSN })?.state.batteryCapacityWh
+    }
+
     private func associatedRecord(for record: NinebotRideRecord) -> NinebotRecordedRide? {
         recordedRides.first { ride in
             ride.associatedRideID == record.id && (vehicleSN == nil || ride.vehicleSN == nil || ride.vehicleSN == vehicleSN)
@@ -5247,6 +5768,7 @@ private struct RideListSection: View {
 private struct RideRecordRow: View {
     var record: NinebotRideRecord
     var index: Int
+    var batteryCapacityWh: Double?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -5307,8 +5829,7 @@ private struct RideRecordRow: View {
 
     private var metrics: [RideDisplayMetric] {
         [
-            record.energy.map { RideDisplayMetric(title: "能耗", value: formatEnergyWh($0), systemImage: "bolt.horizontal.fill") },
-            record.usedElectricity.map { RideDisplayMetric(title: "用电", value: formatPercent($0), systemImage: "powerplug.fill") },
+            recordEnergyKWh(record, capacityWh: batteryCapacityWh).map { RideDisplayMetric(title: "耗电", value: formatKWh($0), systemImage: "bolt.horizontal.fill") },
             record.speed.map { RideDisplayMetric(title: "最高速度", value: formatSpeed($0), systemImage: "speedometer") }
         ].compactMap { $0 }
     }
@@ -5363,7 +5884,7 @@ private struct NinebotRideDetailView: View {
                     DetailRow(title: "里程", value: formatDistance(effectiveRecord.mileage), systemImage: "road.lanes")
                     DetailRow(title: "时长", value: formatDuration(effectiveRecord.durationMinutes), systemImage: "timer")
                     DetailRow(title: "最高速度", value: formatSpeed(effectiveRecord.speed), systemImage: "speedometer")
-                    DetailRow(title: "能耗", value: formatEnergyWh(effectiveRecord.energy), systemImage: "bolt.horizontal.fill")
+                    DetailRow(title: "耗电", value: formatKWh(effectiveRecord.energy.map { $0 / 1000 }), systemImage: "bolt.horizontal.fill")
                     DetailRow(title: "用电", value: formatPercent(effectiveRecord.usedElectricity), systemImage: "powerplug.fill")
                     DetailRow(title: "行程 ID", value: record.id, systemImage: "number")
                 }
@@ -5493,8 +6014,7 @@ private struct RideDetailHero: View {
     private var metrics: [RideDisplayMetric] {
         var result: [RideDisplayMetric] = [
             record.speed.map { RideDisplayMetric(title: "接口最高速度", value: formatSpeed($0), systemImage: "speedometer") },
-            record.energy.map { RideDisplayMetric(title: "能耗", value: formatEnergyWh($0), systemImage: "bolt.horizontal.fill") },
-            record.usedElectricity.map { RideDisplayMetric(title: "用电", value: formatPercent($0), systemImage: "powerplug.fill") },
+            record.energy.map { RideDisplayMetric(title: "耗电", value: formatKWh($0 / 1000), systemImage: "bolt.horizontal.fill") },
             record.durationMinutes.map { RideDisplayMetric(title: "时长", value: formatDuration($0), systemImage: "timer") }
         ].compactMap { $0 }
 

@@ -410,6 +410,7 @@ struct NinebotSharedStore {
             && last.isCharging == point.isCharging
             && last.isLocked == point.isLocked
             && last.isPoweredOn == point.isPoweredOn
+            && last.chargingPower == point.chargingPower
 
         if abs(point.date.timeIntervalSince(last.date)) < 60, hasSameValues {
             return false

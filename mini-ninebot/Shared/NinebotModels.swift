@@ -1165,6 +1165,79 @@ struct NinebotVehicleState: Codable, Equatable {
     var rawTravel: [String: JSONValue]?
     var rawBattery: [String: JSONValue]?
 
+    /// Best-known nominal battery capacity in Wh. Prefer the server prediction
+    /// (which is configured per vehicle), then fall back to raw BMS fields.
+    var batteryCapacityWh: Double? {
+        if let value = serverPrediction?.batteryChemistry?.capacityWh, value > 0 { return value }
+        let keys = ["capacity_wh", "capacityWh", "battery_capacity_wh", "batteryCapacityWh", "energy_capacity_wh", "energyCapacityWh"]
+        for source in [rawBattery, rawStatus, rawTravel] {
+            guard let source else { continue }
+            if let value = keys.compactMap({ source[$0]?.doubleValue }).first(where: { $0 > 0 }) {
+                return value
+            }
+        }
+        let voltageKeys = ["nominal_voltage", "nominalVoltage", "battery_voltage", "batteryVoltage", "voltage", "volt"]
+        let ahKeys = ["capacity_ah", "capacityAh", "battery_capacity_ah", "batteryCapacityAh", "rated_ah", "ratedAh"]
+        for source in [rawBattery, rawStatus, rawTravel] {
+            guard let source,
+                  let voltage = voltageKeys.compactMap({ source[$0]?.doubleValue }).first(where: { $0 > 0 }),
+                  let ampHours = ahKeys.compactMap({ source[$0]?.doubleValue }).first(where: { $0 > 0 }) else { continue }
+            return voltage * ampHours
+        }
+        return nil
+    }
+
+    /// Stored energy, expressed in kWh (one kWh is one degree of electricity).
+    /// This deliberately does not treat the battery percentage as kWh.
+    var storedEnergyKWh: Double? {
+        guard let battery, let capacity = batteryCapacityWh, capacity > 0 else { return nil }
+        return capacity * min(max(Double(battery), 0), 100) / 100 / 1000
+    }
+
+    var storedEnergyText: String {
+        guard let storedEnergyKWh else { return "容量未返回" }
+        return "当前储存 \(Self.numberText(storedEnergyKWh, maximumFractionDigits: 2)) kWh"
+    }
+
+    /// Some firmware exposes the in-progress trip distance under status rather
+    /// than in the completed-travel list. Deliberately exclude the ambiguous
+    /// generic `mileage` key here: on several firmwares it is the odometer, not
+    /// this ride's distance.
+    var liveRideMileage: Double? {
+        let keys = [
+            "current_mileage", "currentMileage",
+            "trip_mileage", "tripMileage",
+            "ride_mileage", "rideMileage",
+            "driving_mileage", "drivingMileage",
+            "last_mileage", "lastMileage"
+        ]
+        for source in [rawStatus, rawTravel] {
+            guard let source else { continue }
+            var sources = [source]
+            for containerKey in ["status", "vehicle_status", "vehicleStatus", "travel", "data"] {
+                if let nested = source[containerKey]?.objectValue {
+                    sources.append(nested)
+                }
+            }
+            for candidate in sources {
+                if let value = keys.compactMap({ candidate[$0]?.doubleValue }).first(where: { $0 >= 0 }) {
+                    return value
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Prefer the current-trip field while the vehicle is riding; the travel
+    /// endpoint normally lags until a ride is completed. Once parked, show the
+    /// latest completed trip instead.
+    var rideMileageForDisplay: Double? {
+        if isRideActive {
+            return liveRideMileage ?? lastMileage ?? rides.first?.mileage
+        }
+        return lastMileage ?? liveRideMileage ?? rides.first?.mileage
+    }
+
     var batteryText: String {
         guard let battery else { return "--%" }
         return "\(battery)%"
@@ -1831,6 +1904,25 @@ struct NinebotVehicleHistoryPoint: Codable, Equatable, Identifiable {
     var isCharging: Bool?
     var isLocked: Bool?
     var isPoweredOn: Bool?
+    var chargingPower: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case id, sn, date, battery, endurance, totalMileage, isCharging, isLocked, isPoweredOn, chargingPower
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        sn = try container.decode(String.self, forKey: .sn)
+        date = try container.decode(Date.self, forKey: .date)
+        battery = try container.decodeIfPresent(Int.self, forKey: .battery)
+        endurance = try container.decodeIfPresent(Double.self, forKey: .endurance)
+        totalMileage = try container.decodeIfPresent(Double.self, forKey: .totalMileage)
+        isCharging = try container.decodeIfPresent(Bool.self, forKey: .isCharging)
+        isLocked = try container.decodeIfPresent(Bool.self, forKey: .isLocked)
+        isPoweredOn = try container.decodeIfPresent(Bool.self, forKey: .isPoweredOn)
+        chargingPower = try container.decodeIfPresent(Double.self, forKey: .chargingPower)
+    }
 
     init(sn: String, state: NinebotVehicleState) {
         self.sn = sn
@@ -1841,6 +1933,7 @@ struct NinebotVehicleHistoryPoint: Codable, Equatable, Identifiable {
         self.isCharging = state.isCharging
         self.isLocked = state.isLocked
         self.isPoweredOn = state.isPoweredOn
+        self.chargingPower = state.chargingPower
         self.id = "\(sn)-\(Int(state.updatedAt.timeIntervalSince1970))"
     }
 }
