@@ -30,6 +30,12 @@ struct ContentView: View {
             }
             Task { await model.refreshWhenActiveIfPossible() }
         }
+        // scenePhase normally covers foreground transitions. The UIKit active
+        // notification is a fallback for restores where SwiftUI does not emit a
+        // new value (for example, reopening a suspended scene from the app switcher).
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            Task { await model.refreshWhenActiveIfPossible() }
+        }
     }
 
     private var authenticatedContent: some View {

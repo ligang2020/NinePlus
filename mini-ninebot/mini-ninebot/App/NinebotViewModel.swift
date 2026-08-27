@@ -166,6 +166,7 @@ final class NinebotViewModel: ObservableObject {
     private var foregroundRefreshTask: Task<Void, Never>?
     private var dashboardEnrichmentTask: Task<Void, Never>?
     private var pendingAutomaticRefresh = false
+    private var lastForegroundRefreshRequestAt: Date?
 
     private var automaticRefreshInterval: TimeInterval {
         // Keep charging feedback prompt while avoiding unnecessary requests when parked.
@@ -258,6 +259,8 @@ final class NinebotViewModel: ObservableObject {
     }
 
     func refreshOnLaunchIfPossible() async {
+        guard beginForegroundRefreshCycle() else { return }
+
         // The dashboard cache is assigned during init. Do not block its first
         // live update on APNs registration or reverse geocoding.
         Task { [weak self] in
@@ -281,14 +284,27 @@ final class NinebotViewModel: ObservableObject {
     /// It reads the persisted dashboard immediately (during init) and then
     /// updates it in the background without replacing it with an empty state.
     func refreshWhenActiveIfPossible() async {
+        // scenePhase and UIApplication.didBecomeActive can both arrive during
+        // one activation. Treat them as a single cycle, but never suppress a
+        // later return from the background.
+        guard beginForegroundRefreshCycle() else { return }
+
         Task { [weak self] in
             guard let self else { return }
             await self.syncPushDeviceTokenIfPossible()
         }
         startForegroundRefreshLoop()
-        // Refresh immediately on every foreground entry. The in-flight guard
-        // below coalesces the launch task and the active-scene callback.
         await refreshAutomaticallyIfPossible(force: true)
+    }
+
+    private func beginForegroundRefreshCycle() -> Bool {
+        let now = Date()
+        if let lastForegroundRefreshRequestAt,
+           now.timeIntervalSince(lastForegroundRefreshRequestAt) < 1.5 {
+            return false
+        }
+        lastForegroundRefreshRequestAt = now
+        return true
     }
 
     func stopForegroundRefreshLoop() {
@@ -325,7 +341,15 @@ final class NinebotViewModel: ObservableObject {
             pendingAutomaticRefresh = true
             return false
         }
-        guard !isPerformingSilentDashboardRefresh else { return false }
+        // A foreground activation can arrive while a previous silent request
+        // is winding down. Queue one forced read after it finishes so a stale
+        // response that completed while the app was backgrounded cannot win.
+        if isPerformingSilentDashboardRefresh {
+            if force {
+                pendingAutomaticRefresh = true
+            }
+            return false
+        }
 
         let now = Date()
         if !force,
@@ -346,6 +370,7 @@ final class NinebotViewModel: ObservableObject {
         defer {
             isPerformingSilentDashboardRefresh = false
             isRefreshingDashboard = false
+            schedulePendingAutomaticRefreshIfNeeded()
         }
 
         do {
@@ -1059,12 +1084,15 @@ final class NinebotViewModel: ObservableObject {
         isLoading = false
         loadingMessage = nil
 
-        if pendingAutomaticRefresh {
-            pendingAutomaticRefresh = false
-            Task { [weak self] in
-                guard let self else { return }
-                _ = await self.refreshAutomaticallyIfPossible(force: true)
-            }
+        schedulePendingAutomaticRefreshIfNeeded()
+    }
+
+    private func schedulePendingAutomaticRefreshIfNeeded() {
+        guard pendingAutomaticRefresh else { return }
+        pendingAutomaticRefresh = false
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.refreshAutomaticallyIfPossible(force: true)
         }
     }
 

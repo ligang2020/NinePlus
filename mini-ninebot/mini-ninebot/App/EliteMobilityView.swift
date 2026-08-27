@@ -358,7 +358,9 @@ private struct EliteVehicleStage: View {
                     HStack {
                         EliteStatusChip(
                             title: isCharging ? "正在充电" : (isRideActive ? "车辆正在行驶中" : snapshot.state.primaryStatusText),
-                            systemImage: isCharging ? "bolt.fill" : (isRideActive ? "figure.outdoor.cycle" : (snapshot.state.isLocked == true ? "lock.fill" : "power"))
+                            // Driving is communicated by the scene itself and the text label.
+                            // Do not show the former cycling glyph in the card's top-left corner.
+                            systemImage: isCharging ? "bolt.fill" : (isRideActive ? nil : (snapshot.state.isLocked == true ? "lock.fill" : "power"))
                         )
                         Spacer()
                         Text("更新于 \(eliteTime(snapshot.state.updatedAt))")
@@ -601,15 +603,15 @@ private struct EliteStatusPair: View {
         HStack(spacing: 12) {
             EliteMetricTile(
                 title: "车辆状态",
-                value: snapshot.state.isRideActive ? "骑行状态" : (snapshot.state.isLocked == true ? "车辆已上锁" : (snapshot.state.isPoweredOn == true ? "已上电" : "待命")),
-                caption: snapshot.state.isRideActive ? "车辆已解锁" : snapshot.state.lockText,
-                systemImage: snapshot.state.isRideActive ? "figure.outdoor.cycle" : (snapshot.state.isLocked == true ? "lock.fill" : "power")
+                value: snapshot.state.isRideActive ? "车辆行驶中" : (snapshot.state.isLocked == true ? "车辆已上锁" : (snapshot.state.isPoweredOn == true ? "已上电" : "待命")),
+                caption: snapshot.state.isRideActive ? "实时状态" : snapshot.state.lockText,
+                systemImage: snapshot.state.isRideActive ? "car.rear.fill" : (snapshot.state.isLocked == true ? "lock.fill" : "power")
             )
             EliteMetricTile(
-                title: snapshot.state.isRideActive ? "当前时速" : "本月里程",
-                value: snapshot.state.isRideActive ? snapshot.state.currentSpeedText : snapshot.state.monthMileageText,
-                caption: snapshot.state.isRideActive ? "实时状态" : "累计骑行",
-                systemImage: snapshot.state.isRideActive ? "gauge.with.dots.needle.67percent" : "road.lanes"
+                title: snapshot.state.isRideActive ? "已行驶" : "本月里程",
+                value: snapshot.state.isRideActive ? snapshot.state.totalMileageText : snapshot.state.monthMileageText,
+                caption: snapshot.state.isRideActive ? "实时累计里程" : "累计骑行",
+                systemImage: "road.lanes"
             )
         }
     }
@@ -1078,18 +1080,23 @@ private struct EliteChargeDetailView: View {
 
 private struct EliteStatusChip: View {
     var title: String
-    var systemImage: String
+    var systemImage: String?
 
     var body: some View {
-        Label(title, systemImage: systemImage)
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(Color.elitePrimaryLight)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(Color.elitePrimary.opacity(0.16), in: Capsule())
-            .overlay {
-                Capsule().stroke(Color.elitePrimary.opacity(0.28), lineWidth: 1)
+        HStack(spacing: systemImage == nil ? 0 : 5) {
+            if let systemImage {
+                Image(systemName: systemImage)
             }
+            Text(title)
+        }
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(Color.elitePrimaryLight)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.elitePrimary.opacity(0.16), in: Capsule())
+        .overlay {
+            Capsule().stroke(Color.elitePrimary.opacity(0.28), lineWidth: 1)
+        }
     }
 }
 
