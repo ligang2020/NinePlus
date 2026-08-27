@@ -331,7 +331,7 @@ private struct VehicleNotificationRecordRow: View {
                 EventValuePill(title: "持续时间", value: Self.durationText(durationMinutes), systemImage: "timer")
             }
             if let power = event.chargingPower {
-                EventValuePill(title: "功率", value: formatNumber(power, unit: " W", maximumFractionDigits: 0), systemImage: "bolt.fill")
+                EventValuePill(title: "功率", value: Self.powerText(power), systemImage: "bolt.fill")
             }
             EventLocationMap(event: event, tint: tint)
         }
@@ -344,6 +344,10 @@ private struct VehicleNotificationRecordRow: View {
         let hours = total / 60
         let remainder = total % 60
         return hours > 0 ? "\(hours)小时\(remainder)分" : "\(remainder)分钟"
+    }
+
+    private static func powerText(_ watts: Double) -> String {
+        "\(Int(max(watts, 0).rounded())) W"
     }
 }
 
