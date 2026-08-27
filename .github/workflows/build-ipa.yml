@@ -107,13 +107,21 @@ jobs:
       - name: Upload IPA to GitHub Release
         if: steps.release.outputs.publish == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Some repositories block release creation by the automatic GITHUB_TOKEN
+          # even when contents: write is declared above. A fine-grained PAT with
+          # repository Contents: Read and write, saved as GH_RELEASE_TOKEN, makes
+          # release publishing deterministic while artifact upload remains tokenless.
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
           IPA_PATH: ${{ steps.package.outputs.ipa_path }}
           CHECKSUM_PATH: ${{ steps.package.outputs.checksum_path }}
           TAG_NAME: ${{ steps.release.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "GH_RELEASE_TOKEN is not configured; IPA remains available in the GitHub Actions artifact."
+            exit 0
+          fi
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" "$IPA_PATH" "$CHECKSUM_PATH" --clobber
           else

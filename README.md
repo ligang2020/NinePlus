@@ -34,8 +34,11 @@ fresh vehicle dashboard response.
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
 artifacts. Pushing tag `v11` also creates or updates the matching GitHub Release
-with the IPA and its SHA-256 checksum. No `NINEPLUS_ACCESS_TOKEN` secret is
-required.
+with the IPA and its SHA-256 checksum. Artifact upload needs no release secret.
+If the repository blocks GitHub's automatic workflow token from creating
+releases, add a fine-grained `GH_RELEASE_TOKEN` Actions secret with repository
+**Contents: Read and write** permission; otherwise the workflow still succeeds
+and leaves the IPA in Actions artifacts.
 
 For a local package, use Xcode 16.4 or newer:
 
