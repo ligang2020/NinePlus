@@ -308,8 +308,11 @@ struct NinebotSharedStore {
             guard shouldAppend(point, after: points.last) else { continue }
 
             points.append(point)
-            if points.count > 240 {
-                points.removeFirst(points.count - 240)
+            if points.count > 2400 {
+                // Keep roughly one week of one-minute charging snapshots.
+                // Older builds kept only 240 points, which made the weekly
+                // charging view disappear after a short period.
+                points.removeFirst(points.count - 2400)
             }
 
             guard let data = try? encoder.encode(points) else { continue }
@@ -412,11 +415,14 @@ struct NinebotSharedStore {
             && last.isPoweredOn == point.isPoweredOn
             && last.chargingPower == point.chargingPower
 
-        if abs(point.date.timeIntervalSince(last.date)) < 60, hasSameValues {
-            return false
+        // The app polls every few seconds while charging. Keep at most one
+        // persisted sample per minute, while always retaining charge-state
+        // transitions. This makes a 7-day history useful instead of filling
+        // the cache in a few hours.
+        if point.isCharging != last.isCharging {
+            return true
         }
-
-        if point.date.timeIntervalSince(last.date) < 300, hasSameValues {
+        if point.date.timeIntervalSince(last.date) < 60 {
             return false
         }
 

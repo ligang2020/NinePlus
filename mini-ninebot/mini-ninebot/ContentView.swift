@@ -23,6 +23,12 @@ struct ContentView: View {
         .task {
             await model.refreshOnLaunchIfPossible()
         }
+        // A view can be restored from a suspended scene without being rebuilt.
+        // onAppear complements scenePhase/UIApplication notifications and makes
+        // reopening the dashboard request a fresh snapshot every time.
+        .onAppear {
+            Task { await model.refreshWhenActiveIfPossible() }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else {
                 model.stopForegroundRefreshLoop()

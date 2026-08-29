@@ -522,6 +522,7 @@ private struct NinebotBatteryDetailView: View {
                 if snapshot.state.isCharging == true {
                     BatteryChargingDetailCard(snapshot: snapshot, points: points)
                 }
+                ChargingPowerWeeklyCard(snapshot: snapshot, points: points)
 
                 VehicleChargingAnalysisPanel(snapshot: snapshot, points: points)
                 ElectricityStatisticsCard(snapshot: snapshot, points: points)
@@ -712,6 +713,150 @@ private struct NinebotChargingSession {
     }
 }
 
+private struct ChargingPowerWeeklyCard: View {
+    var snapshot: NinebotVehicleSnapshot
+    var points: [NinebotVehicleHistoryPoint]
+
+    private var weeklyPoints: [NinebotVehicleHistoryPoint] {
+        let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+        return points
+            .filter { $0.date >= cutoff && $0.isCharging == true && ($0.chargingPower ?? -1) >= 0 }
+            .sorted { $0.date < $1.date }
+    }
+
+    private var dailyRows: [ChargingDaySummary] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let grouped = Dictionary(grouping: weeklyPoints) { calendar.startOfDay(for: $0.date) }
+        return (0..<7).compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else { return nil }
+            let samples = grouped[day, default: []].sorted { $0.date < $1.date }
+            return ChargingDaySummary(
+                day: day,
+                first: samples.first,
+                last: samples.last,
+                peakPower: samples.compactMap(\.chargingPower).max(),
+                sampleCount: samples.count
+            )
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("最近 7 天充电")
+                        .font(.headline.weight(.semibold))
+                    Text("按日期倒序 · 显示充电时间、电量和峰值功率")
+                        .font(.caption)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+                Spacer()
+                Image(systemName: "calendar.badge.clock")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(Color.teslaGreen)
+            }
+
+            if weeklyPoints.isEmpty {
+                Label("暂无最近 7 天的充电功率快照", systemImage: "chart.xyaxis.line")
+                    .font(.subheadline)
+                    .foregroundStyle(Color.teslaSecondaryText)
+                    .frame(maxWidth: .infinity, minHeight: 86, alignment: .center)
+                    .background(Color.teslaControlBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            } else {
+                ChargingPowerChart(points: weeklyPoints)
+                    .frame(height: 168)
+
+                HStack(spacing: 12) {
+                    ChargingPowerLegend(color: .blue, title: "低功率")
+                    ChargingPowerLegend(color: .orange, title: "中功率")
+                    ChargingPowerLegend(color: .red, title: "高功率")
+                    Spacer()
+                    Text("当前电量 \(snapshot.state.batteryText)")
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+            }
+
+            VStack(spacing: 8) {
+                ForEach(dailyRows) { row in
+                    ChargingDaySummaryRow(summary: row)
+                }
+            }
+        }
+        .padding(16)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+    }
+}
+
+private struct ChargingDaySummary: Identifiable {
+    var day: Date
+    var first: NinebotVehicleHistoryPoint?
+    var last: NinebotVehicleHistoryPoint?
+    var peakPower: Double?
+    var sampleCount: Int
+    var id: Date { day }
+}
+
+private struct ChargingDaySummaryRow: View {
+    var summary: ChargingDaySummary
+
+    private var batteryText: String {
+        guard let first = summary.first?.battery, let last = summary.last?.battery else { return "电量 --" }
+        return "电量 \(first)% → \(last)%"
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(summary.day, format: .dateTime.month(.twoDigits).day(.twoDigits).weekday(.abbreviated))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                if let first = summary.first, let last = summary.last {
+                    Text("时间 \(formatTime(first.date))–\(formatTime(last.date))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(Color.teslaSecondaryText)
+                } else {
+                    Text("暂无充电")
+                        .font(.caption2)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+            }
+            Spacer(minLength: 6)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(batteryText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                Text("峰值 \(summary.peakPower.map { formatNumber($0, unit: " W", maximumFractionDigits: 0) } ?? "--") · \(summary.sampleCount) 次")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(Color.teslaSecondaryText)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color.teslaControlBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct ChargingPowerLegend: View {
+    var color: Color
+    var title: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(title)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(Color.teslaSecondaryText)
+        }
+    }
+}
+
 private struct ChargingPowerCurveCard: View {
     var points: [NinebotVehicleHistoryPoint]
     var currentPower: Double?
@@ -745,6 +890,12 @@ private struct ChargingPowerCurveCard: View {
             } else {
                 ChargingPowerChart(points: powerPoints)
                     .frame(height: 168)
+                HStack(spacing: 12) {
+                    ChargingPowerLegend(color: .blue, title: "低功率")
+                    ChargingPowerLegend(color: .orange, title: "中功率")
+                    ChargingPowerLegend(color: .red, title: "高功率")
+                    Spacer()
+                }
             }
         }
         .padding(14)
@@ -777,10 +928,20 @@ private struct ChargingPowerChart: View {
                     PowerAreaShape(points: points, maxPower: maxPower, startDate: startDate, endDate: endDate)
                         .fill(LinearGradient(colors: [Color.teslaGreen.opacity(0.25), Color.teslaGreen.opacity(0.02)], startPoint: .top, endPoint: .bottom))
                     PowerLineShape(points: points, maxPower: maxPower, startDate: startDate, endDate: endDate)
-                        .stroke(Color.teslaGreen, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                    ForEach(points) { point in
+                        .stroke(Color.teslaHairline.opacity(0.45), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                    ForEach(Array(points.enumerated()), id: \.element.id) { index, point in
+                        if index > 0 {
+                            PowerSegmentShape(
+                                from: points[index - 1],
+                                to: point,
+                                maxPower: maxPower,
+                                startDate: startDate,
+                                endDate: endDate
+                            )
+                            .stroke(powerColor(for: ((points[index - 1].chargingPower ?? 0) + (point.chargingPower ?? 0)) / 2), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                        }
                         Circle()
-                            .fill(Color.teslaGreen)
+                            .fill(powerColor(for: point.chargingPower ?? 0))
                             .frame(width: 7, height: 7)
                             .position(x: x(for: point.date, width: proxy.size.width), y: y(for: point.chargingPower ?? 0, height: proxy.size.height))
                     }
@@ -804,6 +965,38 @@ private struct ChargingPowerChart: View {
     }
     private func y(for power: Double, height: CGFloat) -> CGFloat {
         height - CGFloat(min(max(power / maxPower, 0), 1)) * height
+    }
+
+    private func powerColor(for power: Double) -> Color {
+        let ratio = min(max(power / maxPower, 0), 1)
+        if ratio < 0.34 { return .blue }
+        if ratio < 0.67 { return .orange }
+        return .red
+    }
+}
+
+private struct PowerSegmentShape: Shape {
+    var from: NinebotVehicleHistoryPoint
+    var to: NinebotVehicleHistoryPoint
+    var maxPower: Double
+    var startDate: Date
+    var endDate: Date
+
+    func path(in rect: CGRect) -> Path {
+        func point(_ sample: NinebotVehicleHistoryPoint) -> CGPoint {
+            let x: CGFloat = endDate > startDate
+                ? CGFloat(sample.date.timeIntervalSince(startDate) / endDate.timeIntervalSince(startDate)) * rect.width
+                : rect.width / 2
+            let y = rect.height - CGFloat(min(max((sample.chargingPower ?? 0) / maxPower, 0), 1)) * rect.height
+            return CGPoint(x: x, y: y)
+        }
+        let start = point(from)
+        let end = point(to)
+        let midpoint = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        var path = Path()
+        path.move(to: start)
+        path.addQuadCurve(to: end, control: midpoint)
+        return path
     }
 }
 
