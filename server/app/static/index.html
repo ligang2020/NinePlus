@@ -29,20 +29,14 @@
       <main class="login-panel">
         <div class="mobile-brand"><span class="brand-mark">9+</span><span class="brand-word">NinePlus</span></div>
         <div class="login-heading"><span class="kicker">WELCOME BACK</span><h2>进入你的控制台</h2><p>登录 NinePlus 账号即可进入，九号云端由服务器统一管理。</p></div>
-        <div class="auth-progress"><span class="progress-step active"><b>01</b><span>NinePlus</span></span><i></i><span class="progress-step ready"><b>02</b><span>云端已就绪</span></span></div>
+        <div class="auth-progress"><span class="progress-step active"><b>01</b><span>NinePlus 账号</span></span><span class="progress-caption">登录后直接进入控制台</span></div>
         <form id="loginForm" class="login-form">
           <label><span>NinePlus 用户名</span><div class="input-wrap"><span class="field-icon">◎</span><input id="portalUsername" name="username" autocomplete="username" required placeholder="输入用户名"></div></label>
           <label><span>NinePlus 密码</span><div class="input-wrap"><span class="field-icon">⌁</span><input id="portalPassword" name="password" type="password" autocomplete="current-password" required placeholder="输入访问密码"></div></label>
           <button id="loginButton" class="primary-button" type="submit"><span>继续</span><b>↗</b></button>
         </form>
-        <div id="cloudReadyNotice" class="cloud-ready-notice"><span class="cloud-ready-icon">✓</span><div><strong>九号云端已由服务器绑定</strong><span>换用其他设备时无需再次输入九号官方账号。</span></div></div>
-        <form id="bindForm" class="login-form" hidden>
-          <div class="first-bind-note">当前服务器尚未完成首次云端设置，请仅在服务器管理员设备上输入一次九号官方账号。</div>
-          <label><span>九号官方账号</span><div class="input-wrap"><span class="field-icon">◎</span><input id="account" name="account" autocomplete="username" required placeholder="手机号或邮箱"></div></label>
-          <label><span>九号官方密码</span><div class="input-wrap"><span class="field-icon">⌁</span><input id="password" name="password" type="password" autocomplete="current-password" required placeholder="九号账号密码"></div></label>
-          <button id="bindButton" class="primary-button" type="submit"><span>完成首次云端设置</span><b>↗</b></button>
-        </form>
-        <p class="privacy-note"><span>◈</span> NinePlus 登录会话加密保存；九号云端凭据仅保存在服务器。</p>
+        <div class="cloud-ready-notice"><span class="cloud-ready-icon">✓</span><div><strong>登录 NinePlus 即可进入</strong><span>九号官方账号由服务器统一管理，当前设备无需重复登录。</span></div></div>
+        <p class="privacy-note"><span>◈</span> 当前设备只保存 NinePlus 登录会话；九号云端凭据仅保存在服务器。</p>
       </main>
     </div>
   </section>
@@ -59,7 +53,7 @@
       <section class="dashboard-heading"><div><span class="kicker">NINEPLUS CONTROL CENTER</span><h1>你的座驾，一目了然。</h1></div><div class="heading-note"><span class="live-dot"></span><span>数据实时同步</span></div></section>
       <section class="vehicle-switcher" aria-label="车辆列表"><div id="vehicleTabs" class="segmented-control"></div></section>
       <section id="loadingState" class="state-view"><div class="loading-mark"><span></span><span></span><span></span></div><p>正在同步车辆数据</p><small>安全连接九号云端</small></section>
-      <section id="emptyState" class="state-view" hidden><div class="empty-icon">9+</div><h2>还没有发现座驾</h2><p>请确认当前九号账号已绑定车辆，然后重新同步。</p><button class="secondary-button" onclick="loadVehicles()">重新同步</button></section>
+      <section id="emptyState" class="state-view" hidden><div class="empty-icon">9+</div><h2>还没有发现座驾</h2><p>请确认服务器已完成九号云端配置并绑定车辆，然后重新同步。</p><button class="secondary-button" onclick="loadVehicles()">重新同步</button></section>
 
       <div id="dashboard" hidden>
         <section class="vehicle-hero" id="overview">
@@ -85,6 +79,6 @@
   </section>
   <dialog id="confirmDialog" class="confirm-dialog"><form method="dialog"><div class="dialog-mark">!</div><h2 id="confirmTitle">确认操作</h2><p id="confirmMessage"></p><div class="dialog-actions"><button value="cancel" class="secondary-button">取消</button><button id="confirmAction" value="confirm" class="primary-button">确认执行</button></div></form></dialog>
   <script src="/assets/vendor/leaflet/leaflet.js"></script>
-  <script src="/assets/app.js" defer></script>
+  <script src="/assets/app.js?v=1.2.64" defer></script>
 </body>
 </html>

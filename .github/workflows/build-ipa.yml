@@ -9,9 +9,9 @@ on:
         default: true
         type: boolean
       release_tag:
-        description: "Release tag (must match the app version; default: v13)"
+        description: "Release tag (must match the app version; default: v14)"
         required: false
-        default: v13
+        default: v14
   push:
     branches: [main, master]
     tags: ['v*']
@@ -110,7 +110,7 @@ jobs:
           # `contents: write` above grants the workflow's built-in token permission
           # to create or update the release.  This must not silently skip publication
           # when an optional repository secret is absent.
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN || github.token }}
           IPA_PATH: ${{ steps.package.outputs.ipa_path }}
           CHECKSUM_PATH: ${{ steps.package.outputs.checksum_path }}
           TAG_NAME: ${{ steps.release.outputs.tag }}

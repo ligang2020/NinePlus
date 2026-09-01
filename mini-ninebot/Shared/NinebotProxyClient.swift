@@ -145,10 +145,14 @@ struct NinebotProxyClient {
         // apply a short session cache. Keep a 404/405 fallback so this app can
         // still work with an older container during a rolling deployment.
         do {
+            var dashboardQuery = [URLQueryItem(name: "include_travel", value: "0")]
+            if forceRefresh {
+                dashboardQuery.append(URLQueryItem(name: "fresh", value: "1"))
+            }
             let aggregatePayload = try await request(
                 method: "GET",
                 path: ["dashboard"],
-                queryItems: forceRefresh ? [URLQueryItem(name: "fresh", value: "1")] : []
+                queryItems: dashboardQuery
             )
             if let dashboard = Self.dashboard(from: aggregatePayload, selectedSN: selectedSN) {
                 return dashboard

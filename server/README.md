@@ -80,3 +80,64 @@ App 在「我的 → 设备通知」中会请求系统通知权限、注册 APNs
 4. 重建并重启服务：`docker compose up -d --build`。服务会在每次 App 请求 `/dashboard` 刷新车况时比较前后状态，并向已登记设备发送「开始/结束充电」「开始/结束骑行」及九号接口返回的 `alarm`/`fault`/`error` 报警；**不会**把“当前未锁车”当作报警。
 
 当前示例工程 Bundle ID 是 `com.example.NineBotPlus`，只适合本地开发示例。正式安装必须替换为你的 Apple Developer Team 旗下的真实 Bundle ID、使用匹配的签名与 Push capability；Development/Sandbox 安装包走 APNs sandbox，Release/Production 安装包走 production。`NINEPLUS_APP_BEARER_TOKEN` 仅保护 App 到 NinePlus 后端的 HTTP 请求，不是 Apple APNs Provider Token。
+## 使用 Cloudflare Tunnel 对外提供服务（推荐）
+
+当前后端是依赖 `ninecli`、子进程和持久化会话目录的 FastAPI + Docker 服务，最稳妥的 Cloudflare 方案是：**后端继续运行在飞牛/NAS 或服务器上，由 Cloudflare Tunnel 安全接入**，而不是把这个后端直接改造成无状态 Worker。这样九号云端绑定、登录会话和 APNs 私钥仍然保存在 `persistent-sessions`，同时不需要在路由器开放 8765 端口。
+
+Cloudflare 的 Python Workers 虽然支持 FastAPI，但本项目还需要 Docker 中的完整 Python 运行时、`ninecli` 子进程以及可写持久化目录；直接迁移到 Worker 会丢失这些运行时能力。Cloudflare Containers 可以运行 Docker 镜像，但部署需要 Cloudflare 账号权限，并且仍需额外设计会话/文件持久化。因此本项目默认提供 Tunnel 集成。
+
+### 1. 在 Cloudflare 创建 Tunnel
+
+1. 在 Cloudflare Zero Trust 控制台创建一个 Tunnel，选择 **Cloudflared / Docker** 连接器。
+2. 添加一个 Public Hostname，例如 `nineplus.example.com`，服务类型选 `HTTP`，服务地址填写：
+
+   ```text
+   http://nineplus:8765
+   ```
+
+   这里的 `nineplus` 是本 Compose 网络中的后端服务名，不是公网 IP。
+3. 复制 Cloudflare 给出的 Tunnel Token。不要把它提交到 Git。
+
+### 2. 配置并启动
+
+在部署服务器的 `server` 目录执行：
+
+```bash
+cp .env.example .env                 # 已有 .env 时不要覆盖
+chmod 600 .env
+vi .env
+```
+
+至少确认以下配置：
+
+```env
+NINEPLUS_PORTAL_PASSWORD=换成高强度密码
+NINEPLUS_COOKIE_SECURE=true
+CLOUDFLARE_TUNNEL_TOKEN=你的TunnelToken
+```
+
+然后启动后端和 Tunnel：
+
+```bash
+docker compose --profile cloudflare up -d --build
+docker compose ps
+curl -fsS https://nineplus.example.com/healthz
+```
+
+正常时健康检查会返回 `{"ok":true,...}`。查看 Tunnel 日志：
+
+```bash
+docker compose logs -f --tail=200 cloudflared
+```
+
+Cloudflare Tunnel 是出站连接，不要求把 8765 映射到公网；确认服务器防火墙只允许内网访问 8765，或者按你的 NAS 管理需求移除 `ports` 配置。
+
+### 3. 配置 iOS App
+
+在 App 的 NinePlus 服务器地址中填写完整的 HTTPS 地址，例如：
+
+```text
+https://nineplus.example.com
+```
+
+不要填写 `:8765`，也不要把 Tunnel Token 填进 App 的 Bearer Token。若 `.env` 设置了 `NINEPLUS_APP_BEARER_TOKEN`，App 中的服务保护 Token 才填写该值。

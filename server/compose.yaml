@@ -17,7 +17,7 @@ services:
       NINEPLUS_CACHE_TTL_VEHICLES: "${NINEPLUS_CACHE_TTL_VEHICLES:-30}"
       NINEPLUS_CACHE_TTL_STATUS: "${NINEPLUS_CACHE_TTL_STATUS:-8}"
       NINEPLUS_CACHE_TTL_BATTERY: "${NINEPLUS_CACHE_TTL_BATTERY:-15}"
-      NINEPLUS_CACHE_TTL_TRAVEL: "${NINEPLUS_CACHE_TTL_TRAVEL:-60}"
+      NINEPLUS_CACHE_TTL_TRAVEL: "${NINEPLUS_CACHE_TTL_TRAVEL:-300}"
       NINEPLUS_COOKIE_SECURE: "${NINEPLUS_COOKIE_SECURE:-auto}"
       NINEPLUS_DEVICE_ID: "${NINEPLUS_DEVICE_ID:-}"
       NINEPLUS_PORTAL_USERNAME: "${NINEPLUS_PORTAL_USERNAME:-admin}"
@@ -30,3 +30,17 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+
+  # Optional Cloudflare Tunnel connector. Configure the public hostname and
+  # origin service (http://nineplus:8765) in the Cloudflare Zero Trust
+  # dashboard, then start this profile with --profile cloudflare.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: nineplus-cloudflared
+    restart: unless-stopped
+    profiles: ["cloudflare"]
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?请在 server/.env 中设置 CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      nineplus:
+        condition: service_healthy

@@ -20,7 +20,7 @@ from typing import Any, Literal
 import httpx
 import jwt
 
-from fastapi import Cookie, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, Cookie, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,7 +36,7 @@ CLI_TIMEOUT = max(5, int(os.getenv("NINEPLUS_CLI_TIMEOUT", "45")))
 CACHE_TTL_VEHICLES = max(0.0, float(os.getenv("NINEPLUS_CACHE_TTL_VEHICLES", "30")))
 CACHE_TTL_STATUS = max(0.0, float(os.getenv("NINEPLUS_CACHE_TTL_STATUS", "8")))
 CACHE_TTL_BATTERY = max(0.0, float(os.getenv("NINEPLUS_CACHE_TTL_BATTERY", "15")))
-CACHE_TTL_TRAVEL = max(0.0, float(os.getenv("NINEPLUS_CACHE_TTL_TRAVEL", "60")))
+CACHE_TTL_TRAVEL = max(0.0, float(os.getenv("NINEPLUS_CACHE_TTL_TRAVEL", "300")))
 COOKIE_SECURE = os.getenv("NINEPLUS_COOKIE_SECURE", "auto").lower()
 BOOT_TIME = time.time()
 SN_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -1590,6 +1590,7 @@ async def vehicles(request: Request, nineplus_session: str | None = Cookie(defau
 async def dashboard(
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     month: str = "",
     nineplus_session: str | None = Cookie(default=None),
 ):
@@ -1606,6 +1607,10 @@ async def dashboard(
     # short server-side live-data cache so the UI reflects vehicle changes
     # immediately instead of waiting for the normal TTL to expire.
     force_refresh = request.query_params.get("fresh", "").lower() in {"1", "true", "yes"}
+    # Travel history is not required to paint the control screen and is often
+    # the slowest cloud call. It is fetched by the travel screen on demand;
+    # callers that need it in this aggregate can explicitly opt in.
+    include_travel = request.query_params.get("include_travel", "0").lower() in {"1", "true", "yes"}
     vehicles_ttl = 0.0 if force_refresh else CACHE_TTL_VEHICLES
     status_ttl = 0.0 if force_refresh else CACHE_TTL_STATUS
     battery_ttl = 0.0 if force_refresh else CACHE_TTL_BATTERY
@@ -1619,13 +1624,15 @@ async def dashboard(
             continue
         sn = validate_sn(sn_value)
         status = await dashboard_read(session, ("status", sn), status_ttl)
-        status = normalize_status_location(status)
+        status = enrich_status_for_legacy_clients(sn, normalize_status_location(status))
         battery = await dashboard_read(session, ("battery", sn), battery_ttl)
-        travel = await dashboard_read(
-            session,
-            ("travel", sn, "--month", normalized_month),
-            CACHE_TTL_TRAVEL,
-        )
+        travel = None
+        if include_travel:
+            travel = await dashboard_read(
+                session,
+                ("travel", sn, "--month", normalized_month),
+                CACHE_TTL_TRAVEL,
+            )
         entries.append({
             "vehicle": vehicle,
             "status": status,
@@ -1639,8 +1646,12 @@ async def dashboard(
             "battery": battery,
         })
 
-    await publish_vehicle_notifications(owner, notification_vehicles)
+    # APNs delivery is deliberately detached from the dashboard response. A
+    # slow Apple connection must never keep the app's loading screen visible.
+    if notification_vehicles:
+        background_tasks.add_task(publish_vehicle_notifications, owner, notification_vehicles)
 
+    # Vehicle telemetry must never be cached by browsers or shared proxies.
     response.headers["Cache-Control"] = "no-store"
     return ok({"month": normalized_month, "vehicles": entries, "updated_at": time.time()})
 

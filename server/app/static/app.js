@@ -81,18 +81,8 @@ function setAuthenticated(authenticated) {
   $('#appView').hidden = !authenticated;
 }
 
-function showOfficialBinding() {
-  // This path is only for the first server-side cloud setup. Once the
-  // persistent binding exists, every other device skips it entirely.
-  $('#loginForm').hidden = true;
-  if ($('#bindForm')) $('#bindForm').hidden = false;
-  if ($('#cloudReadyNotice')) $('#cloudReadyNotice').hidden = true;
-}
-
 function showPortalLogin() {
   $('#loginForm').hidden = false;
-  if ($('#bindForm')) $('#bindForm').hidden = true;
-  if ($('#cloudReadyNotice')) $('#cloudReadyNotice').hidden = false;
 }
 
 function setBusy(button, busy, label) {
@@ -447,7 +437,7 @@ function renderMaps() {
   });
 }
 
-async function selectVehicle(vehicle) {
+async function selectVehicle(vehicle, snapshot = null) {
   state.selected = vehicle;
   renderTabs();
   $('#dashboard').hidden = true;
@@ -455,11 +445,22 @@ async function selectVehicle(vehicle) {
   const sn = encodeURIComponent(vehicleSN(vehicle));
   const month = $('#monthPicker').value;
   try {
-    const [status, battery, travels] = await Promise.all([
-      api(`/vehicles/${sn}/status`),
-      api(`/vehicles/${sn}/battery`).catch(() => null),
-      api(`/vehicles/${sn}/travel?month=${encodeURIComponent(month)}&page_size=20`).catch(() => null),
-    ]);
+    let status;
+    let battery;
+    let travels;
+    if (snapshot) {
+      // The aggregate dashboard already contains the live values. Reusing it
+      // prevents a second serialized round of ninecli processes on page load.
+      status = snapshot.status ?? null;
+      battery = snapshot.battery ?? null;
+      travels = snapshot.travel ?? null;
+    } else {
+      [status, battery, travels] = await Promise.all([
+        api(`/vehicles/${sn}/status`),
+        api(`/vehicles/${sn}/battery`).catch(() => null),
+        api(`/vehicles/${sn}/travel?month=${encodeURIComponent(month)}&page_size=20`).catch(() => null),
+      ]);
+    }
     state.status = status;
     state.battery = battery;
     state.travels = travels;
@@ -474,6 +475,25 @@ async function selectVehicle(vehicle) {
         renderDashboard();
         requestAnimationFrame(renderMaps);
       });
+    } else if (snapshot) {
+      // History can take substantially longer than status/battery. Render the
+      // control screen first, then hydrate the trip cards without reviving the
+      // full-page loading state.
+      api(`/vehicles/${sn}/travel?month=${encodeURIComponent(month)}&page_size=20`)
+        .then((loadedTravels) => {
+          if (state.selected !== vehicle) return null;
+          state.travels = loadedTravels;
+          renderDashboard();
+          requestAnimationFrame(renderMaps);
+          return enrichTravelRows(sn, loadedTravels);
+        })
+        .then((enriched) => {
+          if (!enriched || state.selected !== vehicle) return;
+          state.travels = enriched;
+          renderDashboard();
+          requestAnimationFrame(renderMaps);
+        })
+        .catch(() => {});
     }
   } catch (error) {
     toast(error.message);
@@ -487,16 +507,22 @@ async function loadVehicles() {
   $('#emptyState').hidden = true;
   $('#loadingState').hidden = false;
   try {
-    const payload = await api('/vehicles');
-    state.vehicles = unwrapArray(payload, ['vehicles', 'data']);
+    // One dashboard request returns the vehicle list plus live status/battery.
+    // Travel history is intentionally loaded only after the user opens it.
+    const payload = await api('/dashboard?include_travel=0');
+    const snapshots = unwrapArray(payload, ['vehicles']);
+    state.vehicles = snapshots
+      .map((snapshot) => snapshot?.vehicle)
+      .filter((vehicle) => vehicle && vehicleSN(vehicle));
     if (!state.vehicles.length) {
       $('#emptyState').hidden = false;
       return;
     }
     const previousSN = vehicleSN(state.selected);
     const selected = state.vehicles.find((vehicle) => vehicleSN(vehicle) === previousSN) || state.vehicles[0];
+    const selectedSnapshot = snapshots.find((snapshot) => vehicleSN(snapshot?.vehicle) === vehicleSN(selected)) || null;
     renderTabs();
-    await selectVehicle(selected);
+    await selectVehicle(selected, selectedSnapshot);
   } catch (error) {
     if (error.status === 401) setAuthenticated(false);
     toast(error.message);
@@ -540,33 +566,8 @@ $('#loginForm').addEventListener('submit', async (event) => {
       body: JSON.stringify({ username: $('#portalUsername').value.trim(), password: $('#portalPassword').value }),
     });
     $('#portalPassword').value = '';
-    if (session.cloud_ready) {
-      setAuthenticated(true);
-      toast('NinePlus 登录成功，正在同步车辆');
-      await loadVehicles();
-    } else {
-      showOfficialBinding();
-      toast('请先在服务器完成一次九号云端设置');
-    }
-  } catch (error) {
-    toast(error.message);
-  } finally {
-    setBusy(button, false);
-  }
-});
-
-$('#bindForm').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const button = $('#bindButton');
-  setBusy(button, true, '正在设置…');
-  try {
-    await api('/ninebot/login', {
-      method: 'POST',
-      body: JSON.stringify({ account: $('#account').value.trim(), password: $('#password').value }),
-    });
-    $('#password').value = '';
     setAuthenticated(true);
-    toast('九号云端设置成功，正在同步车辆');
+    toast(session.cloud_ready ? 'NinePlus 登录成功，正在同步车辆' : 'NinePlus 登录成功，正在检查服务器云端状态');
     await loadVehicles();
   } catch (error) {
     toast(error.message);
@@ -600,12 +601,11 @@ $('#confirmDialog').addEventListener('close', () => {
 const now = new Date();
 $('#monthPicker').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 api('/auth/me').then((session) => {
-  if (session && session.cloud_ready) {
+  if (session) {
+    // A NinePlus session is sufficient to enter the console. The official
+    // cloud binding is server-side configuration and is never requested here.
     setAuthenticated(true);
     loadVehicles();
-  } else if (session) {
-    setAuthenticated(false);
-    showOfficialBinding();
   } else {
     setAuthenticated(false);
     showPortalLogin();

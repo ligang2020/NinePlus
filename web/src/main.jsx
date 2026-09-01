@@ -13,12 +13,18 @@ import {
   ChevronDown,
   ChevronRight,
   CircleGauge,
+  Cloud,
   CloudSun,
+  Check,
   Crosshair,
+  Database,
+  Eye,
+  Fingerprint,
   Gauge,
   Lock,
   LocateFixed,
   MapPin,
+  Moon,
   Navigation,
   Package,
   Pause,
@@ -26,6 +32,7 @@ import {
   Power,
   Radio,
   Route,
+  SlidersHorizontal,
   ScanLine,
   Search,
   Settings,
@@ -33,6 +40,7 @@ import {
   Sparkles,
   Sun,
   Thermometer,
+  TriangleAlert,
   Timer,
   Unlock,
   UserCircle,
@@ -172,21 +180,74 @@ function TripDetailPage({ onBack }) {
   return <div className="page-stack"><Header title="行程详情" back onBack={onBack} /><Card className="p-5"><div className="flex items-start justify-between"><div><strong className="text-[24px]">2026-08-12 16:09</strong><p className="mt-1 text-[17px] text-gray-500">结束 16:19</p></div><Route size={40} className="text-[#1dcc50]" /></div><strong className="mt-8 block text-[74px] leading-none tracking-[-0.09em]">1.3<span className="ml-1 text-[26px] tracking-normal">km</span></strong><div className="mt-8 grid grid-cols-2 gap-3"><div className="trip-detail-chip"><Timer size={18} /><strong>10 分钟</strong><span>骑行时间</span></div><div className="trip-detail-chip"><Gauge size={18} /><strong>46 km/h</strong><span>最高速度</span></div><div className="trip-detail-chip"><Zap size={18} /><strong>0 Wh</strong><span>本次用电</span></div><div className="trip-detail-chip"><Activity size={18} /><strong>0 Wh/km</strong><span>能耗</span></div></div></Card><Card className="p-4"><div className="flex items-start justify-between px-1"><div><h2 className="text-[22px] font-bold">官方接口轨迹</h2><p className="mt-1 text-[15px] text-gray-500">起点 → 终点 · 官方接口返回 23 个路线点</p></div><span className="speed-legend"><Sparkles size={16} />接口速度</span></div><div className="trajectory-map"><div className="trajectory-road one" /><div className="trajectory-road two" /><div className="trajectory-road three" /><div className="trajectory-route route-green" /><div className="trajectory-route route-red" /><div className="trajectory-pin start"><span>⚑</span><b>起点</b></div><div className="trajectory-pin peak"><strong>最高速度<br />46.0 km/h</strong></div><div className="trajectory-pin end"><span>⌖</span><b>终点</b></div></div><div className="trajectory-footer"><span>🚩 仅按接口明确返回…</span><strong>最高 46.0 km/h</strong><span>0 <i /></span><span>40+ km/h</span></div></Card><div className="px-1"><h2 className="ios-section-title">接口行程</h2><div className="detail-row"><Play size={18} fill="currentColor" /><span>开始时间</span><strong>2026-08-12 16:09</strong></div><div className="detail-row"><Pause size={18} fill="currentColor" /><span>结束时间</span><strong>2026-08-12 16:19</strong></div></div></div>;
 }
 
-function ProfilePage({ onRecords }) {
-  return <div className="page-stack"><Header title="我的" trailing={<button className="header-icon"><Settings size={21} /></button>} /><Card className="profile-card p-5"><div className="profile-avatar">李</div><div className="min-w-0 flex-1"><h2 className="text-[24px] font-bold">李易峰的电瓶车</h2><p className="mt-1 text-[16px] text-gray-500">服务器 · B2轰炸机</p></div><span className="profile-count">2</span></Card><Card className="p-5"><div className="flex items-start justify-between"><div><h2 className="text-[23px] font-bold">车辆名称</h2><p className="mt-1 max-w-[280px] text-[15px] leading-6 text-gray-500">名称会同步用于主 App、小组件和灵动岛；不会修改车辆原始编号。</p></div><span className="tag-icon"><Wrench size={20} /></span></div><VehicleRow name="B2轰炸机" model="Mz MAX (14360)" /><VehicleRow name="特斯拉 YYDS" model="Ninebot eMoped F35 (117)" /></Card><Card className="p-5"><div className="flex gap-4"><div className="bluetooth-icon"><Bluetooth size={26} /></div><div className="flex-1"><h2 className="text-[23px] font-bold">车辆蓝牙（安全只读）</h2><p className="mt-1 text-[16px] text-gray-500">等待授权车辆配置</p></div></div><p className="mt-3 text-[14px] leading-6 text-gray-500">尚未提供官方 GATT 服务、特征和认证适配器</p><div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[14px] font-semibold text-gray-500"><span>♨ 不自动连接</span><span>🔒 不发送控制</span><span>⌁ 只订阅遥测</span></div><button className="scan-button"><Radio size={20} />扫描附近设备</button><p className="mt-3 text-[13px] leading-5 text-gray-500">扫描结果仅在本次运行中显示。未配置厂商授权的 GATT 服务、遥测特征、解码器和受信任外设识别前，App 不会连接任何车辆。</p></Card><RecordLink icon={AlertTriangle} title="车辆报警记录" subtitle="已记录 1 条异常事件" badge="1" tone="red" onClick={() => onRecords('alarms')} /><RecordLink icon={BatteryCharging} title="充电记录" subtitle="2 条完整充电周期" onClick={() => onRecords('charging')} /><Card className="flex items-center gap-3 p-4"><div className="text-[#1dcc50]"><ShieldCheck size={25} /></div><div><strong className="block text-[16px] text-[#1dcc50]">已更新 {formatNow()}</strong><span className="text-[13px] text-gray-500">车辆与记录数据已同步</span></div></Card></div>;
-}
-function VehicleRow({ name, model }) { return <div className="vehicle-row"><div className="vehicle-row-icon"><CarFront size={22} /></div><div className="flex-1"><strong>{name}</strong><span>{model}</span></div><button className="edit-link">编辑</button><ChevronRight size={22} className="text-gray-400" /></div>; }
-function RecordLink({ icon: Icon, title, subtitle, badge, tone, onClick }) { return <Card onClick={onClick} className="flex items-center gap-4 p-5"><div className={cn('record-link-icon', tone === 'red' ? 'record-link-red' : 'record-link-green')}><Icon size={26} /></div><div className="flex-1"><strong className="block text-[21px]">{title}</strong><span className="text-[15px] text-gray-500">{subtitle}</span></div>{badge && <span className="record-badge">{badge}</span>}<ChevronRight className="text-gray-500" /></Card>; }
-
-function RecordsPage({ mode = 'alarms', onBack }) {
-  const [selected, setSelected] = useState(mode);
-  const isAlarm = selected === 'alarms';
-  return <div className="page-stack"><Header title={isAlarm ? '车辆报警记录' : '充电记录'} back onBack={onBack} /><div className="record-switch"><button className={isAlarm ? 'active' : ''} onClick={() => setSelected('alarms')}>报警记录</button><button className={!isAlarm ? 'active' : ''} onClick={() => setSelected('charging')}>充电记录</button></div>{isAlarm ? <div className="space-y-3">{alarms.map((alarm) => <Card key={alarm.time} className="p-5"><div className="flex gap-3"><div className={cn('record-link-icon small', alarm.tone === 'red' ? 'record-link-red' : 'record-link-orange')}><AlertTriangle size={22} /></div><div className="flex-1"><div className="flex items-start justify-between gap-2"><strong className="text-[19px]">{alarm.title}</strong><span className="text-[13px] text-gray-500">{alarm.time}</span></div><p className="mt-2 text-[15px] leading-6 text-gray-600">{alarm.detail}</p><span className="mt-3 inline-flex items-center gap-1 text-[13px] font-semibold text-gray-500"><MapPin size={14} />{alarm.place}</span></div></div></Card>)}</div> : <div className="space-y-3">{charges.map((charge) => <Card key={charge.start} className="p-5"><div className="flex items-start justify-between"><div><strong className="text-[19px]">完整充电周期</strong><p className="mt-1 text-[14px] text-gray-500">{charge.start} → {charge.end}</p></div><BatteryCharging className="text-[#1dcc50]" /></div><div className="mt-4 grid grid-cols-2 gap-3"><div className="record-detail"><span>总耗时</span><strong>{charge.duration}</strong></div><div className="record-detail"><span>充电功率</span><strong>{charge.power}</strong></div><div className="record-detail"><span>电池温度</span><strong>{charge.temp}</strong></div><div className="record-detail"><span>结束电压</span><strong>{charge.voltage}</strong></div></div><span className="mt-4 inline-flex items-center gap-1 text-[13px] font-semibold text-gray-500"><MapPin size={14} />{charge.place}</span></Card>)}</div>}</div>;
+function ProfilePage({ onRecords, onOpenSettings }) {
+  return <div className="page-stack"><Header title="我的" trailing={<button type="button" className="header-icon" onClick={onOpenSettings} aria-label="打开设置"><Settings size={21} /></button>} /><Card className="profile-card p-5"><div className="profile-avatar">李</div><div className="min-w-0 flex-1"><h2 className="text-[24px] font-bold">李易峰的电瓶车</h2><p className="mt-1 text-[16px] text-gray-500">服务器 · B2轰炸机</p></div><span className="profile-count">2</span></Card><Card className="p-5"><div className="flex items-start justify-between"><div><h2 className="text-[23px] font-bold">车辆名称</h2><p className="mt-1 max-w-[280px] text-[15px] leading-6 text-gray-500">名称会同步用于主 App、小组件和灵动岛；不会修改车辆原始编号。</p></div><span className="tag-icon"><Wrench size={20} /></span></div><VehicleRow name="B2轰炸机" model="Mz MAX (14360)" /><VehicleRow name="特斯拉 YYDS" model="Ninebot eMoped F35 (117)" /></Card><Card className="p-5"><div className="flex gap-4"><div className="bluetooth-icon"><Bluetooth size={26} /></div><div className="flex-1"><h2 className="text-[23px] font-bold">车辆蓝牙（安全只读）</h2><p className="mt-1 text-[16px] text-gray-500">等待授权车辆配置</p></div></div><p className="mt-3 text-[14px] leading-6 text-gray-500">尚未提供官方 GATT 服务、特征和认证适配器</p><div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[14px] font-semibold text-gray-500"><span>♨ 不自动连接</span><span>🔒 不发送控制</span><span>⌁ 只订阅遥测</span></div><button className="scan-button"><Radio size={20} />扫描附近设备</button><p className="mt-3 text-[13px] leading-5 text-gray-500">扫描结果仅在本次运行中显示。未配置厂商授权的 GATT 服务、遥测特征、解码器和受信任外设识别前，App 不会连接任何车辆。</p></Card><RecordLink icon={AlertTriangle} title="车辆报警记录" subtitle="已记录 1 条异常事件" badge="1" tone="red" onClick={() => onRecords('alarms')} /><RecordLink icon={BatteryCharging} title="充电记录" subtitle="2 条完整充电周期" onClick={() => onRecords('charging')} /><Card className="flex items-center gap-3 p-4"><div className="text-[#1dcc50]"><ShieldCheck size={25} /></div><div><strong className="block text-[16px] text-[#1dcc50]">已更新 {formatNow()}</strong><span className="text-[13px] text-gray-500">车辆与记录数据已同步</span></div></Card></div>;
 }
 
-function SecurityPage() {
-  const [armed, setArmed] = useState(true);
-  return <div className="page-stack"><Header title="安全" trailing={<StatusPill icon={ShieldCheck}>在线</StatusPill>} /><Card className="security-hero p-6"><div className="security-orb"><ShieldCheck size={56} /></div><h2 className="mt-5 text-center text-[30px] font-bold tracking-[-0.05em]">车辆安全状态</h2><p className="mt-2 text-center text-[16px] text-gray-500">{armed ? '防盗保护已开启，车辆状态正常' : '防盗保护已暂停'}</p><button onClick={() => setArmed((value) => !value)} className={cn('security-toggle', armed && 'armed')}><span>{armed ? '已开启防盗' : '开启防盗'}</span><span className="toggle-dot"><Lock size={17} /></span></button></Card><MapWidget /><Card className="p-5"><div className="flex items-center gap-3"><div className="record-link-icon record-link-green"><LocateFixed size={25} /></div><div><strong className="text-[20px]">位置保护</strong><p className="text-[14px] text-gray-500">定位权限与设备位置同步正常</p></div></div><div className="mt-5 grid grid-cols-2 gap-3"><div className="record-detail"><span>最近更新</span><strong>23:42</strong></div><div className="record-detail"><span>定位精度</span><strong>良好</strong></div></div></Card></div>;
+function SettingsRow({ icon: Icon, title, subtitle, value, tone = 'neutral', onClick, children }) {
+  const content = <>
+    <span className={cn('settings-row-icon', `settings-row-icon-${tone}`)}><Icon size={19} /></span>
+    <span className="settings-row-copy"><strong>{title}</strong>{subtitle && <small>{subtitle}</small>}</span>
+    {children ? <span className="settings-row-control">{children}</span> : (value && <span className="settings-row-value">{value}</span>)}
+    {onClick && <ChevronRight className="settings-row-chevron" size={19} />}
+  </>;
+  return onClick
+    ? <button type="button" onClick={onClick} className="settings-row">{content}</button>
+    : <div className="settings-row">{content}</div>;
+}
+
+function SettingsToggle({ checked, onChange, label }) {
+  return <button type="button" onClick={() => onChange(!checked)} className={cn('settings-toggle', checked && 'is-on')} role="switch" aria-checked={checked} aria-label={label}><span /></button>;
+}
+
+function SettingsPage({ onBack }) {
+  const [addressLookup, setAddressLookup] = useState(true);
+  const [lowBattery, setLowBattery] = useState(true);
+  const [backgroundRefresh, setBackgroundRefresh] = useState(true);
+  const [privacyShield, setPrivacyShield] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [notice, setNotice] = useState('所有服务运行正常');
+  const refresh = () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    setNotice('正在验证连接…');
+    window.setTimeout(() => { setIsRefreshing(false); setNotice(`连接正常 · 刚刚更新 ${formatNow()}`); }, 850);
+  };
+  const requestSignOut = () => {
+    if (window.confirm('确定要退出当前 NinePlus 账户吗？本地缓存会保留在设备上。')) setNotice('已退出演示账户');
+  };
+  return <div className="page-stack settings-page">
+    <Header title="设置" back onBack={onBack} />
+    <Card className="settings-connection-card p-5">
+      <div className="settings-connection-header"><span className="settings-connection-icon"><Cloud size={25} /></span><div><p className="ios-eyebrow">NINEPLUS PLATFORM</p><h2>已连接</h2></div><span className="settings-live-dot"><i />在线</span></div>
+      <p className="settings-endpoint">nineplus.example.com · HTTPS</p>
+      <div className="settings-connection-footer"><span><Check size={16} />{notice}</span><button type="button" onClick={refresh} disabled={isRefreshing}>{isRefreshing ? '检查中' : '检查连接'}</button></div>
+    </Card>
+
+    <div className="settings-section"><SectionTitle eyebrow="偏好设置" title="车辆与提醒" />
+      <Card className="settings-list">
+        <SettingsRow icon={MapPin} title="位置地址解析" subtitle="将经纬度转换为可读地址" tone="blue"><SettingsToggle checked={addressLookup} onChange={setAddressLookup} label="位置地址解析" /></SettingsRow>
+        <SettingsRow icon={BatteryCharging} title="低电量提醒" subtitle="电量低于 20% 时通知我" tone="orange"><SettingsToggle checked={lowBattery} onChange={setLowBattery} label="低电量提醒" /></SettingsRow>
+        <SettingsRow icon={Activity} title="后台自动刷新" subtitle="在合适的时机更新车辆状态" tone="green"><SettingsToggle checked={backgroundRefresh} onChange={setBackgroundRefresh} label="后台自动刷新" /></SettingsRow>
+      </Card>
+    </div>
+
+    <div className="settings-section"><SectionTitle eyebrow="数据与隐私" title="设备保护" />
+      <Card className="settings-list">
+        <SettingsRow icon={Fingerprint} title="Face ID" subtitle="打开应用时验证身份" value="未启用" tone="purple" onClick={() => setNotice('Face ID 设置将在原生 App 中完成')} />
+        <SettingsRow icon={Eye} title="隐藏敏感信息" subtitle="切换后台时隐藏车辆与账户信息" tone="purple"><SettingsToggle checked={privacyShield} onChange={setPrivacyShield} label="隐藏敏感信息" /></SettingsRow>
+        <SettingsRow icon={Database} title="本地数据与诊断" subtitle="缓存、Widget 和原始字段" tone="neutral" onClick={() => setNotice('诊断中心已准备就绪')} />
+      </Card>
+    </div>
+
+    <div className="settings-section"><SectionTitle eyebrow="关于" title="NineBot+" />
+      <Card className="settings-list">
+        <SettingsRow icon={SlidersHorizontal} title="应用设置" value="版本 1.2.69" tone="neutral" onClick={() => setNotice('当前已是最新版本')} />
+        <SettingsRow icon={TriangleAlert} title="退出登录" subtitle="本地行程记录不会被删除" tone="red" onClick={requestSignOut} />
+      </Card>
+    </div>
+    <p className="settings-footnote"><Moon size={14} />设置会保存在当前设备；同步数据时不会上传账户密码。</p>
+  </div>;
 }
 
 function App() {
@@ -198,12 +259,14 @@ function App() {
   else if (subView === 'detail') content = <TripDetailPage onBack={() => setSubView('trend')} />;
   else if (subView === 'records-alarms') content = <RecordsPage mode="alarms" onBack={() => setSubView(null)} />;
   else if (subView === 'records-charging') content = <RecordsPage mode="charging" onBack={() => setSubView(null)} />;
+  else if (subView === 'settings') content = <SettingsPage onBack={() => setSubView(null)} />;
   else if (tab === 'control') content = <ControlPage onNavigate={navigate} />;
   else if (tab === 'trips') content = <TripsPage onBackDetail={() => setSubView('detail')} />;
   else if (tab === 'records') content = <RecordsPage mode="alarms" onBack={() => navigate('control')} />;
   else if (tab === 'security') content = <SecurityPage />;
-  else content = <ProfilePage onRecords={(mode) => setSubView(`records-${mode}`)} />;
-  return <div className="min-h-screen bg-[#f2f2f7] text-[#111318]"><main className="mobile-shell pb-28">{content}</main><BottomNav current={subView ? (subView.startsWith('records') ? 'profile' : 'trips') : tab} onChange={navigate} /></div>;
+  else content = <ProfilePage onRecords={(mode) => setSubView(`records-${mode}`)} onOpenSettings={() => setSubView('settings')} />;
+  const activeTab = subView ? (subView.startsWith('records') || subView === 'settings' ? 'profile' : 'trips') : tab;
+  return <div className="min-h-screen bg-[#f2f2f7] text-[#111318]"><main className="mobile-shell pb-28">{content}</main><BottomNav current={activeTab} onChange={navigate} /></div>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);

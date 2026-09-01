@@ -374,7 +374,10 @@ final class NinebotViewModel: ObservableObject {
         }
 
         do {
-            let refreshedDashboard = try await fetchDashboardWithSessionRecovery(selectedSN: dashboard.selectedSN)
+            let refreshedDashboard = try await fetchDashboardWithSessionRecovery(
+                selectedSN: dashboard.selectedSN,
+                forceRefresh: false
+            )
             let archivedDashboard = saveDashboard(refreshedDashboard)
             await cacheVehicleImages(for: archivedDashboard)
             await refreshResolvedAddressesIfNeeded(for: archivedDashboard)
@@ -770,10 +773,13 @@ final class NinebotViewModel: ObservableObject {
     /// Equivalent to an HTTP interceptor for URLSession: a failed vehicle
     /// request receives one refresh attempt and is replayed once. Credentials
     /// are never persisted, so only the server-issued session is renewed.
-    private func fetchDashboardWithSessionRecovery(selectedSN: String?) async throws -> NinebotDashboard {
+    private func fetchDashboardWithSessionRecovery(
+        selectedSN: String?,
+        forceRefresh: Bool = true
+    ) async throws -> NinebotDashboard {
         let client = try makeClient()
         do {
-            return try await client.fetchDashboard(selectedSN: selectedSN)
+            return try await client.fetchDashboard(selectedSN: selectedSN, forceRefresh: forceRefresh)
         } catch {
             guard Self.isUnauthorized(error) else { throw error }
 
@@ -787,7 +793,7 @@ final class NinebotViewModel: ObservableObject {
                    !refreshedToken.isEmpty {
                     updateSessionToken(refreshedToken)
                 }
-                return try await makeClient().fetchDashboard(selectedSN: selectedSN)
+                return try await makeClient().fetchDashboard(selectedSN: selectedSN, forceRefresh: forceRefresh)
             } catch {
                 throw error
             }
