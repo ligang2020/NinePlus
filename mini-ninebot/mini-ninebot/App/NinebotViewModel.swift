@@ -985,20 +985,19 @@ final class NinebotViewModel: ObservableObject {
         var didUpdate = false
 
         // Keep the first dashboard request lightweight. Hydrate the two optional
-        // detail reads in the background; async let keeps them parallel for each
-        // vehicle without the task-group type-checking issues seen in Xcode 16.
+        // detail reads in the background, so neither request delays the first
+        // screen. Keep this path deliberately simple for older Xcode toolchains.
         for snapshot in dashboard.vehicles {
             guard !Task.isCancelled,
                   let index = mergedDashboard.vehicles.firstIndex(where: { $0.vehicle.sn == snapshot.vehicle.sn }) else {
                 continue
             }
 
-            async let travelPage: NinebotTravelPage? = try? await client.fetchTravelMonth(
+            let page = try? await client.fetchTravelMonth(
                 sn: snapshot.vehicle.sn,
                 month: month
             )
-            async let batteryPayload: JSONValue? = try? await client.fetchBattery(sn: snapshot.vehicle.sn)
-            let (page, battery) = await (travelPage, batteryPayload)
+            let battery = try? await client.fetchBattery(sn: snapshot.vehicle.sn)
 
             guard page != nil || battery != nil else { continue }
             let current = mergedDashboard.vehicles[index]
