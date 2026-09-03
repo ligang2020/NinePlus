@@ -380,7 +380,7 @@ struct NinebotProxyClient {
     }
 }
 
-private extension NinebotProxyClient {
+extension NinebotProxyClient {
     static func unwrapEnvelope(_ root: JSONValue) throws -> JSONValue {
         guard let object = root.objectValue, object.keys.contains("ok") else {
             return root

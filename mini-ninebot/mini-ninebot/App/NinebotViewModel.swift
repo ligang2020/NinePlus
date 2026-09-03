@@ -1009,10 +1009,10 @@ final class NinebotViewModel: ObservableObject {
                 status: current.state.rawStatus.map(JSONValue.object),
                 travel: page?.raw ?? current.state.rawTravel.map(JSONValue.object),
                 battery: battery ?? current.state.rawBattery.map(JSONValue.object),
-                prediction: current.state.serverPrediction,
                 updatedAt: current.state.updatedAt
             )
             var mergedState = state
+            mergedState.serverPrediction = current.state.serverPrediction
             mergedState.totalMileage = state.totalMileage ?? current.state.totalMileage
             mergedState.lastMileage = state.lastMileage ?? current.state.lastMileage
             mergedDashboard.vehicles[index].state = mergedState
