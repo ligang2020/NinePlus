@@ -75,7 +75,7 @@ const charges = [
 ];
 
 
-const APP_VERSION = 'v30';
+const APP_VERSION = 'v31';
 
 const chargingPowerSamples = [
   { time: '00:00', power: 118 },

@@ -34,10 +34,10 @@ the vehicle dashboard while background refreshes reuse the short server cache.
 
 首页里程卡片显示今日里程；充电详情在后台补抓电池诊断数据，并提供充电功率曲线卡片。
 
-Web 版本 **v30** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
+Web 版本 **v31** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v30` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v31` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. Artifact upload needs no release secret.
 If the repository blocks GitHub's automatic workflow token from creating
 releases, add a fine-grained `GH_RELEASE_TOKEN` Actions secret with repository
@@ -48,7 +48,7 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v30 --derived-data build/DerivedData-v30
+  scripts/package-unsigned-ipa.sh --output build/ipa-v31 --derived-data build/DerivedData-v31
 ```
 
 ## Backend
