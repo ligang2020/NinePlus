@@ -772,6 +772,15 @@ private extension NinebotProxyClient {
         return nil
     }
 
+    static func firstInt(_ keys: [String], in objects: [[String: JSONValue]]) -> Int? {
+        for object in objects {
+            if let value = firstInt(keys, in: object) {
+                return value
+            }
+        }
+        return nil
+    }
+
     static func firstDouble(_ keys: [String], in object: [String: JSONValue]) -> Double? {
         for key in keys {
             if let value = object[key]?.doubleValue {
