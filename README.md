@@ -26,14 +26,14 @@ switch between the supplied daytime and nighttime artwork by local time. The
 daytime window is 06:00–18:59, and the existing static route map and vehicle
 controls remain available.
 
-Version **14**, build **14** is configured in the Xcode project. In the
+Version **15**, build **15** is configured in the Xcode project. In the
 driving state, the home screen removes the cycling glyph from the vehicle-stage
 badge, shows a car icon with “车辆行驶中”, and replaces current speed with the
 live cumulative distance. App launch and each foreground restoration refresh
 the vehicle dashboard while background refreshes reuse the short server cache.
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v14` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v15` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. Artifact upload needs no release secret.
 If the repository blocks GitHub's automatic workflow token from creating
 releases, add a fine-grained `GH_RELEASE_TOKEN` Actions secret with repository
@@ -44,7 +44,7 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v14 --derived-data build/DerivedData-v14
+  scripts/package-unsigned-ipa.sh --output build/ipa-v15 --derived-data build/DerivedData-v15
 ```
 
 ## Backend

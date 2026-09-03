@@ -1,9 +1,16 @@
 FROM python:3.12-slim
 
+# fnOS is commonly configured for China Standard Time. tzdata and CA roots
+# keep timestamps and HTTPS calls correct inside the slim image.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    NINEPLUS_DATA_DIR=/data
+    NINEPLUS_DATA_DIR=/data \
+    TZ=Asia/Shanghai
 
 WORKDIR /app
 

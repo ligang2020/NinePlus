@@ -9,6 +9,44 @@ const state = {
   pendingAction: null,
 };
 
+// Render the most recent dashboard immediately after a browser reload, then
+// refresh it in the background. This is intentionally browser-local: it never
+// changes server authorization or stores login credentials.
+const DASHBOARD_CACHE_KEY = 'nineplus.dashboard.v1';
+const DASHBOARD_CACHE_MAX_AGE = 24 * 60 * 60 * 1000;
+let dashboardLoadGeneration = 0;
+
+function readDashboardCache() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(DASHBOARD_CACHE_KEY) || 'null');
+    if (!cached || typeof cached !== 'object' || !cached.payload || !Number.isFinite(cached.savedAt)) return null;
+    if (Date.now() - cached.savedAt > DASHBOARD_CACHE_MAX_AGE) {
+      localStorage.removeItem(DASHBOARD_CACHE_KEY);
+      return null;
+    }
+    return cached.payload;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeDashboardCache(payload) {
+  try {
+    localStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), payload }));
+  } catch (_) {
+    // Private browsing / storage pressure should never block the dashboard.
+  }
+}
+
+function clearDashboardCache() {
+  try { localStorage.removeItem(DASHBOARD_CACHE_KEY); } catch (_) { /* ignore */ }
+}
+
+function setSyncStatus(label) {
+  const element = $('#syncStatus');
+  if (element) element.textContent = label;
+}
+
 const mapInstances = new Set();
 const CHINA_MAP_TILE_URL = 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}';
 const FALLBACK_MAP_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -233,11 +271,11 @@ function travelId(travel) {
   return fields(travel, ['id', 'travel_id', 'travelId', 'record_id', 'recordId', 'trip_id', 'tripId', 'ride_id', 'rideId']);
 }
 
-async function enrichTravelRows(sn, payload) {
+async function enrichTravelRows(sn, payload, { limit = 3 } = {}) {
   const rows = travelRows(payload);
   const candidates = rows.map((row, index) => ({ row, index, id: travelId(row) })).filter((item) => item.id !== null && item.id !== undefined && item.id !== '');
   if (!candidates.length) return payload;
-  const details = await Promise.all(candidates.map(async ({ row, index, id }) => {
+  const details = await Promise.all(candidates.slice(0, limit).map(async ({ row, index, id }) => {
     try {
       const detail = await api(`/vehicles/${sn}/travel/${encodeURIComponent(String(id))}`);
       const detailObject = detail && typeof detail === 'object' ? detail : {};
@@ -437,97 +475,177 @@ function renderMaps() {
   });
 }
 
-async function selectVehicle(vehicle, snapshot = null) {
-  state.selected = vehicle;
-  renderTabs();
-  $('#dashboard').hidden = true;
-  $('#loadingState').hidden = false;
+async function loadTravelRecords(vehicle, month = $('#monthPicker')?.value) {
+  if (!vehicle || !$('#travelList')) return;
   const sn = encodeURIComponent(vehicleSN(vehicle));
-  const month = $('#monthPicker').value;
+  const requestedSN = vehicleSN(vehicle);
+  const requestedMonth = month || '';
+  $('#travelList').innerHTML = '<div class="travel-loading"><span class="loading-dot"></span>正在加载骑行记录…</div>';
   try {
-    let status;
-    let battery;
-    let travels;
-    if (snapshot) {
-      // The aggregate dashboard already contains the live values. Reusing it
-      // prevents a second serialized round of ninecli processes on page load.
-      status = snapshot.status ?? null;
-      battery = snapshot.battery ?? null;
-      travels = snapshot.travel ?? null;
-    } else {
-      [status, battery, travels] = await Promise.all([
-        api(`/vehicles/${sn}/status`),
-        api(`/vehicles/${sn}/battery`).catch(() => null),
-        api(`/vehicles/${sn}/travel?month=${encodeURIComponent(month)}&page_size=20`).catch(() => null),
-      ]);
-    }
-    state.status = status;
-    state.battery = battery;
-    state.travels = travels;
+    const payload = await api(`/vehicles/${sn}/travel?month=${encodeURIComponent(requestedMonth)}&page_size=20`);
+    if (vehicleSN(state.selected) !== requestedSN || $('#monthPicker')?.value !== requestedMonth) return;
+    state.travels = payload;
     renderDashboard();
-    $('#dashboard').hidden = false;
     requestAnimationFrame(renderMaps);
-    const initialTravels = travels;
-    if (initialTravels) {
-      enrichTravelRows(sn, initialTravels).then((enriched) => {
-        if (state.selected !== vehicle || enriched === initialTravels) return;
-        state.travels = enriched;
-        renderDashboard();
-        requestAnimationFrame(renderMaps);
-      });
-    } else if (snapshot) {
-      // History can take substantially longer than status/battery. Render the
-      // control screen first, then hydrate the trip cards without reviving the
-      // full-page loading state.
-      api(`/vehicles/${sn}/travel?month=${encodeURIComponent(month)}&page_size=20`)
-        .then((loadedTravels) => {
-          if (state.selected !== vehicle) return null;
-          state.travels = loadedTravels;
-          renderDashboard();
-          requestAnimationFrame(renderMaps);
-          return enrichTravelRows(sn, loadedTravels);
-        })
-        .then((enriched) => {
-          if (!enriched || state.selected !== vehicle) return;
-          state.travels = enriched;
-          renderDashboard();
-          requestAnimationFrame(renderMaps);
-        })
-        .catch(() => {});
-    }
+
+    // Detail/track calls are optional and happen only after the list is visible.
+    // Hydrate a small number of recent rows so the first paint stays fast.
+    const enriched = await enrichTravelRows(sn, payload, { limit: 3 });
+    if (vehicleSN(state.selected) !== requestedSN || $('#monthPicker')?.value !== requestedMonth || enriched === payload) return;
+    state.travels = enriched;
+    renderDashboard();
+    requestAnimationFrame(renderMaps);
   } catch (error) {
-    toast(error.message);
-  } finally {
-    $('#loadingState').hidden = true;
+    if (vehicleSN(state.selected) !== requestedSN || $('#monthPicker')?.value !== requestedMonth) return;
+    $('#travelList').innerHTML = `<div class="travel-empty">骑行记录加载失败：${escapeHTML(error.message)}</div>`;
   }
 }
 
-async function loadVehicles() {
-  $('#dashboard').hidden = true;
-  $('#emptyState').hidden = true;
-  $('#loadingState').hidden = false;
+async function selectVehicle(vehicle, snapshot = null, { showLoading = true } = {}) {
+  const previousSN = vehicleSN(state.selected);
+  const nextSN = vehicleSN(vehicle);
+  const sameVehicle = previousSN && previousSN === nextSN;
+  state.selected = vehicle;
+  if (!sameVehicle) state.travels = null;
+  renderTabs();
+  if (showLoading) {
+    $('#dashboard').hidden = true;
+    $('#loadingState').hidden = false;
+  }
+  const sn = encodeURIComponent(nextSN);
   try {
-    // One dashboard request returns the vehicle list plus live status/battery.
-    // Travel history is intentionally loaded only after the user opens it.
-    const payload = await api('/dashboard?include_travel=0');
-    const snapshots = unwrapArray(payload, ['vehicles']);
-    state.vehicles = snapshots
-      .map((snapshot) => snapshot?.vehicle)
-      .filter((vehicle) => vehicle && vehicleSN(vehicle));
-    if (!state.vehicles.length) {
-      $('#emptyState').hidden = false;
-      return;
+    let status;
+    let battery;
+    if (snapshot) {
+      // The aggregate dashboard already contains the live values. Reusing it
+      // prevents a second round of ninecli processes on page load.
+      status = snapshot.status ?? null;
+      battery = snapshot.battery ?? null;
+    } else {
+      [status, battery] = await Promise.all([
+        api(`/vehicles/${sn}/status`),
+        api(`/vehicles/${sn}/battery`).catch(() => null),
+      ]);
     }
-    const previousSN = vehicleSN(state.selected);
-    const selected = state.vehicles.find((vehicle) => vehicleSN(vehicle) === previousSN) || state.vehicles[0];
-    const selectedSnapshot = snapshots.find((snapshot) => vehicleSN(snapshot?.vehicle) === vehicleSN(selected)) || null;
-    renderTabs();
-    await selectVehicle(selected, selectedSnapshot);
+    if (vehicleSN(state.selected) !== nextSN) return;
+    state.status = status;
+    state.battery = battery;
+    renderDashboard();
+    $('#dashboard').hidden = false;
+    $('#loadingState').hidden = true;
+    requestAnimationFrame(renderMaps);
+
+    if (snapshot && battery == null) {
+      api(`/vehicles/${sn}/battery`).then((loadedBattery) => {
+        if (vehicleSN(state.selected) !== nextSN) return;
+        state.battery = loadedBattery;
+        renderDashboard();
+      }).catch(() => {});
+    }
+
+    // History is deliberately not part of the 1–2 second dashboard path.
+    // Load it only for a newly selected vehicle or when no history is present.
+    if (!sameVehicle || state.travels == null) {
+      void loadTravelRecords(vehicle);
+    }
   } catch (error) {
-    if (error.status === 401) setAuthenticated(false);
     toast(error.message);
   } finally {
-    $('#loadingState').hidden = true;
+    if (showLoading) $('#loadingState').hidden = true;
+  }
+}
+
+async function renderDashboardPayload(payload, { showLoading = false } = {}) {
+  const snapshots = unwrapArray(payload, ['vehicles']);
+  state.vehicles = snapshots
+    .map((snapshot) => snapshot?.vehicle)
+    .filter((vehicle) => vehicle && vehicleSN(vehicle));
+  if (!state.vehicles.length) {
+    $('#emptyState').hidden = false;
+    return false;
+  }
+  $('#emptyState').hidden = true;
+  const previousSN = vehicleSN(state.selected);
+  const selected = state.vehicles.find((vehicle) => vehicleSN(vehicle) === previousSN) || state.vehicles[0];
+  const selectedSnapshot = snapshots.find((snapshot) => vehicleSN(snapshot?.vehicle) === vehicleSN(selected)) || null;
+  await selectVehicle(selected, selectedSnapshot, { showLoading });
+  return true;
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function pollDashboardSnapshot(generation, attempt = 0) {
+  if (generation !== dashboardLoadGeneration || attempt >= 2) return;
+  await wait(1200);
+  if (generation !== dashboardLoadGeneration) return;
+  try {
+    const payload = await api('/dashboard?include_travel=0');
+    if (generation !== dashboardLoadGeneration) return;
+    writeDashboardCache(payload);
+    await renderDashboardPayload(payload, { showLoading: false });
+    if (payload?.sync_state === 'refreshing') {
+      setSyncStatus('已显示缓存 · 后台同步');
+      void pollDashboardSnapshot(generation, attempt + 1);
+    } else {
+      setSyncStatus('数据已更新');
+    }
+  } catch (_) {
+    // The original snapshot remains visible; the main request already
+    // reports a useful state and the next normal open can retry.
+  }
+}
+
+async function loadVehicles({ forceRefresh = false } = {}) {
+  const generation = ++dashboardLoadGeneration;
+  $('#emptyState').hidden = true;
+  let hasVisibleDashboard = !$('#dashboard').hidden && state.vehicles.length > 0;
+
+  // On normal browser opens, paint the previous successful response first.
+  // The network request below still runs and replaces it as soon as newer data
+  // arrives, but users never have to stare at a full-page sync screen again.
+  if (!hasVisibleDashboard && !forceRefresh) {
+    const cachedPayload = readDashboardCache();
+    if (cachedPayload) {
+      hasVisibleDashboard = await renderDashboardPayload(cachedPayload, { showLoading: false });
+      if (hasVisibleDashboard) setSyncStatus('显示缓存 · 后台更新');
+    }
+  }
+
+  if (!hasVisibleDashboard) {
+    $('#dashboard').hidden = true;
+    $('#loadingState').hidden = false;
+    setSyncStatus('正在同步');
+  } else {
+    setSyncStatus(forceRefresh ? '正在刷新' : '后台更新');
+  }
+
+  try {
+    // One dashboard request returns the vehicle list plus live status/battery.
+    // Travel history is intentionally loaded only after the control view paints.
+    const suffix = forceRefresh ? '&fresh=1' : '';
+    const payload = await api(`/dashboard?include_travel=0${suffix}`);
+    writeDashboardCache(payload);
+    await renderDashboardPayload(payload, { showLoading: !hasVisibleDashboard });
+    if (payload?.sync_state === 'refreshing') {
+      setSyncStatus('已显示缓存 · 后台同步');
+      // A stale-while-revalidate response is intentionally immediate. Poll a
+      // couple of times so the same page receives the newly built snapshot
+      // instead of waiting until the next browser open.
+      void pollDashboardSnapshot(generation);
+    } else {
+      setSyncStatus('数据已更新');
+    }
+  } catch (error) {
+    if (error.status === 401) {
+      clearDashboardCache();
+      setAuthenticated(false);
+    }
+    if (!hasVisibleDashboard) toast(error.message);
+    else setSyncStatus('缓存可用 · 更新失败');
+  } finally {
+    if (!hasVisibleDashboard) $('#loadingState').hidden = true;
   }
 }
 
@@ -547,7 +665,7 @@ async function runAction(action) {
     await api(`/vehicles/${sn}/control`, { method: 'POST', body: JSON.stringify({ action, confirm: true }) });
     status.textContent = '已完成';
     toast(`${actionCopy[action][0]}成功`);
-    setTimeout(() => loadVehicles(), 800);
+    setTimeout(() => loadVehicles({ forceRefresh: true }), 800);
   } catch (error) {
     status.textContent = '操作失败';
     toast(error.message);
@@ -576,14 +694,20 @@ $('#loginForm').addEventListener('submit', async (event) => {
   }
 });
 
-$('#refreshButton').addEventListener('click', loadVehicles);
+$('#refreshButton').addEventListener('click', () => loadVehicles({ forceRefresh: true }));
+$('#monthPicker')?.addEventListener('change', () => {
+  if (state.selected) void loadTravelRecords(state.selected);
+});
+
+const now = new Date();
+if ($('#monthPicker')) $('#monthPicker').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 $('#logoutButton').addEventListener('click', async () => {
   try { await api('/auth/logout', { method: 'POST' }); } catch (_) { /* clear local view regardless */ }
   state.vehicles = [];
   state.selected = null;
+  clearDashboardCache();
   setAuthenticated(false);
 });
-$('#monthPicker').addEventListener('change', () => state.selected && selectVehicle(state.selected));
 document.querySelectorAll('.control-button').forEach((button) => {
   button.addEventListener('click', () => {
     const action = button.dataset.action;
@@ -598,8 +722,6 @@ $('#confirmDialog').addEventListener('close', () => {
   state.pendingAction = null;
 });
 
-const now = new Date();
-$('#monthPicker').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 api('/auth/me').then((session) => {
   if (session) {
     // A NinePlus session is sufficient to enter the console. The official

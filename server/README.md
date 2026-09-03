@@ -16,35 +16,103 @@ NinePlus 是一个 FastAPI + Docker Web 控制台：首次在服务器完成九�
    ```
 
    至少修改 `NINEPLUS_PORTAL_PASSWORD`。如需限制 App/API 访问，请同时设置一个随机的 `NINEPLUS_APP_BEARER_TOKEN`；iOS App 在登录前的「服务保护 Token」中填写同一值，APNs 设备 Token 上报也会携带 `Authorization: Bearer <Token>`。不要把 `.env` 提交到 Git。
+3. 先准备持久化目录权限。容器不是 root，而是 uid/gid `10001:10001`；这是 bind mount 在 fnOS 上最容易遇到的启动问题：
 
-首次部署仍需要管理员在服务器端完成一次九号云端绑定；绑定成功后，其他设备只登录 NinePlus 即可。
-3. 在飞牛「Docker / 项目」中新建项目：
+   ```bash
+   mkdir -p persistent-sessions
+   sudo chown -R 10001:10001 persistent-sessions
+   sudo chmod 700 persistent-sessions
+   ```
+
+4. 在飞牛「Docker / 项目」中新建项目：
    - 项目目录：`.../NinePlus/server`
    - Compose 文件：`compose.yaml`
    - 构建并启动：开启
-4. 或在 SSH 中执行：
+
+   也可以直接运行仓库提供的检查和部署脚本：
 
    ```bash
    cd /vol1/1000/docker/NinePlus/server
+   sudo bash fnos-deploy.sh
+   ```
+
+5. 或在 SSH 中执行：
+
+   ```bash
+   cd /vol1/1000/docker/NinePlus/server
+   docker compose config
    docker compose up -d --build
    docker compose ps
    curl http://127.0.0.1:8765/healthz
    ```
-5. 浏览器打开 `http://飞牛IP:8765`。如使用飞牛反向代理，请将上游指向 `127.0.0.1:8765`，并把 `NINEPLUS_COOKIE_SECURE=true`。
 
-项目使用普通端口映射而不是 host 网络，适配飞牛项目编排和端口管理；九号云端绑定、会话和推送设备数据持久化在 `server/persistent-sessions`。同一 NinePlus 用户从不同设备登录时，会自动复用服务器上的九号云端绑定。
+6. 浏览器打开 `http://飞牛IP:8765`（或 `.env` 中设置的 `NINEPLUS_PORT`）。如使用飞牛反向代理，请将上游指向 `127.0.0.1:8765`，并把 `NINEPLUS_COOKIE_SECURE=true`。
+
+项目使用普通端口映射而不是 host 网络，适配飞牛项目编排和端口管理；九号云绑定、门户会话、APNs 设备记录和事件状态持久化在 `server/persistent-sessions`。同一 NinePlus 用户从不同设备登录时，会自动复用服务器上的九号云端绑定。
+
+### 首次绑定九号云账号
+
+首次部署仍需要管理员在服务器端完成一次九号云端绑定；绑定成功后，其他设备只登录 NinePlus 即可。绑定不是把九号密码写进 `.env`，而是登录门户后调用一次 `/ninebot/login`：
+
+```bash
+# 1) 建立 NinePlus 门户会话；把密码改成 .env 中的门户密码
+curl -sS -c /tmp/nineplus.cookie \
+  -H 'Content-Type: application/json' \
+  -X POST http://127.0.0.1:8765/auth/login \
+  -d '{"username":"admin","password":"你的NinePlus门户密码"}'
+
+# 2) 用九号 App 账号完成一次云端绑定；不要把命令保存到公开脚本或日志
+curl -sS -b /tmp/nineplus.cookie \
+  -H 'Content-Type: application/json' \
+  -X POST http://127.0.0.1:8765/ninebot/login \
+  -d '{"account":"你的九号账号","password":"你的九号密码","area_code":"86"}'
+```
+
+如果设置了 `NINEPLUS_APP_BEARER_TOKEN`，两次请求都要再加 `-H 'Authorization: Bearer 你的Token'`。绑定成功后可执行 `curl http://127.0.0.1:8765/healthz`，再访问首页同步车辆。
 
 ## 常用维护
 
 ```bash
 docker compose logs -f --tail=200
 docker compose restart
+docker compose config   # 修改 .env 后先检查 Compose 插值
 docker compose pull  # 仅在改为远程镜像时使用
 docker compose up -d --build
 docker compose down   # 不会删除 persistent-sessions
 ```
 
-升级前建议备份 `persistent-sessions`。不要删除该目录，否则九号云绑定会丢失，需要在服务器端重新绑定；删除浏览器 Cookie 或更换设备不会影响绑定。
+升级前建议备份 `persistent-sessions`。不要删除该目录，否则九号云绑定会丢失，需要在服务器端重新绑定；删除浏览器 Cookie 或更换设备不会影响绑定。备份时应停止服务，避免复制到半写入文件：
+
+```bash
+docker compose down
+cd ..
+tar -czf NinePlus-persistent-$(date +%F).tgz server/persistent-sessions
+cd server
+docker compose up -d
+```
+
+## 同步速度优化（首页 1–2 秒目标）
+
+首页慢的主要原因不是 FastAPI 或飞牛容器本身，而是旧流程会在一次打开中启动多个 `ninecli` 子进程，并且后端用同一把锁把车辆、状态、电池请求排成串行；行程历史也曾经被带入首页。九号云响应慢时，等待时间会线性叠加。
+
+当前后端已调整为：
+
+- `status`、`battery`、`travel` 等只读调用使用临时配置副本，可并发执行，不再被控制指令的写锁阻塞。
+- 首页默认只等待车辆列表和状态；状态接口已经包含首页所需的电量百分比，完整电池诊断仅在网页首屏显示后补拉当前车辆。
+- 首页使用完整快照：30 秒内直接返回；快照过期后先返回最近一次完整数据，再后台刷新，避免刷新按钮让页面一直转圈。
+- 行程数据不再阻塞首页，只在行程页按需加载。
+- 后端日志会记录每个 `ninecli` 请求和整次 dashboard 刷新的耗时，便于判断是九号云、网络还是容器资源导致慢。
+
+相关配置在 `server/.env`：
+
+```env
+NINEPLUS_DASHBOARD_INCLUDE_BATTERY=0
+NINEPLUS_READ_CONCURRENCY=4
+NINEPLUS_DASHBOARD_SNAPSHOT_TTL=30
+NINEPLUS_DASHBOARD_STALE_TTL=300
+```
+
+如果需要让聚合接口继续携带完整电池诊断，将 `NINEPLUS_DASHBOARD_INCLUDE_BATTERY=1`；但首页打开速度会下降。由于九号云属于上游第三方服务，无法保证冷启动每次都严格低于 2 秒；快照命中和后台刷新路径可做到页面立即可用，冷启动耗时以容器日志为准。
 
 ## 端点与检查
 

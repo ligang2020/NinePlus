@@ -11,6 +11,7 @@ import re
 import secrets
 import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -37,12 +38,24 @@ CACHE_TTL_VEHICLES = max(0.0, float(os.getenv("NINEPLUS_CACHE_TTL_VEHICLES", "30
 CACHE_TTL_STATUS = max(0.0, float(os.getenv("NINEPLUS_CACHE_TTL_STATUS", "8")))
 CACHE_TTL_BATTERY = max(0.0, float(os.getenv("NINEPLUS_CACHE_TTL_BATTERY", "15")))
 CACHE_TTL_TRAVEL = max(0.0, float(os.getenv("NINEPLUS_CACHE_TTL_TRAVEL", "300")))
+# The dashboard is a latency-sensitive aggregate. Keep the last complete
+# snapshot separately from individual CLI response caches so a refresh can
+# return usable data immediately while one background refresh updates it.
+DASHBOARD_SNAPSHOT_TTL = max(0.0, float(os.getenv("NINEPLUS_DASHBOARD_SNAPSHOT_TTL", "30")))
+DASHBOARD_STALE_TTL = max(0.0, float(os.getenv("NINEPLUS_DASHBOARD_STALE_TTL", "300")))
+# ``status`` already carries the dashboard battery percentage in ninecli
+# 0.1.7. Fetch the heavyweight battery detail endpoint only after the home
+# screen has painted (the web UI hydrates the selected vehicle afterwards).
+DASHBOARD_INCLUDE_BATTERY = os.getenv("NINEPLUS_DASHBOARD_INCLUDE_BATTERY", "0").lower() in {"1", "true", "yes", "on"}
+READ_CONCURRENCY = max(1, int(os.getenv("NINEPLUS_READ_CONCURRENCY", "4")))
+READ_ONLY_COMMANDS = {"vehicles", "status", "battery", "travel"}
 COOKIE_SECURE = os.getenv("NINEPLUS_COOKIE_SECURE", "auto").lower()
 BOOT_TIME = time.time()
 SN_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 TRAVEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 MONTH_PATTERN = re.compile(r"^(?:\d{4}-?\d{2})$")
 SESSION_ROOT = Path(os.getenv("NINEPLUS_SESSION_ROOT", "/run/nineplus/sessions"))
+DASHBOARD_SNAPSHOT_FILE = SESSION_ROOT / "dashboard-snapshot.json"
 # Keep the official ninecli token/config on the persistent session volume.
 # NinePlus credentials authenticate a user session; the official cloud binding
 # belongs to the server installation and is reused by every device that logs
@@ -142,6 +155,9 @@ class CloudSession:
         self.lock = asyncio.Lock()
         self.cache: dict[tuple[str, ...], tuple[float, Any]] = {}
         self.inflight: dict[tuple[str, ...], asyncio.Task[Any]] = {}
+        self.dashboard_snapshot: tuple[float, dict[str, Any]] | None = None
+        self.dashboard_refresh_tasks: dict[tuple[str, bool], asyncio.Task[dict[str, Any]]] = {}
+        self.read_semaphore = asyncio.Semaphore(READ_CONCURRENCY)
 
 
 class PortalSession:
@@ -535,7 +551,9 @@ def restore_persistent_cloud() -> CloudSession | None:
         logger.warning("persistent official config found without account metadata; ignoring it")
         return None
     logger.info("restored persistent official account binding for %s", account)
-    return CloudSession(account, PERSISTENT_CLOUD_DIR, time.time() + SESSION_TTL)
+    cloud = CloudSession(account, PERSISTENT_CLOUD_DIR, time.time() + SESSION_TTL)
+    restore_dashboard_snapshot(cloud)
+    return cloud
 
 
 def attach_persistent_cloud(portal: PortalSession) -> CloudSession | None:
@@ -1189,9 +1207,42 @@ async def run_cli(
 
 
 async def _run_cloud_call(session: CloudSession, args: tuple[str, ...]) -> Any:
-    async with official_binding_lock:
-        async with session.lock:
-            return await run_cli(session, *args)
+    """Run a CLI call without serializing independent read-only requests.
+
+    ninecli may update files in its config directory while refreshing a token.
+    Read requests therefore execute against a private copy of the current
+    config. This lets status/battery requests overlap safely and prevents a
+    slow telemetry call for one vehicle from blocking every other read. Writes
+    (login and controls) continue to use the canonical directory and lock.
+    """
+    started = time.perf_counter()
+    command = args[0] if args else ""
+    if command in READ_ONLY_COMMANDS:
+        async with official_binding_lock:
+            source_dir = session.config_dir
+            if not source_dir.is_dir():
+                return await run_cli(session, *args)
+            SESSION_ROOT.mkdir(parents=True, exist_ok=True)
+            temp_dir = Path(tempfile.mkdtemp(prefix=".nineplus-read-", dir=SESSION_ROOT))
+            try:
+                temp_dir.rmdir()
+                shutil.copytree(source_dir, temp_dir, symlinks=True)
+            except Exception:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise
+        read_session = CloudSession(session.account, temp_dir, session.expires_at)
+        try:
+            async with session.read_semaphore:
+                result = await run_cli(read_session, *args)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    else:
+        async with official_binding_lock:
+            async with session.lock:
+                result = await run_cli(session, *args)
+    elapsed = time.perf_counter() - started
+    logger.info("ninecli %s finished in %.3fs", " ".join(args), elapsed)
+    return result
 
 
 def invalidate_session_cache(session: CloudSession) -> None:
@@ -1250,6 +1301,8 @@ async def startup() -> None:
     session_reaper_task = asyncio.create_task(session_reaper())
     if not cli_available():
         logger.warning("ninecli is not available; login and vehicle APIs will be disabled")
+    elif any(portal.cloud is not None for portal in sessions.values()):
+        asyncio.create_task(warm_restored_dashboard_snapshots())
 
 
 @app.on_event("shutdown")
@@ -1564,6 +1617,48 @@ def current_month_string() -> str:
     return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m")
 
 
+def restore_dashboard_snapshot(session: CloudSession) -> None:
+    """Restore a recent dashboard snapshot so a container restart is not a cold open."""
+    if not is_persistent_cloud(session):
+        return
+    try:
+        record = json.loads(DASHBOARD_SNAPSHOT_FILE.read_text(encoding="utf-8"))
+        saved_at = float(record.get("saved_at"))
+        account = str(record.get("account") or "")
+        payload = record.get("payload")
+        age = max(0.0, time.time() - saved_at)
+        if account != session.account or age > DASHBOARD_STALE_TTL or not isinstance(payload, dict):
+            return
+        session.dashboard_snapshot = (time.monotonic() - age, payload)
+        logger.info("restored dashboard snapshot age=%.1fs", age)
+    except (FileNotFoundError, OSError, ValueError, TypeError, AttributeError):
+        return
+
+
+def persist_dashboard_snapshot(session: CloudSession, payload: dict[str, Any]) -> None:
+    """Persist only the last complete snapshot; never write credentials."""
+    if not is_persistent_cloud(session):
+        return
+    temporary = DASHBOARD_SNAPSHOT_FILE.with_name(f".{DASHBOARD_SNAPSHOT_FILE.name}.{secrets.token_hex(6)}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps({"account": session.account, "saved_at": time.time(), "payload": payload}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        try:
+            temporary.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(temporary, DASHBOARD_SNAPSHOT_FILE)
+        try:
+            DASHBOARD_SNAPSHOT_FILE.chmod(0o600)
+        except OSError:
+            pass
+    except OSError as exc:
+        logger.warning("could not persist dashboard snapshot: %s", exc)
+        temporary.unlink(missing_ok=True)
+
+
 async def dashboard_read(
     session: CloudSession,
     command: tuple[str, ...],
@@ -1572,12 +1667,131 @@ async def dashboard_read(
     try:
         return await cloud_call(session, *command, cache_ttl=cache_ttl)
     except HTTPException as exc:
-        # Authentication errors must still fail the whole request.  A single
+        # Authentication errors must still fail the whole request. A single
         # optional telemetry endpoint failing should not blank every vehicle.
         if exc.status_code in (401, 403):
             raise
         logger.warning("dashboard read failed (%s): %s", command[0], exc.detail)
         return None
+
+
+async def refresh_dashboard_snapshot(
+    session: CloudSession,
+    owner: str,
+    normalized_month: str,
+    *,
+    force_refresh: bool = False,
+    include_travel: bool = False,
+) -> dict[str, Any]:
+    """Build one complete home snapshot.
+
+    The CLI calls use private config copies for read-only operations, so the
+    independent vehicle reads can run concurrently. The snapshot still has a
+    single writer and is published atomically only after all rows are ready.
+    """
+    started = time.perf_counter()
+    if force_refresh:
+        invalidate_session_cache(session)
+
+    raw_vehicles = await cloud_call(session, "vehicles", cache_ttl=CACHE_TTL_VEHICLES)
+    vehicles = []
+    for vehicle in vehicle_items(raw_vehicles):
+        sn_value = vehicle.get("wnumber") or vehicle.get("sn")
+        if isinstance(sn_value, str) and SN_PATTERN.fullmatch(sn_value):
+            vehicles.append((vehicle, validate_sn(sn_value)))
+
+    async def read_vehicle(vehicle: dict[str, Any], sn: str) -> tuple[dict[str, Any], dict[str, Any] | None, Any, Any]:
+        status, battery = await asyncio.gather(
+            dashboard_read(session, ("status", sn), CACHE_TTL_STATUS),
+            dashboard_read(session, ("battery", sn), CACHE_TTL_BATTERY) if DASHBOARD_INCLUDE_BATTERY else asyncio.sleep(0, result=None),
+        )
+        status = enrich_status_for_legacy_clients(sn, normalize_status_location(status))
+        travel = None
+        if include_travel:
+            travel = await dashboard_read(session, ("travel", sn, "--month", normalized_month), CACHE_TTL_TRAVEL)
+        return vehicle, battery, status, travel
+
+    rows = await asyncio.gather(*(read_vehicle(vehicle, sn) for vehicle, sn in vehicles))
+    entries: list[dict[str, Any]] = []
+    notification_vehicles: list[dict[str, Any]] = []
+    for vehicle, battery, status, travel in rows:
+        sn = validate_sn(vehicle.get("wnumber") or vehicle.get("sn"))
+        entries.append({"vehicle": vehicle, "status": status, "battery": battery, "travel": travel})
+        notification_vehicles.append({
+            "sn": sn,
+            "vehicle_name": _vehicle_name(vehicle, sn),
+            "status": status,
+            "battery": battery,
+        })
+
+    payload = {"month": normalized_month, "vehicles": entries, "updated_at": time.time()}
+    if not include_travel:
+        session.dashboard_snapshot = (time.monotonic(), copy.deepcopy(payload))
+        persist_dashboard_snapshot(session, payload)
+    if notification_vehicles:
+        # Notifications must not extend the snapshot refresh or HTTP latency.
+        asyncio.create_task(publish_vehicle_notifications(owner, notification_vehicles))
+    logger.info(
+        "dashboard snapshot refreshed vehicles=%d in %.3fs force=%s battery=%s travel=%s",
+        len(entries), time.perf_counter() - started, force_refresh, DASHBOARD_INCLUDE_BATTERY, include_travel,
+    )
+    return payload
+
+
+async def ensure_dashboard_refresh(
+    session: CloudSession,
+    owner: str,
+    normalized_month: str,
+    *,
+    force_refresh: bool = False,
+    include_travel: bool = False,
+) -> asyncio.Task[dict[str, Any]]:
+    key = (normalized_month, include_travel)
+    task = session.dashboard_refresh_tasks.get(key)
+    if task is None or task.done():
+        task = asyncio.create_task(
+            refresh_dashboard_snapshot(
+                session,
+                owner,
+                normalized_month,
+                force_refresh=force_refresh,
+                include_travel=include_travel,
+            )
+        )
+        session.dashboard_refresh_tasks[key] = task
+
+        def clear_task(done: asyncio.Task[dict[str, Any]]) -> None:
+            if session.dashboard_refresh_tasks.get(key) is done:
+                session.dashboard_refresh_tasks.pop(key, None)
+            try:
+                done.exception()
+            except (asyncio.CancelledError, Exception):
+                # The next request can retry a failed background refresh.
+                pass
+
+        task.add_done_callback(clear_task)
+    return task
+
+
+async def warm_restored_dashboard_snapshots() -> None:
+    """Refresh one restored cloud binding in the background after startup."""
+    await asyncio.sleep(0)
+    seen: set[int] = set()
+    for portal in list(sessions.values()):
+        cloud = portal.cloud
+        if cloud is None or not is_persistent_cloud(cloud) or id(cloud) in seen:
+            continue
+        seen.add(id(cloud))
+        if cloud.dashboard_snapshot is not None:
+            # The restored snapshot is immediately usable; refresh it in the
+            # background so the next open sees current data without waiting.
+            pass
+        try:
+            task = await ensure_dashboard_refresh(cloud, portal.username, current_month_string())
+            await asyncio.shield(task)
+        except Exception as exc:
+            logger.warning("background dashboard warm-up failed: %s", type(exc).__name__)
+
 
 
 @app.get("/vehicles")
@@ -1594,66 +1808,51 @@ async def dashboard(
     month: str = "",
     nineplus_session: str | None = Cookie(default=None),
 ):
-    """Return the home-screen data in one request.
+    """Return the home screen without making every open wait on ninecli.
 
-    The underlying ninecli calls remain serialized per login session because
-    they share token/config files, but the HTTP fan-out and duplicate calls are
-    removed.  Each read also benefits from the session-level short TTL cache.
+    A cold request waits for the first snapshot. Once one exists, normal and
+    manual refreshes return the last complete snapshot immediately and trigger
+    a de-duplicated background refresh. This avoids the old behavior where a
+    refresh synchronously ran vehicles + status + battery (and often travel).
     """
+    del background_tasks  # retained in the signature for API compatibility
     token, session = await auth_from_request(request, nineplus_session)
     owner = sessions[token].username
     normalized_month = normalize_month(month) or current_month_string()
-    # The mobile app sends fresh=1 for foreground/manual refreshes. Bypass the
-    # short server-side live-data cache so the UI reflects vehicle changes
-    # immediately instead of waiting for the normal TTL to expire.
     force_refresh = request.query_params.get("fresh", "").lower() in {"1", "true", "yes"}
-    # Travel history is not required to paint the control screen and is often
-    # the slowest cloud call. It is fetched by the travel screen on demand;
-    # callers that need it in this aggregate can explicitly opt in.
     include_travel = request.query_params.get("include_travel", "0").lower() in {"1", "true", "yes"}
-    vehicles_ttl = 0.0 if force_refresh else CACHE_TTL_VEHICLES
-    status_ttl = 0.0 if force_refresh else CACHE_TTL_STATUS
-    battery_ttl = 0.0 if force_refresh else CACHE_TTL_BATTERY
-    raw_vehicles = await cloud_call(session, "vehicles", cache_ttl=vehicles_ttl)
 
-    entries: list[dict[str, Any]] = []
-    notification_vehicles: list[dict[str, Any]] = []
-    for vehicle in vehicle_items(raw_vehicles):
-        sn_value = vehicle.get("wnumber") or vehicle.get("sn")
-        if not isinstance(sn_value, str) or not SN_PATTERN.fullmatch(sn_value):
-            continue
-        sn = validate_sn(sn_value)
-        status = await dashboard_read(session, ("status", sn), status_ttl)
-        status = enrich_status_for_legacy_clients(sn, normalize_status_location(status))
-        battery = await dashboard_read(session, ("battery", sn), battery_ttl)
-        travel = None
-        if include_travel:
-            travel = await dashboard_read(
-                session,
-                ("travel", sn, "--month", normalized_month),
-                CACHE_TTL_TRAVEL,
-            )
-        entries.append({
-            "vehicle": vehicle,
-            "status": status,
-            "battery": battery,
-            "travel": travel,
-        })
-        notification_vehicles.append({
-            "sn": sn,
-            "vehicle_name": _vehicle_name(vehicle, sn),
-            "status": status,
-            "battery": battery,
-        })
+    snapshot = session.dashboard_snapshot
+    age = time.monotonic() - snapshot[0] if snapshot else None
+    has_usable_snapshot = snapshot is not None and age is not None and age <= DASHBOARD_STALE_TTL
 
-    # APNs delivery is deliberately detached from the dashboard response. A
-    # slow Apple connection must never keep the app's loading screen visible.
-    if notification_vehicles:
-        background_tasks.add_task(publish_vehicle_notifications, owner, notification_vehicles)
+    # Travel is intentionally not part of the fast home snapshot. The travel
+    # page continues to load it on demand, preserving the 1–2 second home UX.
+    if not include_travel and has_usable_snapshot:
+        payload = copy.deepcopy(snapshot[1])
+        refreshing = force_refresh or age > DASHBOARD_SNAPSHOT_TTL
+        if refreshing:
+            await ensure_dashboard_refresh(session, owner, normalized_month, force_refresh=force_refresh)
+        payload["sync_state"] = "refreshing" if refreshing else "fresh"
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-NinePlus-Snapshot"] = "stale" if refreshing else "fresh"
+        return ok(payload)
 
-    # Vehicle telemetry must never be cached by browsers or shared proxies.
+    # First load (or an explicitly requested travel aggregate) remains
+    # synchronous. Later home opens will use the snapshot path above.
+    task = await ensure_dashboard_refresh(
+        session,
+        owner,
+        normalized_month,
+        force_refresh=force_refresh,
+        include_travel=include_travel,
+    )
+    payload = await asyncio.shield(task)
+    payload = copy.deepcopy(payload)
+    payload["sync_state"] = "fresh"
     response.headers["Cache-Control"] = "no-store"
-    return ok({"month": normalized_month, "vehicles": entries, "updated_at": time.time()})
+    response.headers["X-NinePlus-Snapshot"] = "cold"
+    return ok(payload)
 
 
 @app.get("/vehicles/{sn}/status")

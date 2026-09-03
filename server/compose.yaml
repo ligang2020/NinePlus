@@ -6,8 +6,9 @@ services:
     image: nineplus:latest
     container_name: nineplus
     restart: unless-stopped
-    ports:
-      - "8765:8765"
+    # 使用 host 网络，便于 Lucky 直接反向代理到 127.0.0.1:8765。
+    # host 模式下不能再配置 ports 映射。
+    network_mode: host
     env_file:
       - .env
     environment:
@@ -15,12 +16,17 @@ services:
       NINEPLUS_SESSION_TTL: "${NINEPLUS_SESSION_TTL:-2592000}"
       NINEPLUS_CLI_TIMEOUT: "${NINEPLUS_CLI_TIMEOUT:-45}"
       NINEPLUS_CACHE_TTL_VEHICLES: "${NINEPLUS_CACHE_TTL_VEHICLES:-30}"
-      NINEPLUS_CACHE_TTL_STATUS: "${NINEPLUS_CACHE_TTL_STATUS:-8}"
+      NINEPLUS_CACHE_TTL_STATUS: "${NINEPLUS_CACHE_TTL_STATUS:-30}"
       NINEPLUS_CACHE_TTL_BATTERY: "${NINEPLUS_CACHE_TTL_BATTERY:-15}"
       NINEPLUS_CACHE_TTL_TRAVEL: "${NINEPLUS_CACHE_TTL_TRAVEL:-300}"
+      NINEPLUS_DASHBOARD_INCLUDE_BATTERY: "${NINEPLUS_DASHBOARD_INCLUDE_BATTERY:-0}"
+      NINEPLUS_READ_CONCURRENCY: "${NINEPLUS_READ_CONCURRENCY:-4}"
+      NINEPLUS_DASHBOARD_SNAPSHOT_TTL: "${NINEPLUS_DASHBOARD_SNAPSHOT_TTL:-30}"
+      NINEPLUS_DASHBOARD_STALE_TTL: "${NINEPLUS_DASHBOARD_STALE_TTL:-300}"
       NINEPLUS_COOKIE_SECURE: "${NINEPLUS_COOKIE_SECURE:-auto}"
       NINEPLUS_DEVICE_ID: "${NINEPLUS_DEVICE_ID:-}"
       NINEPLUS_PORTAL_USERNAME: "${NINEPLUS_PORTAL_USERNAME:-admin}"
+      TZ: "${TZ:-Asia/Shanghai}"
       NINEPLUS_PORTAL_PASSWORD: "${NINEPLUS_PORTAL_PASSWORD:?请在 server/.env 中设置 NinePlus 登录密码}"
     volumes:
       - ./persistent-sessions:/run/nineplus/sessions
@@ -33,14 +39,15 @@ services:
 
 
   # Optional Cloudflare Tunnel connector. Configure the public hostname and
-  # origin service (http://nineplus:8765) in the Cloudflare Zero Trust
+  # origin service (http://127.0.0.1:8765) in the Cloudflare Zero Trust
   # dashboard, then start this profile with --profile cloudflare.
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: nineplus-cloudflared
     restart: unless-stopped
     profiles: ["cloudflare"]
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?请在 server/.env 中设置 CLOUDFLARE_TUNNEL_TOKEN}
+    network_mode: host
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
       nineplus:
         condition: service_healthy

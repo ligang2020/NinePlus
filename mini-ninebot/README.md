@@ -66,11 +66,11 @@ password. Cached vehicle data may be kept locally for a smoother dashboard.
 - App 每次启动和重新回到前台都会立即请求最新车况，不再因上次前台会话的节流而跳过。
 - App 仅在前台轮询：充电中每 3 秒更新一次，其他状态每 6 秒更新一次；进入后台或非活跃状态立即停止轮询。
 
-## v14 后端打开与前台刷新加速
+## v15 行程加载与打包版本更新
 
 - 仪表盘接口默认优先返回车辆、实时状态和电池信息，行程历史改为按需加载，避免首次打开被较慢的行程接口阻塞。
 - App 前台静默刷新复用后端短缓存；用户主动下拉刷新仍会请求最新车况。
-- GitHub Actions 默认发布标签更新为 `v14`，会上传 unsigned IPA 和 SHA-256 校验文件，并在推送 `v14` 标签时发布到 GitHub Release。
+- App 首屏保持快速加载车辆状态，当前月份骑行行程在后台并行补全并写入缓存；修复后端 dashboard 默认不返回 travel 导致行程页为空的问题。GitHub Actions 默认发布标签更新为 `v15`，会上传 unsigned IPA 和 SHA-256 校验文件，并在推送 `v15` 标签时发布到 GitHub Release。
 
 ## v13 充电主页与刷新优化
 

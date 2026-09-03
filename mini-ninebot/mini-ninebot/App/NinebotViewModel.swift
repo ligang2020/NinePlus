@@ -165,6 +165,7 @@ final class NinebotViewModel: ObservableObject {
     private var isPerformingSilentDashboardRefresh = false
     private var foregroundRefreshTask: Task<Void, Never>?
     private var dashboardEnrichmentTask: Task<Void, Never>?
+    private var dashboardTravelEnrichmentTask: Task<Void, Never>?
     private var pendingAutomaticRefresh = false
     private var lastForegroundRefreshRequestAt: Date?
 
@@ -960,11 +961,76 @@ final class NinebotViewModel: ObservableObject {
     /// published to SwiftUI.
     private func scheduleDashboardEnrichment(for dashboard: NinebotDashboard) {
         dashboardEnrichmentTask?.cancel()
+        dashboardTravelEnrichmentTask?.cancel()
         dashboardEnrichmentTask = Task { [weak self] in
             guard let self else { return }
             async let imageCaching: Void = self.cacheVehicleImages(for: dashboard)
             async let addressResolution: Void = self.refreshResolvedAddressesIfNeeded(for: dashboard)
             _ = await (imageCaching, addressResolution)
+        }
+        // The optimized server dashboard deliberately omits travel history so
+        // the home screen can render quickly. Fetch only the current month in a
+        // cancellable background task, then merge it into the dashboard cache.
+        dashboardTravelEnrichmentTask = Task { [weak self] in
+            guard let self else { return }
+            await self.enrichCurrentMonthTravel(for: dashboard)
+        }
+    }
+
+    private func enrichCurrentMonthTravel(for dashboard: NinebotDashboard) async {
+        guard dataSourceMode == .platform, !dashboard.vehicles.isEmpty else { return }
+        guard let client = try? makeClient() else { return }
+        let month = NinebotProxyClient.currentMonthString()
+
+        struct TravelResult {
+            let sn: String
+            let page: NinebotTravelPage?
+        }
+
+        var results: [TravelResult] = []
+        await withTaskGroup(of: TravelResult.self) { group in
+            for snapshot in dashboard.vehicles {
+                group.addTask {
+                    let page = try? await client.fetchTravelMonth(sn: snapshot.vehicle.sn, month: month)
+                    return TravelResult(sn: snapshot.vehicle.sn, page: page)
+                }
+            }
+            for await result in group {
+                results.append(result)
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+        var mergedDashboard = self.dashboard
+        var didUpdate = false
+
+        for result in results {
+            guard let page = result.page, !page.records.isEmpty,
+                  let index = mergedDashboard.vehicles.firstIndex(where: { $0.vehicle.sn == result.sn }) else {
+                continue
+            }
+
+            // Keep all months in the shared interface cache, while putting the
+            // current-month records directly on the snapshot used by the trip
+            // screen. This fixes the empty page without slowing the first paint.
+            store.upsertInterfaceRideRecords(page.records, sn: result.sn)
+            let current = mergedDashboard.vehicles[index]
+            var state = NinebotProxyClient.vehicleState(
+                status: current.state.rawStatus.map(JSONValue.object),
+                travel: page.raw,
+                battery: current.state.rawBattery.map(JSONValue.object),
+                prediction: current.state.serverPrediction,
+                updatedAt: current.state.updatedAt
+            )
+            state.totalMileage = state.totalMileage ?? current.state.totalMileage
+            state.lastMileage = state.lastMileage ?? current.state.lastMileage
+            mergedDashboard.vehicles[index].state = state
+            didUpdate = true
+        }
+
+        if didUpdate {
+            _ = saveDashboard(mergedDashboard)
+            WidgetCenter.shared.reloadAllTimelines()
         }
     }
 

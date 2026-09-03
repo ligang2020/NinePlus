@@ -93,7 +93,7 @@ struct NinebotServerClient {
             }
             let dashboardObject = dashboard?.objectValue
             let status: JSONValue?
-            let travel: JSONValue?
+            var travel: JSONValue?
             let battery: JSONValue?
             let prediction: NinebotServerPrediction?
             let stableState = dashboardObject?["state"]
@@ -104,6 +104,9 @@ struct NinebotServerClient {
                     ? dashboardObject?["battery"]
                     : stableState
                 prediction = dashboardObject?["prediction"].flatMap(Self.serverPrediction)
+                if travel == nil {
+                    travel = try? await fetchTravel(sn: vehicle.sn, month: currentMonth)
+                }
             } else if let dashboardObject,
                Self.hasVehicleStatus(dashboardObject["status"]),
                Self.hasBatteryData(dashboardObject["battery"]) {
@@ -111,6 +114,9 @@ struct NinebotServerClient {
                 travel = dashboardObject["travel"]
                 battery = dashboardObject["battery"]
                 prediction = dashboardObject["prediction"].flatMap(Self.serverPrediction)
+                if travel == nil {
+                    travel = try? await fetchTravel(sn: vehicle.sn, month: currentMonth)
+                }
             } else {
                 // Status and battery are the authoritative snapshot.  Never turn a
                 // failed request into an empty, apparently successful dashboard.

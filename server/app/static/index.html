@@ -45,7 +45,7 @@
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="#overview" aria-label="NinePlus 首页"><span class="brand-mark small">9+</span><span class="brand-word">NinePlus</span></a>
-        <div class="topbar-meta"><span class="secure-badge"><i></i> CLOUD SYNC</span><span class="topbar-date" id="topbarDate"></span></div>
+        <div class="topbar-meta"><span class="secure-badge"><i></i><span id="syncStatus">数据就绪</span></span><span class="topbar-date" id="topbarDate"></span></div>
         <div class="toolbar-actions"><button id="refreshButton" class="icon-button" title="刷新车辆数据" aria-label="刷新车辆数据">↻</button><button id="logoutButton" class="text-button">退出</button></div>
       </div>
     </header>
@@ -72,13 +72,15 @@
           <section class="section-block map-section"><div class="section-heading"><div><span class="kicker">LIVE LOCATION</span><h2>车辆位置</h2></div><span id="locationValue" class="location-caption">中国地图 · --</span></div><div id="vehicleMap" class="vehicle-map" aria-label="车辆地图"></div></section>
         </div>
         <section class="section-block control-section"><div class="section-heading"><div><span class="kicker">REMOTE ACTIONS</span><h2>远程操作</h2></div><span id="controlStatus" class="status-pill">已就绪</span></div><div class="control-grid"><button class="control-button" data-action="bell"><span>♬</span><strong>鸣笛</strong><small>发出提示音</small></button><button class="control-button" data-action="buck"><span>⌃</span><strong>开座桶</strong><small>解锁后备箱</small></button><button class="control-button positive" data-action="engine_start"><span>▶</span><strong>启动</strong><small>远程启动车辆</small></button><button class="control-button destructive" data-action="engine_stop"><span>■</span><strong>熄火</strong><small>关闭车辆动力</small></button></div></section>
-        <section class="section-block travel-section"><div class="section-heading"><div><span class="kicker">RIDE HISTORY</span><h2>骑行记录</h2></div><label class="month-control"><span>查看月份</span><input id="monthPicker" class="month-picker" type="month" aria-label="选择月份"></label></div><div id="travelList" class="travel-list"></div></section>
+
+        <section class="section-block travel-section"><div class="section-heading"><div><span class="kicker">RIDE HISTORY</span><h2>骑行记录</h2></div><label class="month-control"><span>查看月份</span><input id="monthPicker" class="month-picker" type="month" aria-label="选择月份"></label></div><div id="travelList" class="travel-list"><div class="travel-loading"><span class="loading-dot"></span>正在加载骑行记录…</div></div></section>
+
         <details class="raw-panel"><summary>查看原始车辆数据 <span>开发者诊断</span></summary><pre id="rawData"></pre></details>
       </div>
     </main>
   </section>
   <dialog id="confirmDialog" class="confirm-dialog"><form method="dialog"><div class="dialog-mark">!</div><h2 id="confirmTitle">确认操作</h2><p id="confirmMessage"></p><div class="dialog-actions"><button value="cancel" class="secondary-button">取消</button><button id="confirmAction" value="confirm" class="primary-button">确认执行</button></div></form></dialog>
   <script src="/assets/vendor/leaflet/leaflet.js"></script>
-  <script src="/assets/app.js?v=1.2.64" defer></script>
+  <script src="/assets/app.js?v=1.2.69" defer></script>
 </body>
 </html>

@@ -234,6 +234,16 @@ struct NinebotProxyClient {
         )
     }
 
+    /// Loads one month of trips without forcing the fast dashboard endpoint to
+    /// include travel. The dashboard is intentionally lightweight; the view
+    /// model calls this in a cancellable background enrichment task so vehicle
+    /// status appears immediately while trip records still populate shortly
+    /// afterwards.
+    func fetchTravelMonth(sn: String, month: String) async throws -> NinebotTravelPage {
+        let payload = try await fetchTravel(sn: sn, month: month)
+        return Self.travelPage(from: payload, fallbackMonth: month)
+    }
+
     func syncTravelMonth(sn: String, month: String, pageSize: Int = 20) async throws -> NinebotTravelPage {
         let payload = try await request(
             method: "POST",
