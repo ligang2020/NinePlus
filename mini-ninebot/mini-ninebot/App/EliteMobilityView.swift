@@ -864,15 +864,12 @@ private struct EliteChargeView: View {
                 if let snapshot {
                     EliteChargingHero(snapshot: snapshot)
                     EliteChargeFacts(snapshot: snapshot)
-                    // Keep the chart in the native charging screen. The old v30
-                    // implementation only changed the web client, so the IPA
-                    // never rendered this card.
+                    // The chart is part of the native charging screen.
                     EliteChargingPowerCurveCard(
                         points: model.history(for: snapshot.vehicle.sn),
                         currentPower: snapshot.state.chargingPower,
                         isCharging: snapshot.state.isCharging == true
                     )
-                    EliteChargingHistoryCard(snapshot: snapshot)
                 } else {
                     EliteEmptyVehicleCard(isRefreshing: model.isLoading) {
                         Task { await model.refreshDashboard() }
@@ -1111,73 +1108,87 @@ private struct EliteChargingPowerCurveCard: View {
                 }
             }
 
-            GeometryReader { proxy in
-                let chartRect = CGRect(x: 0, y: 0, width: max(proxy.size.width, 1), height: max(proxy.size.height, 1))
-                let locations = sampleLocations(in: chartRect)
-
-                ZStack(alignment: .topLeading) {
-                    VStack(spacing: 0) {
-                        ForEach(0..<4, id: \.self) { _ in
-                            Rectangle()
-                                .fill(Color.white.opacity(0.07))
-                                .frame(height: 0.5)
-                                .frame(maxHeight: .infinity)
-                        }
-                    }
-
-                    HStack(spacing: 0) {
-                        ForEach(0..<4, id: \.self) { _ in
-                            Rectangle()
-                                .fill(Color.white.opacity(0.055))
-                                .frame(width: 0.5)
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-
-                    powerAreaPath(locations: locations, rect: chartRect)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.elitePrimary.opacity(0.30), Color.elitePrimary.opacity(0.035)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-
-                    powerLinePath(locations: locations)
-                        .stroke(
-                            LinearGradient(
-                                colors: [Color.elitePrimaryLight, Color.cyan.opacity(0.82)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            ),
-                            style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round)
-                        )
-                        .shadow(color: Color.elitePrimary.opacity(0.55), radius: 5)
-
-                    if let last = locations.last {
-                        TimelineView(.periodic(from: .now, by: 1.2)) { timeline in
-                            let pulse = 0.82 + 0.18 * sin(timeline.date.timeIntervalSince1970 * 4)
-                            Circle()
-                                .fill(Color.white)
-                                .frame(width: 8, height: 8)
-                                .overlay(Circle().fill(Color.elitePrimaryLight).frame(width: 5, height: 5))
-                                .shadow(color: Color.elitePrimaryLight.opacity(pulse), radius: 8)
-                                .position(last)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("\(numberText(maxPower)) W")
-                        Spacer()
-                        Text("0 W")
-                    }
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color.eliteSecondaryText.opacity(0.78))
-                    .padding(.vertical, 2)
+            // Reserve a dedicated gutter for Y-axis labels. In the previous version they were
+            // drawn inside the plot and could be clipped or overlap the line.
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .trailing, spacing: 0) {
+                    Text("\(numberText(maxPower)) W")
+                    Spacer(minLength: 0)
+                    Text("0 W")
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.eliteSecondaryText.opacity(0.82))
+                .frame(width: 38, height: 156, alignment: .topTrailing)
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+
+                GeometryReader { proxy in
+                    let chartRect = CGRect(
+                        x: 0,
+                        y: 0,
+                        width: max(proxy.size.width, 1),
+                        height: max(proxy.size.height, 1)
+                    )
+                    let locations = sampleLocations(in: chartRect)
+
+                    ZStack {
+                        VStack(spacing: 0) {
+                            ForEach(0..<4, id: \.self) { _ in
+                                Rectangle()
+                                    .fill(Color.white.opacity(0.07))
+                                    .frame(height: 0.5)
+                                    .frame(maxHeight: .infinity)
+                            }
+                        }
+
+                        HStack(spacing: 0) {
+                            ForEach(0..<4, id: \.self) { _ in
+                                Rectangle()
+                                    .fill(Color.white.opacity(0.055))
+                                    .frame(width: 0.5)
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+
+                        powerAreaPath(locations: locations, rect: chartRect)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.elitePrimary.opacity(0.30), Color.elitePrimary.opacity(0.035)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+
+                        powerLinePath(locations: locations)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [Color.elitePrimaryLight, Color.cyan.opacity(0.82)],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                ),
+                                style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round)
+                            )
+                            .shadow(color: Color.elitePrimary.opacity(0.55), radius: 5)
+
+                        if let last = locations.last {
+                            TimelineView(.periodic(from: .now, by: 1.2)) { timeline in
+                                let pulse = 0.82 + 0.18 * sin(timeline.date.timeIntervalSince1970 * 4)
+                                Circle()
+                                    .fill(Color.white)
+                                    .frame(width: 8, height: 8)
+                                    .overlay(Circle().fill(Color.elitePrimaryLight).frame(width: 5, height: 5))
+                                    .shadow(color: Color.elitePrimaryLight.opacity(pulse), radius: 8)
+                                    .position(last)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 2)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 156)
             }
-            .frame(height: 156)
+            .padding(.horizontal, 2)
 
             HStack {
                 Text(timeText(samples.first?.date))
@@ -1276,56 +1287,6 @@ private struct ElitePowerStat: View {
                 .font(.system(size: 14, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(Color.elitePrimaryText)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct EliteChargingHistoryCard: View {
-    var snapshot: NinebotVehicleSnapshot
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("电池健康")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundStyle(Color.elitePrimaryText)
-                Spacer()
-                Text(snapshot.state.primaryStatusText)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(Color.elitePrimaryLight)
-            }
-            HStack(spacing: 12) {
-                EliteHealthRow(title: "预测续航", value: snapshot.state.aiEstimatedMileageText, systemImage: "road.lanes")
-                EliteHealthRow(title: "总里程", value: snapshot.state.totalMileageText, systemImage: "gauge.with.dots.needle.67percent")
-            }
-        }
-        .padding(18)
-        .eliteCard(cornerRadius: 26)
-    }
-}
-
-private struct EliteHealthRow: View {
-    var title: String
-    var value: String
-    var systemImage: String
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(Color.elitePrimaryLight)
-                .frame(width: 28, height: 28)
-                .background(Color.elitePrimary.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.eliteSecondaryText)
-                Text(value)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.elitePrimaryText)
-                    .lineLimit(1)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
