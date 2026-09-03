@@ -68,3 +68,34 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
 .settings-row-value { margin-left: auto; color: #89919a; font-size: 14px; font-weight: 650; }.settings-row-chevron { flex: 0 0 auto; margin-left: -6px; color: #c0c5cb; }
 .settings-toggle { width: 51px; height: 31px; flex: 0 0 auto; border-radius: 99px; padding: 3px; background: #c8cdd3; transition: background .2s ease; }.settings-toggle span { display: block; width: 25px; height: 25px; border-radius: 50%; background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,.17); transform: translateX(0); transition: transform .2s cubic-bezier(.2,.8,.2,1); }.settings-toggle.is-on { background: #1dcc50; }.settings-toggle.is-on span { transform: translateX(20px); }
 .settings-footnote { display: flex; align-items: flex-start; justify-content: center; gap: 6px; padding: 0 18px 6px; color: #9299a2; font-size: 12px; line-height: 1.5; text-align: center; }
+
+/* Charging telemetry */
+.charging-power-card {
+  overflow: hidden;
+  color: #f8fafc;
+  background: rgba(24, 24, 27, .88) !important;
+  border: 1px solid rgba(255, 255, 255, .1);
+  box-shadow: 0 14px 38px rgba(2, 6, 23, .22), inset 0 1px 0 rgba(255,255,255,.04), 0 0 28px rgba(37, 99, 235, .08);
+}
+.charging-power-icon { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border: 1px solid rgba(96,165,250,.25); border-radius: 13px; color: #60a5fa; background: rgba(37,99,235,.16); box-shadow: 0 0 18px rgba(59,130,246,.16); }
+.charging-power-status { display: inline-flex; align-items: center; gap: 5px; margin-top: 3px; color: #a1a1aa; font-size: 11px; font-weight: 650; }
+.charging-power-status i, .charging-summary-badge i { display: block; width: 6px; height: 6px; border-radius: 50%; background: #60a5fa; box-shadow: 0 0 0 4px rgba(96,165,250,.12), 0 0 12px rgba(96,165,250,.7); }
+.charging-power-status.is-paused i { background: #a1a1aa; box-shadow: none; }
+.charging-chart-wrap { position: relative; width: calc(100% + 6px); margin: 18px -3px 0; overflow: hidden; }
+.charging-chart { display: block; width: 100%; min-height: 210px; overflow: visible; }
+.charging-chart-pulse { transform-box: fill-box; transform-origin: center; animation: charging-pulse 1.9s ease-out infinite; }
+.charging-chart-tooltip { pointer-events: none; }
+.charging-summary { overflow: hidden; border: 1px solid rgba(255,255,255,.08); box-shadow: 0 14px 34px rgba(2,6,23,.16); }
+.charging-summary-badge { display: inline-flex; align-items: center; gap: 7px; border: 1px solid rgba(96,165,250,.22); border-radius: 999px; padding: 7px 10px; color: #bfdbfe; background: rgba(30,64,175,.18); font-size: 12px; font-weight: 700; }
+.charging-metric { display: grid; min-height: 96px; grid-template-columns: auto 1fr; align-content: center; column-gap: 10px; border: 1px solid rgba(255,255,255,.08); border-radius: 17px; padding: 12px; background: rgba(255,255,255,.055); }
+.charging-metric-icon { display: grid; width: 33px; height: 33px; grid-row: span 2; place-items: center; border-radius: 11px; color: #60a5fa; background: rgba(59,130,246,.16); }
+.charging-metric-icon.tone-orange { color: #fdba74; background: rgba(234,88,12,.16); }
+.charging-metric-icon.tone-purple { color: #c4b5fd; background: rgba(124,58,237,.16); }
+.charging-metric strong { align-self: end; color: #f8fafc; font-size: 19px; font-weight: 700; letter-spacing: -.03em; }
+.charging-metric small { align-self: start; color: #a1a1aa; font-size: 12px; }
+.charging-history-card { border: 1px solid rgba(255,255,255,.05); }
+.charging-history-status { border-radius: 999px; padding: 6px 9px; color: #13963e; background: #e0f8e7; font-size: 11px; font-weight: 750; }
+.charging-history-card b { display: block; margin-top: 3px; color: #252a31; font-size: 13px; }
+@keyframes charging-pulse { 0%, 100% { opacity: .8; transform: scale(.75); } 50% { opacity: .2; transform: scale(1.35); } }
+@media (prefers-reduced-motion: reduce) { .charging-chart-pulse { animation: none; } }
+@media (max-width: 370px) { .charging-power-card { padding: 13px; } .charging-chart { min-height: 190px; } .charging-metric { padding: 10px; } .charging-metric strong { font-size: 17px; } }

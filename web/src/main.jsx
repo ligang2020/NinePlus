@@ -74,12 +74,118 @@ const charges = [
   { start: '2026-08-05 21:44', end: '2026-08-06 00:18', duration: '2 小时 34 分钟', power: '204 W', temp: '29°C', voltage: '58.1 V', place: '公司停车区' },
 ];
 
+
+const APP_VERSION = 'v30';
+
+const chargingPowerSamples = [
+  { time: '00:00', power: 118 },
+  { time: '00:20', power: 286 },
+  { time: '00:40', power: 474 },
+  { time: '01:00', power: 633 },
+  { time: '01:20', power: 706 },
+  { time: '01:40', power: 750 },
+  { time: '02:00', power: 692 },
+  { time: '02:20', power: 648 },
+  { time: '02:40', power: 610 },
+  { time: '03:00', power: 566 },
+];
+
+function normalizePowerPoint(point, index) {
+  const rawPower = point?.power ?? point?.watts ?? point?.chargingPower ?? point?.charging_power ?? point?.value;
+  const power = Number(rawPower);
+  return {
+    time: String(point?.time ?? point?.label ?? point?.timestamp ?? `${index * 20} min`),
+    power: Number.isFinite(power) && power >= 0 ? power : 0,
+  };
+}
+
+function smoothPath(points) {
+  if (!points.length) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  return points.reduce((path, point, index) => {
+    if (index === 0) return `M ${point.x} ${point.y}`;
+    const previous = points[index - 1];
+    const midpoint = (previous.x + point.x) / 2;
+    return `${path} C ${midpoint} ${previous.y}, ${midpoint} ${point.y}, ${point.x} ${point.y}`;
+  }, '');
+}
+
+function ChargingPowerCurveCard({ samples = chargingPowerSamples, charging = true }) {
+  const [activeIndex, setActiveIndex] = useState(null);
+  const data = useMemo(() => {
+    const normalized = (Array.isArray(samples) ? samples : []).map(normalizePowerPoint).filter((point) => Number.isFinite(point.power));
+    return normalized.length >= 2 ? normalized : chargingPowerSamples;
+  }, [samples]);
+  const maxPower = Math.max(800, ...data.map(({ power }) => power));
+  const peakPower = Math.max(...data.map(({ power }) => power));
+  const averagePower = Math.round(data.reduce((sum, { power }) => sum + power, 0) / data.length);
+  const chartPoints = data.map(({ power }, index) => ({
+    x: 50 + (index / (data.length - 1)) * 570,
+    y: 194 - (power / maxPower) * 158,
+  }));
+  const linePath = smoothPath(chartPoints);
+  const areaPath = `${linePath} L ${chartPoints.at(-1).x} 204 L ${chartPoints[0].x} 204 Z`;
+  const selectedIndex = activeIndex ?? data.length - 1;
+  const selected = data[selectedIndex];
+  const selectedPoint = chartPoints[selectedIndex];
+  const yTicks = [0, 200, 400, 600, 800];
+  const xTickIndexes = [0, Math.floor((data.length - 1) / 3), Math.floor(((data.length - 1) * 2) / 3), data.length - 1];
+
+  return <Card className="charging-power-card bg-zinc-900/80 p-4 text-white shadow-[0_12px_35px_rgba(0,0,0,0.28)] backdrop-blur-md border border-white/10 rounded-3xl" aria-labelledby="charging-power-title">
+    <div className="flex items-start justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="charging-power-icon" aria-hidden="true"><Zap size={19} fill="currentColor" /></span>
+        <div className="min-w-0"><h2 id="charging-power-title" className="truncate text-[18px] font-semibold tracking-[-0.02em]">充电功率曲线</h2><p className="mt-1 text-[12px] text-zinc-400">过去 3 小时 · 每 20 分钟采样</p></div>
+      </div>
+      <div className="shrink-0 text-right"><strong className="block text-[20px] font-semibold tabular-nums text-blue-400">{Math.round(selected.power)} W</strong><span className={cn('charging-power-status', charging ? 'is-charging' : 'is-paused')}><i />{charging ? '正在充电' : '充电已暂停'}</span></div>
+    </div>
+
+    <div className="charging-chart-wrap" role="img" aria-label={`充电功率曲线，当前 ${Math.round(selected.power)} 瓦，峰值 ${Math.round(peakPower)} 瓦`}>
+      <svg className="charging-chart" viewBox="0 0 640 242" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="chargingPowerArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3b82f6" stopOpacity=".42" /><stop offset="100%" stopColor="#2563eb" stopOpacity="0" /></linearGradient>
+          <linearGradient id="chargingPowerLine" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stopColor="#60a5fa" /><stop offset="50%" stopColor="#38bdf8" /><stop offset="100%" stopColor="#93c5fd" /></linearGradient>
+          <filter id="chargingPowerGlow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
+        </defs>
+        {yTicks.map((tick) => { const y = 194 - (tick / maxPower) * 158; return <g key={tick}><line x1="50" x2="620" y1={y} y2={y} stroke="rgba(255,255,255,.09)" strokeDasharray="3 7" /><text x="42" y={y + 4} textAnchor="end" fill="rgba(255,255,255,.38)" fontSize="11">{tick}</text></g>; })}
+        <path d={areaPath} fill="url(#chargingPowerArea)" />
+        <path d={linePath} fill="none" stroke="url(#chargingPowerLine)" strokeWidth="3" strokeLinecap="round" filter="url(#chargingPowerGlow)" />
+        <line x1={selectedPoint.x} x2={selectedPoint.x} y1="24" y2="204" stroke="#60a5fa" strokeOpacity=".3" strokeDasharray="4 5" />
+        <g className="charging-chart-tooltip" transform={`translate(${Math.min(548, Math.max(52, selectedPoint.x - 42))} ${Math.max(6, selectedPoint.y - 48)})`}>
+          <rect width="84" height="32" rx="10" fill="#172033" stroke="rgba(147,197,253,.32)" /><text x="42" y="14" textAnchor="middle" fill="#93c5fd" fontSize="10">{selected.time}</text><text x="42" y="26" textAnchor="middle" fill="#fff" fontSize="12" fontWeight="700">{Math.round(selected.power)} W</text>
+        </g>
+        <circle cx={selectedPoint.x} cy={selectedPoint.y} r="10" fill="#60a5fa" fillOpacity=".14" className="charging-chart-pulse" />
+        <circle cx={selectedPoint.x} cy={selectedPoint.y} r="4.5" fill="#dbeafe" stroke="#3b82f6" strokeWidth="3" filter="url(#chargingPowerGlow)" />
+        {chartPoints.map((point, index) => <circle key={`${data[index].time}-${index}`} cx={point.x} cy={point.y} r="12" fill="transparent" tabIndex="0" onMouseEnter={() => setActiveIndex(index)} onFocus={() => setActiveIndex(index)} onBlur={() => setActiveIndex(null)} onMouseLeave={() => setActiveIndex(null)}><title>{`${data[index].time} · ${Math.round(data[index].power)} W`}</title></circle>)}
+        {xTickIndexes.map((index) => <text key={`${data[index].time}-${index}`} x={chartPoints[index].x} y="226" textAnchor={index === 0 ? 'start' : index === data.length - 1 ? 'end' : 'middle'} fill="rgba(255,255,255,.42)" fontSize="11">{data[index].time}</text>)}
+      </svg>
+    </div>
+    <div className="mt-1 flex items-center justify-between gap-3 border-t border-white/10 pt-3 text-[12px] text-zinc-400"><span>峰值功率 <strong className="ml-1 text-[14px] font-semibold tabular-nums text-zinc-100">{Math.round(peakPower)} W</strong></span><span>平均功率 <strong className="ml-1 text-[14px] font-semibold tabular-nums text-zinc-100">{averagePower} W</strong></span></div>
+  </Card>;
+}
+
+function ChargingMetric({ icon: Icon, value, label, tone = 'blue' }) {
+  return <div className="charging-metric"><span className={cn('charging-metric-icon', `tone-${tone}`)}><Icon size={18} /></span><strong>{value}</strong><small>{label}</small></div>;
+}
+
+function RecordsPage({ mode = 'alarms', onBack }) {
+  const isCharging = mode === 'charging';
+  return <div className="page-stack"><Header title={isCharging ? '充电记录' : '车辆报警'} back onBack={onBack} />
+    {isCharging ? <>
+      <Card className="charging-summary bg-zinc-950 p-5 text-white"><div className="flex items-start justify-between gap-3"><div><p className="ios-eyebrow text-blue-300">LIVE TELEMETRY</p><h2 className="mt-1 text-[28px] font-bold tracking-[-0.05em]">正在充电</h2><p className="mt-1 text-[13px] text-zinc-400">B2轰炸机 · 最近同步刚刚完成</p></div><span className="charging-summary-badge"><i />实时</span></div><div className="mt-6 grid grid-cols-2 gap-2.5"><ChargingMetric icon={Power} value="633 W" label="充电功率" /><ChargingMetric icon={Thermometer} value="31°C" label="电池温度" tone="orange" /><ChargingMetric icon={Zap} value="58.4 V" label="电池电压" /><ChargingMetric icon={Activity} value="42 次" label="循环次数" tone="purple" /></div></Card>
+      <ChargingPowerCurveCard />
+      <SectionTitle eyebrow="CHARGING HISTORY" title="充电周期" />
+      <div className="space-y-3">{charges.map((charge) => <Card key={charge.start} className="charging-history-card p-4"><div className="flex items-start justify-between gap-3"><div><strong className="block text-[17px]">{charge.start}</strong><span className="mt-1 block text-[13px] text-gray-500">至 {charge.end} · {charge.duration}</span></div><span className="charging-history-status">已完成</span></div><div className="mt-4 grid grid-cols-3 gap-2 text-[12px] text-gray-500"><span>平均功率 <b>{charge.power}</b></span><span>电池温度 <b>{charge.temp}</b></span><span>电压 <b>{charge.voltage}</b></span></div><p className="mt-3 text-[13px] text-gray-400">{charge.place}</p></Card>)}</div>
+    </> : <><Card className="p-5"><div className="flex items-center gap-3"><span className="record-link-icon small record-link-red"><AlertTriangle size={22} /></span><div><h2 className="text-[22px] font-bold">安全事件</h2><p className="mt-1 text-[14px] text-gray-500">最近同步到 2 条车辆报警</p></div></div></Card><div className="space-y-3">{alarms.map((alarm) => <Card key={alarm.time} className="p-4"><div className="flex gap-3"><span className={cn('record-link-icon small', alarm.tone === 'red' ? 'record-link-red' : 'record-link-orange')}><AlertTriangle size={21} /></span><div className="min-w-0"><div className="flex items-start justify-between gap-2"><strong className="text-[17px]">{alarm.title}</strong><span className="shrink-0 text-[12px] text-gray-400">{alarm.time}</span></div><p className="mt-2 text-[14px] leading-6 text-gray-500">{alarm.detail}</p><span className="mt-2 block text-[12px] text-gray-400">{alarm.place}</span></div></div></Card>)}</div></>}
+  </div>;
+}
+
 function cn(...classes) { return classes.filter(Boolean).join(' '); }
 function formatNow() { return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date()); }
 
-function Card({ children, className = '', onClick, as = 'section' }) {
+function Card({ children, className = '', onClick, as = 'section', ...props }) {
   const Component = as;
-  return <Component onClick={onClick} className={cn('ios-card', onClick && 'cursor-pointer active:scale-[0.99] transition-transform', className)}>{children}</Component>;
+  return <Component {...props} onClick={onClick} className={cn('ios-card', onClick && 'cursor-pointer active:scale-[0.99] transition-transform', className)}>{children}</Component>;
 }
 
 function SectionTitle({ eyebrow, title, action, onAction }) {
@@ -180,6 +286,20 @@ function TripDetailPage({ onBack }) {
   return <div className="page-stack"><Header title="行程详情" back onBack={onBack} /><Card className="p-5"><div className="flex items-start justify-between"><div><strong className="text-[24px]">2026-08-12 16:09</strong><p className="mt-1 text-[17px] text-gray-500">结束 16:19</p></div><Route size={40} className="text-[#1dcc50]" /></div><strong className="mt-8 block text-[74px] leading-none tracking-[-0.09em]">1.3<span className="ml-1 text-[26px] tracking-normal">km</span></strong><div className="mt-8 grid grid-cols-2 gap-3"><div className="trip-detail-chip"><Timer size={18} /><strong>10 分钟</strong><span>骑行时间</span></div><div className="trip-detail-chip"><Gauge size={18} /><strong>46 km/h</strong><span>最高速度</span></div><div className="trip-detail-chip"><Zap size={18} /><strong>0 Wh</strong><span>本次用电</span></div><div className="trip-detail-chip"><Activity size={18} /><strong>0 Wh/km</strong><span>能耗</span></div></div></Card><Card className="p-4"><div className="flex items-start justify-between px-1"><div><h2 className="text-[22px] font-bold">官方接口轨迹</h2><p className="mt-1 text-[15px] text-gray-500">起点 → 终点 · 官方接口返回 23 个路线点</p></div><span className="speed-legend"><Sparkles size={16} />接口速度</span></div><div className="trajectory-map"><div className="trajectory-road one" /><div className="trajectory-road two" /><div className="trajectory-road three" /><div className="trajectory-route route-green" /><div className="trajectory-route route-red" /><div className="trajectory-pin start"><span>⚑</span><b>起点</b></div><div className="trajectory-pin peak"><strong>最高速度<br />46.0 km/h</strong></div><div className="trajectory-pin end"><span>⌖</span><b>终点</b></div></div><div className="trajectory-footer"><span>🚩 仅按接口明确返回…</span><strong>最高 46.0 km/h</strong><span>0 <i /></span><span>40+ km/h</span></div></Card><div className="px-1"><h2 className="ios-section-title">接口行程</h2><div className="detail-row"><Play size={18} fill="currentColor" /><span>开始时间</span><strong>2026-08-12 16:09</strong></div><div className="detail-row"><Pause size={18} fill="currentColor" /><span>结束时间</span><strong>2026-08-12 16:19</strong></div></div></div>;
 }
 
+
+function VehicleRow({ name, model }) {
+  return <div className="vehicle-row"><span className="vehicle-row-icon"><CarFront size={21} /></span><div className="min-w-0 flex-1"><strong>{name}</strong><span>{model}</span></div><ChevronRight size={18} className="text-gray-300" /></div>;
+}
+
+function RecordLink({ icon: Icon, title, subtitle, badge, tone = 'green', onClick }) {
+  return <Card onClick={onClick} className="flex items-center gap-3 p-4"><span className={cn('record-link-icon small', `record-link-${tone}`)}><Icon size={22} /></span><span className="min-w-0 flex-1"><strong className="block text-[17px]">{title}</strong><small className="mt-1 block text-[13px] text-gray-500">{subtitle}</small></span>{badge && <span className="record-badge">{badge}</span>}<ChevronRight size={19} className="text-gray-300" /></Card>;
+}
+
+function SecurityPage() {
+  const [armed, setArmed] = useState(true);
+  return <div className="page-stack"><Header title="安全" /><Card className="security-hero p-6"><div className="security-orb"><ShieldCheck size={45} /></div><h2 className="mt-5 text-[25px] font-bold">车辆安全</h2><p className="mt-1 text-[15px] text-gray-500">{armed ? '防盗守护正在运行' : '防盗守护已暂停'}</p><button type="button" className={cn('security-toggle', armed && 'armed')} onClick={() => setArmed((value) => !value)}><span>{armed ? '已开启守护' : '开启守护'}</span><span className="toggle-dot">{armed ? <Lock size={18} /> : <Unlock size={18} />}</span></button></Card><Card className="p-5"><SectionTitle eyebrow="安全状态" title="最近检查" /><div className="mt-4 space-y-1"><div className="detail-row"><ShieldCheck size={18} /><span>车辆位置保护</span><strong>正常</strong></div><div className="detail-row"><Activity size={18} /><span>后台同步</span><strong>正常</strong></div></div></Card></div>;
+}
+
 function ProfilePage({ onRecords, onOpenSettings }) {
   return <div className="page-stack"><Header title="我的" trailing={<button type="button" className="header-icon" onClick={onOpenSettings} aria-label="打开设置"><Settings size={21} /></button>} /><Card className="profile-card p-5"><div className="profile-avatar">李</div><div className="min-w-0 flex-1"><h2 className="text-[24px] font-bold">李易峰的电瓶车</h2><p className="mt-1 text-[16px] text-gray-500">服务器 · B2轰炸机</p></div><span className="profile-count">2</span></Card><Card className="p-5"><div className="flex items-start justify-between"><div><h2 className="text-[23px] font-bold">车辆名称</h2><p className="mt-1 max-w-[280px] text-[15px] leading-6 text-gray-500">名称会同步用于主 App、小组件和灵动岛；不会修改车辆原始编号。</p></div><span className="tag-icon"><Wrench size={20} /></span></div><VehicleRow name="B2轰炸机" model="Mz MAX (14360)" /><VehicleRow name="特斯拉 YYDS" model="Ninebot eMoped F35 (117)" /></Card><Card className="p-5"><div className="flex gap-4"><div className="bluetooth-icon"><Bluetooth size={26} /></div><div className="flex-1"><h2 className="text-[23px] font-bold">车辆蓝牙（安全只读）</h2><p className="mt-1 text-[16px] text-gray-500">等待授权车辆配置</p></div></div><p className="mt-3 text-[14px] leading-6 text-gray-500">尚未提供官方 GATT 服务、特征和认证适配器</p><div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[14px] font-semibold text-gray-500"><span>♨ 不自动连接</span><span>🔒 不发送控制</span><span>⌁ 只订阅遥测</span></div><button className="scan-button"><Radio size={20} />扫描附近设备</button><p className="mt-3 text-[13px] leading-5 text-gray-500">扫描结果仅在本次运行中显示。未配置厂商授权的 GATT 服务、遥测特征、解码器和受信任外设识别前，App 不会连接任何车辆。</p></Card><RecordLink icon={AlertTriangle} title="车辆报警记录" subtitle="已记录 1 条异常事件" badge="1" tone="red" onClick={() => onRecords('alarms')} /><RecordLink icon={BatteryCharging} title="充电记录" subtitle="2 条完整充电周期" onClick={() => onRecords('charging')} /><Card className="flex items-center gap-3 p-4"><div className="text-[#1dcc50]"><ShieldCheck size={25} /></div><div><strong className="block text-[16px] text-[#1dcc50]">已更新 {formatNow()}</strong><span className="text-[13px] text-gray-500">车辆与记录数据已同步</span></div></Card></div>;
 }
@@ -242,7 +362,7 @@ function SettingsPage({ onBack }) {
 
     <div className="settings-section"><SectionTitle eyebrow="关于" title="NineBot+" />
       <Card className="settings-list">
-        <SettingsRow icon={SlidersHorizontal} title="应用设置" value="版本 1.2.69" tone="neutral" onClick={() => setNotice('当前已是最新版本')} />
+        <SettingsRow icon={SlidersHorizontal} title="应用设置" value={`版本 ${APP_VERSION}`} tone="neutral" onClick={() => setNotice('当前已是最新版本')} />
         <SettingsRow icon={TriangleAlert} title="退出登录" subtitle="本地行程记录不会被删除" tone="red" onClick={requestSignOut} />
       </Card>
     </div>
