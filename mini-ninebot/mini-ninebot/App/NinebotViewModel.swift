@@ -961,19 +961,25 @@ final class NinebotViewModel: ObservableObject {
     /// published to SwiftUI.
     private func scheduleDashboardEnrichment(for dashboard: NinebotDashboard) {
         dashboardEnrichmentTask?.cancel()
-        dashboardTravelEnrichmentTask?.cancel()
         dashboardEnrichmentTask = Task { [weak self] in
             guard let self else { return }
             async let imageCaching: Void = self.cacheVehicleImages(for: dashboard)
             async let addressResolution: Void = self.refreshResolvedAddressesIfNeeded(for: dashboard)
             _ = await (imageCaching, addressResolution)
         }
-        // The optimized server dashboard deliberately omits travel history so
-        // the home screen can render quickly. Fetch only the current month in a
-        // cancellable background task, then merge it into the dashboard cache.
-        dashboardTravelEnrichmentTask = Task { [weak self] in
-            guard let self else { return }
-            await self.enrichCurrentMonthTravel(for: dashboard)
+        // The optimized server dashboard deliberately omits travel history and
+        // heavyweight BMS diagnostics so the home screen can render quickly.
+        // Do not cancel this task on every 3-second charging refresh: doing so
+        // starves the hydration request and leaves the cards at “接口未返回”.
+        // The task merges into the latest dashboard when it completes.
+        if dashboardTravelEnrichmentTask == nil {
+            dashboardTravelEnrichmentTask = Task { [weak self] in
+                guard let self else { return }
+                await self.enrichCurrentMonthTravel(for: dashboard)
+                if !Task.isCancelled {
+                    self.dashboardTravelEnrichmentTask = nil
+                }
+            }
         }
     }
 
@@ -993,11 +999,13 @@ final class NinebotViewModel: ObservableObject {
                 continue
             }
 
-            let page = try? await client.fetchTravelMonth(
+            async let pageResult = try? await client.fetchTravelMonth(
                 sn: snapshot.vehicle.sn,
                 month: month
             )
-            let battery = try? await client.fetchBattery(sn: snapshot.vehicle.sn)
+            async let batteryResult = try? await client.fetchBattery(sn: snapshot.vehicle.sn)
+            let page = await pageResult
+            let battery = await batteryResult
 
             guard page != nil || battery != nil else { continue }
             let current = mergedDashboard.vehicles[index]

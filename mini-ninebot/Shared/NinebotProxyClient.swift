@@ -555,7 +555,7 @@ extension NinebotProxyClient {
             month: firstString(["month"], in: object) ?? fallbackMonth,
             page: object["page"]?.intValue ?? 1,
             pageSize: object["page_size"]?.intValue ?? object["pageSize"]?.intValue ?? records.count,
-            total: object["total"]?.intValue ?? records.count,
+            total: object["total"]?.intValue ?? object["times"]?.intValue ?? records.count,
             hasMore: object["has_more"]?.boolValue ?? object["hasMore"]?.boolValue ?? false,
             records: records,
             raw: value
@@ -669,8 +669,9 @@ extension NinebotProxyClient {
                 loc?["lon"]?.doubleValue ?? locationInfo?["lon"]?.doubleValue,
                 limit: 180
             ),
-            totalMileage: firstDouble(["total_mileage", "totalMileage", "total_mileages"], in: statusObject)
-                ?? firstDouble(["total_mileage", "totalMileage"], in: travelObject),
+            totalMileage: firstDouble(["total_mileage_odo", "totalMileageOdo", "total_mileage", "totalMileage", "total_mileages"], in: statusObject)
+                ?? firstDouble(["total_mileage_odo", "totalMileageOdo", "total_mileage", "totalMileage"], in: statusRoot)
+                ?? firstDouble(["total_mileage", "totalMileage", "total_mileages"], in: travelObject),
             monthMileage: firstDouble(["total_mileages", "monthMileage"], in: travelObject),
             monthEnergy: firstDouble(["ec", "monthEnergy"], in: travelObject),
             monthUsedElectricity: firstDouble(["used_electricity", "usedElectricity"], in: travelObject),
@@ -739,11 +740,24 @@ extension NinebotProxyClient {
         guard let detail = travelObject["detail"]?.arrayValue else { return [] }
         let month = firstString(["month"], in: travelObject)
         let currentMonth = currentMonthString()
-        let currentDay = Calendar.current.component(.day, from: Date())
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = chinaTimeZone
+        let currentDay = calendar.component(.day, from: Date())
         let limit = month == currentMonth ? min(detail.count, currentDay) : detail.count
 
         return detail.prefix(limit).enumerated().compactMap { index, value in
-            guard let mileage = value.doubleValue else { return nil }
+            let mileage: Double?
+            if let number = value.doubleValue {
+                mileage = number
+            } else if let object = value.objectValue {
+                mileage = firstDouble(
+                    ["mileage", "mileages", "day_mileage", "dayMileage", "day_total_mileage", "dayTotalMileage", "distance"],
+                    in: object
+                )
+            } else {
+                mileage = nil
+            }
+            guard let mileage, mileage.isFinite, mileage >= 0 else { return nil }
             let day = index + 1
             return NinebotDailyMileageRecord(
                 id: "\(month ?? "month")-\(day)",

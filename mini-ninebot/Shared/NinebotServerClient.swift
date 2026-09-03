@@ -133,12 +133,12 @@ struct NinebotServerClient {
                 battery = fallbackBattery
                 prediction = try? await fetchPrediction(sn: vehicle.sn)
             }
-            let monthlyTravels = await fetchMonthlyTravels(
-                sn: vehicle.sn,
-                authDate: vehicle.authDate,
-                currentMonth: currentMonth,
-                currentTravel: travel
-            )
+            // The home screen only needs the current month's travel payload.
+            // Fetching every month since binding here made a dashboard open wait
+            // on a serial chain of cloud calls and frequently left the UI with
+            // an incomplete snapshot. Historical months are loaded by the trip
+            // screen on demand; the server status already supplies the odometer.
+            let monthlyTravels = travel.map { [$0] }
             var state = Self.vehicleState(
                 status: status,
                 travel: travel,
@@ -206,33 +206,6 @@ struct NinebotServerClient {
     private func fetchPrediction(sn: String) async throws -> NinebotServerPrediction? {
         let payload = try await request(method: "GET", path: ["vehicles", sn, "prediction"])
         return Self.serverPrediction(from: payload)
-    }
-
-    private func fetchMonthlyTravels(
-        sn: String,
-        authDate: Date?,
-        currentMonth: String,
-        currentTravel: JSONValue?
-    ) async -> [JSONValue]? {
-        let months = Self.monthStrings(from: authDate, through: Date())
-        guard !months.isEmpty else {
-            return currentTravel.map { [$0] }
-        }
-
-        var payloads: [JSONValue] = []
-        for month in months {
-            if month == currentMonth, let currentTravel {
-                payloads.append(currentTravel)
-                continue
-            }
-
-            do {
-                payloads.append(try await fetchTravel(sn: sn, month: month))
-            } catch {
-                return nil
-            }
-        }
-        return payloads
     }
 
     func registerPushDevice(token: String, bundleID: String, environment: String) async throws {
