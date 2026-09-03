@@ -1575,20 +1575,28 @@ struct NinebotVehicleState: Codable, Equatable {
 
     var dailyAverageMileageText: String {
         guard let monthMileage else { return "-- km/日" }
-        let day = max(Calendar.current.component(.day, from: updatedAt), 1)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        let day = max(calendar.component(.day, from: updatedAt), 1)
         let value = monthMileage / Double(day)
         return "\(Self.numberText(value, maximumFractionDigits: 1)) km/日"
     }
 
     var todayMileage: Double? {
+        // Ninebot's daily travel buckets are based on China Standard Time,
+        // while an iPhone may be configured for another timezone. Using
+        // Calendar.current here made the same day's record miss on devices in
+        // North America, producing a blank "今日里程" card.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         if let record = dailyMileages.last(where: { record in
             guard let date = record.date else { return false }
-            return Calendar.current.isDateInToday(date)
+            return calendar.isDate(date, inSameDayAs: updatedAt)
         }) {
             return record.mileage
         }
 
-        let currentDay = Calendar.current.component(.day, from: updatedAt)
+        let currentDay = calendar.component(.day, from: updatedAt)
         return dailyMileages.last(where: { $0.day == currentDay })?.mileage
     }
 

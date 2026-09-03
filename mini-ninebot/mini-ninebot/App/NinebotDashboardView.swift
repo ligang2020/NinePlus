@@ -88,13 +88,16 @@ struct NinebotDashboardView: View {
                             .buttonStyle(.plain)
                                 .padding(.horizontal, 16)
 
-                            if primary.state.isCharging == true {
-                                ChargingPowerCurveCard(
-                                    points: model.history(for: primary.vehicle.sn),
-                                    currentPower: primary.state.chargingPower
-                                )
-                                .padding(.horizontal, 16)
-                            }
+                            // Keep the card visible even before the first
+                            // charging snapshot arrives. Previously it was
+                            // hidden whenever the server omitted the charging
+                            // flag, making the feature appear to be missing.
+                            ChargingPowerCurveCard(
+                                points: model.history(for: primary.vehicle.sn),
+                                currentPoint: NinebotVehicleHistoryPoint(sn: primary.vehicle.sn, state: primary.state),
+                                currentPower: primary.state.chargingPower
+                            )
+                            .padding(.horizontal, 16)
 
                             NavigationLink {
                                 NinebotVehicleDetailView(model: model, sn: primary.vehicle.sn)
@@ -867,10 +870,20 @@ private struct ChargingPowerLegend: View {
 
 private struct ChargingPowerCurveCard: View {
     var points: [NinebotVehicleHistoryPoint]
+    var currentPoint: NinebotVehicleHistoryPoint? = nil
     var currentPower: Double?
 
     private var powerPoints: [NinebotVehicleHistoryPoint] {
-        points.filter { ($0.chargingPower ?? -1) >= 0 }
+        var values = points.filter { ($0.chargingPower ?? -1) >= 0 }
+        if let currentPoint, let currentPower, currentPower.isFinite, currentPower >= 0 {
+            var live = currentPoint
+            live.chargingPower = currentPower
+            // Include the live reading immediately instead of waiting for the
+            // next persistence cycle to write a history point.
+            values.removeAll { $0.id == live.id }
+            values.append(live)
+        }
+        return values.sorted { $0.date < $1.date }
     }
 
     var body: some View {

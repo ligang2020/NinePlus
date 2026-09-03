@@ -155,7 +155,11 @@ struct NinebotProxyClient {
                 queryItems: dashboardQuery
             )
             if let dashboard = Self.dashboard(from: aggregatePayload, selectedSN: selectedSN) {
-                return dashboard
+                // The optimized server snapshot deliberately omits BMS and
+                // travel payloads. Hydrate those missing fields before returning
+                // so the home screen never settles on a permanently partial
+                // state with blank mileage and charging metrics.
+                return await hydrateDashboardIfNeeded(dashboard, month: Self.currentMonthString())
             }
         } catch let error as NinebotProxyError {
             switch error {
@@ -217,6 +221,60 @@ struct NinebotProxyClient {
             selectedSN: resolvedSelectedSN,
             updatedAt: fetchedAt
         )
+    }
+
+    private func hydrateDashboardIfNeeded(_ dashboard: NinebotDashboard, month: String) async -> NinebotDashboard {
+        guard !dashboard.vehicles.isEmpty else { return dashboard }
+
+        var hydrated = dashboard
+        for index in hydrated.vehicles.indices {
+            let current = hydrated.vehicles[index]
+            let needsStatus = current.state.isCharging == nil
+                || current.state.totalMileage == nil
+                || current.state.battery == nil
+            let needsBattery = current.state.batteryVoltage == nil
+                || current.state.batteryTemperature == nil
+                || current.state.batteryCycleCount == nil
+                || current.state.chargingPower == nil
+            let needsTravel = current.state.todayMileage == nil
+                || current.state.monthMileage == nil
+
+            async let statusResult: JSONValue? = needsStatus
+                ? (try? await request(method: "GET", path: ["vehicles", current.vehicle.sn, "status"]))
+                : nil
+            async let batteryResult: JSONValue? = needsBattery
+                ? (try? await request(method: "GET", path: ["vehicles", current.vehicle.sn, "battery"]))
+                : nil
+            async let travelResult: JSONValue? = needsTravel
+                ? (try? await fetchTravel(sn: current.vehicle.sn, month: month))
+                : nil
+
+            let status = await statusResult
+            let battery = await batteryResult
+            let travel = await travelResult
+            guard status != nil || battery != nil || travel != nil else { continue }
+
+            let parsed = Self.vehicleState(
+                status: status ?? current.state.rawStatus.map(JSONValue.object),
+                travel: travel ?? current.state.rawTravel.map(JSONValue.object),
+                battery: battery ?? current.state.rawBattery.map(JSONValue.object),
+                updatedAt: current.state.updatedAt
+            )
+            var merged = parsed
+            merged.battery = parsed.battery ?? current.state.battery
+            merged.batteryVoltage = parsed.batteryVoltage ?? current.state.batteryVoltage
+            merged.batteryTemperature = parsed.batteryTemperature ?? current.state.batteryTemperature
+            merged.batteryCycleCount = parsed.batteryCycleCount ?? current.state.batteryCycleCount
+            merged.chargingPower = parsed.chargingPower ?? current.state.chargingPower
+            merged.totalMileage = parsed.totalMileage ?? current.state.totalMileage
+            merged.monthMileage = parsed.monthMileage ?? current.state.monthMileage
+            merged.lastMileage = parsed.lastMileage ?? current.state.lastMileage
+            merged.rideRecords = parsed.rideRecords ?? current.state.rideRecords
+            merged.dailyMileageRecords = parsed.dailyMileageRecords ?? current.state.dailyMileageRecords
+            merged.serverPrediction = current.state.serverPrediction
+            hydrated.vehicles[index].state = merged
+        }
+        return hydrated
     }
 
     /// Loads the detail payload separately from the fast dashboard. The server
