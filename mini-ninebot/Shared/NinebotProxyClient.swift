@@ -636,7 +636,16 @@ extension NinebotProxyClient {
         let batteryMainObject = firstObject(["battery_main", "batteryMain"], in: batteryPayloadObject)
             ?? firstObject(["battery_main", "batteryMain"], in: batteryRoot)
             ?? [:]
-        let batterySources = [statusObject, statusRoot, batteryObject, batteryPayloadObject, batteryRoot, batteryListObject, batteryMainObject]
+        // BMS responses differ by vehicle firmware: some versions put the
+        // readings directly on the root, others nest them under `data`,
+        // `battery_info`, `bms_data`, or one of several battery-pack arrays.
+        // Flatten all object containers before looking up telemetry so a valid
+        // response cannot turn into four empty cards just because its wrapper
+        // depth changed.
+        let batterySources = Self.nestedObjects(
+            roots: [statusObject, statusRoot, batteryObject, batteryPayloadObject, batteryRoot, batteryListObject, batteryMainObject],
+            maxDepth: 4
+        )
         let loc = statusObject["loc"]?.objectValue
         let locationInfo = statusObject["locationInfo"]?.objectValue
         let lockNumber = loc?["lock"]?.intValue ?? statusObject["lock_status"]?.intValue
@@ -795,32 +804,55 @@ extension NinebotProxyClient {
     }
 
     static func dailyMileageRecords(from travelObject: [String: JSONValue]) -> [NinebotDailyMileageRecord] {
-        guard let detail = travelObject["detail"]?.arrayValue else { return [] }
-        let month = firstString(["month"], in: travelObject)
+        var detail: [JSONValue]? = travelObject["detail"]?.arrayValue
+        if detail == nil { detail = travelObject["daily"]?.arrayValue }
+        if detail == nil { detail = travelObject["daily_mileage"]?.arrayValue }
+        if detail == nil { detail = travelObject["dailyMileage"]?.arrayValue }
+        if detail == nil { detail = travelObject["day_list"]?.arrayValue }
+        if detail == nil { detail = travelObject["days"]?.arrayValue }
+        guard let detail, !detail.isEmpty else { return [] }
+
+        let month = firstString(["month", "month_id", "monthId"], in: travelObject)
         let currentMonth = currentMonthString()
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = chinaTimeZone
         let currentDay = calendar.component(.day, from: Date())
-        let limit = month == currentMonth ? min(detail.count, currentDay) : detail.count
 
-        return detail.prefix(limit).enumerated().compactMap { index, value in
+        return detail.enumerated().compactMap { index, value in
+            let object = value.objectValue
             let mileage: Double?
             if let number = value.doubleValue {
                 mileage = number
-            } else if let object = value.objectValue {
+            } else if let object {
                 mileage = firstDouble(
-                    ["mileage", "mileages", "day_mileage", "dayMileage", "day_total_mileage", "dayTotalMileage", "distance"],
+                    ["mileage", "mileages", "day_mileage", "dayMileage", "day_total_mileage", "dayTotalMileage", "distance", "total_mileage", "totalMileage"],
                     in: object
                 )
             } else {
                 mileage = nil
             }
             guard let mileage, mileage.isFinite, mileage >= 0 else { return nil }
-            let day = index + 1
+
+            // Prefer an explicit date/day supplied by the cloud. The old
+            // index-only mapping was wrong when `detail` was latest-first or
+            // contained sparse days, which made today's mileage disappear.
+            let explicitDate = object.flatMap { firstDate(["date", "day_date", "dayDate", "time", "timestamp"], in: $0) }
+            let explicitDay = object.flatMap { firstInt(["day", "day_no", "dayNo"], in: $0) }
+                ?? explicitDate.flatMap { calendar.component(.day, from: $0) }
+            let day = explicitDay ?? (index + 1)
+            guard (1...31).contains(day) else { return nil }
+
+            // If the current month payload is sparse, do not truncate based on
+            // array position. Positional numeric arrays still use the current
+            // day limit for compatibility with the original API shape.
+            if month == currentMonth, explicitDay == nil, object == nil, day > currentDay {
+                return nil
+            }
+            let recordDate = explicitDate ?? date(month: month, day: day)
             return NinebotDailyMileageRecord(
-                id: "\(month ?? "month")-\(day)",
+                id: "\(month ?? currentMonth)-\(day)-\(index)",
                 day: day,
-                date: date(month: month, day: day),
+                date: recordDate,
                 mileage: mileage
             )
         }
@@ -833,6 +865,31 @@ extension NinebotProxyClient {
             current = nested
         }
         return current
+    }
+
+    static func nestedObjects(roots: [[String: JSONValue]], maxDepth: Int) -> [[String: JSONValue]] {
+        guard maxDepth > 0 else { return roots }
+        var result: [[String: JSONValue]] = []
+        var queue: [(object: [String: JSONValue], depth: Int)] = roots.map { ($0, 0) }
+        var index = 0
+        while index < queue.count {
+            let item = queue[index]
+            index += 1
+            result.append(item.object)
+            guard item.depth < maxDepth else { continue }
+            for value in item.object.values {
+                if let child = value.objectValue {
+                    queue.append((child, item.depth + 1))
+                } else if let children = value.arrayValue {
+                    for child in children {
+                        if let childObject = child.objectValue {
+                            queue.append((childObject, item.depth + 1))
+                        }
+                    }
+                }
+            }
+        }
+        return result
     }
 
     static func firstInt(_ keys: [String], in object: [String: JSONValue]) -> Int? {
