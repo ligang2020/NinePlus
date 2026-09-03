@@ -88,6 +88,14 @@ struct NinebotDashboardView: View {
                             .buttonStyle(.plain)
                                 .padding(.horizontal, 16)
 
+                            if primary.state.isCharging == true {
+                                ChargingPowerCurveCard(
+                                    points: model.history(for: primary.vehicle.sn),
+                                    currentPower: primary.state.chargingPower
+                                )
+                                .padding(.horizontal, 16)
+                            }
+
                             NavigationLink {
                                 NinebotVehicleDetailView(model: model, sn: primary.vehicle.sn)
                             } label: {

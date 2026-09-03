@@ -981,57 +981,48 @@ final class NinebotViewModel: ObservableObject {
         guard dataSourceMode == .platform, !dashboard.vehicles.isEmpty else { return }
         guard let client = try? makeClient() else { return }
         let month = NinebotProxyClient.currentMonthString()
-
-        struct TravelResult {
-            let sn: String
-            let page: NinebotTravelPage?
-        }
-
-        var results: [TravelResult] = []
-        await withTaskGroup(of: TravelResult.self) { group in
-            for snapshot in dashboard.vehicles {
-                group.addTask {
-                    let page = try? await client.fetchTravelMonth(sn: snapshot.vehicle.sn, month: month)
-                    return TravelResult(sn: snapshot.vehicle.sn, page: page)
-                }
-            }
-            for await result in group {
-                results.append(result)
-            }
-        }
-
-        guard !Task.isCancelled else { return }
         var mergedDashboard = self.dashboard
         var didUpdate = false
 
-        for result in results {
-            guard let page = result.page, !page.records.isEmpty,
-                  let index = mergedDashboard.vehicles.firstIndex(where: { $0.vehicle.sn == result.sn }) else {
+        // Keep the first dashboard request lightweight. Hydrate the two optional
+        // detail reads in the background; async let keeps them parallel for each
+        // vehicle without the task-group type-checking issues seen in Xcode 16.
+        for snapshot in dashboard.vehicles {
+            guard !Task.isCancelled,
+                  let index = mergedDashboard.vehicles.firstIndex(where: { $0.vehicle.sn == snapshot.vehicle.sn }) else {
                 continue
             }
 
-            // Keep all months in the shared interface cache, while putting the
-            // current-month records directly on the snapshot used by the trip
-            // screen. This fixes the empty page without slowing the first paint.
-            store.upsertInterfaceRideRecords(page.records, sn: result.sn)
+            async let travelPage: NinebotTravelPage? = try? await client.fetchTravelMonth(
+                sn: snapshot.vehicle.sn,
+                month: month
+            )
+            async let batteryPayload: JSONValue? = try? await client.fetchBattery(sn: snapshot.vehicle.sn)
+            let (page, battery) = await (travelPage, batteryPayload)
+
+            guard page != nil || battery != nil else { continue }
             let current = mergedDashboard.vehicles[index]
-            var state = NinebotProxyClient.vehicleState(
+            if let page, !page.records.isEmpty {
+                store.upsertInterfaceRideRecords(page.records, sn: snapshot.vehicle.sn)
+            }
+
+            let state = NinebotProxyClient.vehicleState(
                 status: current.state.rawStatus.map(JSONValue.object),
-                travel: page.raw,
-                battery: current.state.rawBattery.map(JSONValue.object),
+                travel: page?.raw ?? current.state.rawTravel.map(JSONValue.object),
+                battery: battery ?? current.state.rawBattery.map(JSONValue.object),
                 prediction: current.state.serverPrediction,
                 updatedAt: current.state.updatedAt
             )
-            state.totalMileage = state.totalMileage ?? current.state.totalMileage
-            state.lastMileage = state.lastMileage ?? current.state.lastMileage
-            mergedDashboard.vehicles[index].state = state
+            var mergedState = state
+            mergedState.totalMileage = state.totalMileage ?? current.state.totalMileage
+            mergedState.lastMileage = state.lastMileage ?? current.state.lastMileage
+            mergedDashboard.vehicles[index].state = mergedState
             didUpdate = true
         }
 
-        if didUpdate {
-            _ = saveDashboard(mergedDashboard)
-            WidgetCenter.shared.reloadAllTimelines()
-        }
+        guard !Task.isCancelled, didUpdate else { return }
+        _ = saveDashboard(mergedDashboard)
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     private func cacheVehicleImages(for dashboard: NinebotDashboard) async {

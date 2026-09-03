@@ -608,9 +608,9 @@ private struct EliteStatusPair: View {
                 systemImage: snapshot.state.isRideActive ? "car.rear.fill" : (snapshot.state.isLocked == true ? "lock.fill" : "power")
             )
             EliteMetricTile(
-                title: snapshot.state.isRideActive ? "已行驶" : "本月里程",
-                value: snapshot.state.isRideActive ? snapshot.state.totalMileageText : snapshot.state.monthMileageText,
-                caption: snapshot.state.isRideActive ? "实时累计里程" : "累计骑行",
+                title: "今日里程",
+                value: snapshot.state.todayMileageText,
+                caption: snapshot.state.isRideActive ? "实时累计里程" : "今日累计骑行",
                 systemImage: "road.lanes"
             )
         }

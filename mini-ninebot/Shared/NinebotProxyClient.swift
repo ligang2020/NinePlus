@@ -219,6 +219,16 @@ struct NinebotProxyClient {
         )
     }
 
+    /// Loads the detail payload separately from the fast dashboard. The server
+    /// intentionally omits this heavier read from `/dashboard`; callers can
+    /// hydrate the battery card after the first screen has rendered.
+    func fetchBattery(sn: String) async throws -> JSONValue {
+        try await request(
+            method: "GET",
+            path: ["vehicles", sn, "battery"]
+        )
+    }
+
     func fetchTravelDetail(sn: String, travelID: String) async throws -> NinebotRideDetail {
         let payload = try await request(
             method: "GET",
@@ -553,13 +563,22 @@ private extension NinebotProxyClient {
     }
 
     static func vehicleState(status: JSONValue?, travel: JSONValue?, battery: JSONValue? = nil, updatedAt: Date) -> NinebotVehicleState {
-        let statusObject = status?.objectValue ?? [:]
-        let travelObject = travel?.objectValue ?? [:]
-        let batteryPayloadObject = battery?.objectValue ?? [:]
-        let batteryObject = firstObject(["battery", "batteryInfo", "battery_info", "bms", "bmsInfo", "bms_info"], in: statusObject) ?? [:]
-        let batteryListObject = firstArrayObject(["battery_list", "batteryList", "batteries"], in: batteryPayloadObject) ?? [:]
-        let batteryMainObject = firstObject(["battery_main", "batteryMain"], in: batteryPayloadObject) ?? [:]
-        let batterySources = [statusObject, batteryObject, batteryPayloadObject, batteryListObject, batteryMainObject]
+        let statusRoot = status?.objectValue ?? [:]
+        let statusObject = payloadObject(statusRoot, preferredKeys: ["status", "vehicle_status", "vehicleStatus", "data"])
+        let travelRoot = travel?.objectValue ?? [:]
+        let travelObject = payloadObject(travelRoot, preferredKeys: ["travel", "travels", "data"])
+        let batteryRoot = battery?.objectValue ?? [:]
+        let batteryPayloadObject = payloadObject(batteryRoot, preferredKeys: ["battery", "batteryInfo", "battery_info", "bms", "bmsInfo", "bms_info", "data"])
+        let batteryObject = firstObject(["battery", "batteryInfo", "battery_info", "bms", "bmsInfo", "bms_info"], in: statusObject)
+            ?? firstObject(["battery", "batteryInfo", "battery_info", "bms", "bmsInfo", "bms_info"], in: statusRoot)
+            ?? [:]
+        let batteryListObject = firstArrayObject(["battery_list", "batteryList", "batteries", "packs", "batteryPack"], in: batteryPayloadObject)
+            ?? firstArrayObject(["battery_list", "batteryList", "batteries", "packs", "batteryPack"], in: batteryRoot)
+            ?? [:]
+        let batteryMainObject = firstObject(["battery_main", "batteryMain"], in: batteryPayloadObject)
+            ?? firstObject(["battery_main", "batteryMain"], in: batteryRoot)
+            ?? [:]
+        let batterySources = [statusObject, statusRoot, batteryObject, batteryPayloadObject, batteryRoot, batteryListObject, batteryMainObject]
         let loc = statusObject["loc"]?.objectValue
         let locationInfo = statusObject["locationInfo"]?.objectValue
         let lockNumber = loc?["lock"]?.intValue ?? statusObject["lock_status"]?.intValue
@@ -573,7 +592,8 @@ private extension NinebotProxyClient {
         return NinebotVehicleState(
             battery: firstInt(["dump_energy", "dumpEnergy"], in: statusObject)
                 ?? firstInt(["electricity", "dump_energy", "dumpEnergy"], in: batteryPayloadObject)
-                ?? firstInt(["electricity", "dump_energy", "dumpEnergy"], in: batteryListObject),
+                ?? firstInt(["electricity", "dump_energy", "dumpEnergy", "soc", "battery", "battery_percent", "batteryPercent"], in: batteryListObject)
+                ?? firstInt(["electricity", "dump_energy", "dumpEnergy", "soc", "battery", "battery_percent", "batteryPercent"], in: batterySources),
             batteryVoltage: normalizedBatteryVoltage(
                 firstDouble(
                     [
@@ -589,6 +609,8 @@ private extension NinebotProxyClient {
                         "bmsVoltage",
                         "bms_volt",
                         "bmsVolt",
+                        "batt_volt",
+                        "battVolt",
                         "voltage",
                         "volt"
                     ],
@@ -616,16 +638,18 @@ private extension NinebotProxyClient {
                         "bmsTemp",
                         "bat_temp",
                         "batTemp",
+                        "temp_c",
+                        "tempC",
+                        "temperature_c",
+                        "temperatureC",
                         "temperature",
                         "temp"
                     ],
                     in: batterySources
                 )
             ),
-            batteryCycleCount: firstInt(["bms_cycle", "bmsCycle", "cycle", "cycles"], in: batteryListObject)
-                ?? firstInt(["bms_cycle", "bmsCycle", "cycle", "cycles"], in: batteryPayloadObject),
-            chargingPower: firstDouble(["charging_power", "chargingPower", "charge_power", "chargePower"], in: batteryPayloadObject)
-                ?? firstDouble(["charging_power", "chargingPower", "charge_power", "chargePower"], in: batterySources),
+            batteryCycleCount: firstInt(["bms_cycle", "bmsCycle", "bms_cycles", "bmsCycles", "cycle_count", "cycleCount", "cycle", "cycles"], in: batterySources),
+            chargingPower: firstDouble(["charging_power", "chargingPower", "charge_power", "chargePower", "power", "charge_watt", "chargeWatt", "charging_watt", "chargingWatt", "power_w", "powerW"], in: batterySources),
             interfaceMaximumSpeed: firstDouble(["max_speed", "maxSpeed", "highest_speed", "highestSpeed", "peak_speed", "peakSpeed", "top_speed", "topSpeed"], in: [statusObject, travelObject, batteryPayloadObject])
                 .flatMap { $0 > 0 && $0 <= 120 ? $0 : nil },
             endurance: firstDouble(["precise_estimate_mileage", "preciseEstimateMileage", "estimate_mileage", "estimateMileage"], in: statusObject),
@@ -728,6 +752,15 @@ private extension NinebotProxyClient {
                 mileage: mileage
             )
         }
+    }
+
+    static func payloadObject(_ root: [String: JSONValue], preferredKeys: [String]) -> [String: JSONValue] {
+        var current = root
+        for _ in 0..<2 {
+            guard let nested = firstObject(preferredKeys, in: current), !nested.isEmpty else { break }
+            current = nested
+        }
+        return current
     }
 
     static func firstInt(_ keys: [String], in object: [String: JSONValue]) -> Int? {
