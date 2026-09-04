@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import MapKit
 
@@ -216,6 +217,9 @@ private struct EliteHomeView: View {
             .padding(.bottom, 112)
         }
         .background(Color.eliteBackground)
+        .refreshable {
+            await model.refreshDashboard()
+        }
         .sheet(isPresented: $isShowingVehiclePicker) {
             EliteVehiclePicker(model: model)
                 .presentationDetents([.medium])
@@ -868,6 +872,7 @@ private struct EliteChargeView: View {
                     EliteChargingPowerCurveCard(
                         points: model.history(for: snapshot.vehicle.sn),
                         currentPower: snapshot.state.chargingPower,
+                        currentTimestamp: snapshot.state.updatedAt,
                         isCharging: snapshot.state.isCharging == true
                     )
                 } else {
@@ -1019,274 +1024,374 @@ private struct EliteCompactMetric: View {
     }
 }
 
-private struct EliteChargingPowerSample: Identifiable {
-    let id: String
-    let date: Date
-    let power: Double
-}
-
-/// A native SwiftUI chart for the charging screen. It deliberately renders a
-/// card even before the first history sample has been persisted, so a fresh
-/// sync cannot make the feature disappear.
 private struct EliteChargingPowerCurveCard: View {
     let points: [NinebotVehicleHistoryPoint]
     let currentPower: Double?
+    let currentTimestamp: Date
     let isCharging: Bool
 
-    private var validSamples: [EliteChargingPowerSample] {
-        points
-            .compactMap { point in
-                guard let power = point.chargingPower, power.isFinite, power >= 0 else { return nil }
-                return EliteChargingPowerSample(id: point.id, date: point.date, power: power)
-            }
-            .sorted { $0.date < $1.date }
-    }
+    @State private var selectedPointID: String?
 
-    private var samples: [EliteChargingPowerSample] {
-        let historical = validSamples
-        if historical.count >= 2 { return historical }
-
-        let now = Date()
-        let live = max(currentPower ?? historical.last?.power ?? 0, 0)
-        // A short, clearly labelled preview keeps the card visible while the
-        // backend is still creating its first persisted history points.
-        let values: [Double] = live > 0
-            ? [live * 0.62, live * 0.78, live * 0.91, live, live * 0.96, live]
-            : [0, 0, 0, 0, 0, 0]
-        return values.enumerated().map { index, value in
-            EliteChargingPowerSample(
-                id: "preview-\(index)",
-                date: now.addingTimeInterval(Double(index - values.count + 1) * 60),
-                power: value
+    private var telemetryPoints: [ChargingPowerPoint] {
+        var values = latestSessionHistoryPoints.compactMap { point -> ChargingPowerPoint? in
+            guard let power = point.chargingPower, power.isFinite, power >= 0 else { return nil }
+            return ChargingPowerPoint(
+                id: point.id,
+                timestamp: point.date,
+                power: power,
+                voltage: point.batteryVoltage,
+                current: point.batteryCurrent,
+                temperature: point.batteryTemperature,
+                soc: point.battery.map(Double.init)
             )
         }
+        if let currentPower, currentPower.isFinite, currentPower >= 0,
+           values.last?.timestamp ?? .distantPast < currentTimestamp {
+            values.append(ChargingPowerPoint(
+                id: "live-\(currentTimestamp.timeIntervalSince1970)",
+                timestamp: currentTimestamp,
+                power: currentPower
+            ))
+        }
+        return values
     }
 
-    private var maxPower: Double {
-        max(samples.map(\.power).max() ?? 0, 1)
+    /// History is a rolling cache, so the card must select the latest contiguous
+    /// charge run instead of plotting unrelated rides or older charge sessions.
+    private var latestSessionHistoryPoints: [NinebotVehicleHistoryPoint] {
+        let sorted = points.sorted { $0.date < $1.date }
+        guard let activeIndex = sorted.lastIndex(where: { point in
+            guard let power = point.chargingPower, power.isFinite else { return point.isCharging == true }
+            return point.isCharging == true || power > 0
+        }) else { return [] }
+
+        var start = activeIndex
+        var foundActive = false
+        while start > 0 {
+            let current = sorted[start]
+            let previous = sorted[start - 1]
+            if current.date.timeIntervalSince(previous.date) > 20 * 60 { break }
+            let previousIsActive = previous.isCharging == true || (previous.chargingPower ?? 0) > 0
+            if previousIsActive {
+                foundActive = true
+                start -= 1
+            } else if foundActive || current.isCharging != true {
+                break
+            } else {
+                start -= 1
+            }
+        }
+
+        var end = activeIndex
+        while end + 1 < sorted.count {
+            let current = sorted[end]
+            let next = sorted[end + 1]
+            if next.date.timeIntervalSince(current.date) > 20 * 60 { break }
+            let nextIsActive = next.isCharging == true || (next.chargingPower ?? 0) > 0
+            if nextIsActive {
+                end += 1
+            } else {
+                end += 1 // retain one zero-power endpoint for completed sessions
+                break
+            }
+        }
+        return Array(sorted[start...end])
     }
 
-    private var peakPower: Double {
-        samples.map(\.power).max() ?? 0
-    }
-
-    private var averagePower: Double {
-        guard !samples.isEmpty else { return 0 }
-        return samples.map(\.power).reduce(0, +) / Double(samples.count)
-    }
-
-    private var isPreview: Bool { validSamples.count < 2 }
+    private var analysis: ChargingPowerAnalysis { ChargingPowerAnalyzer.analyze(telemetryPoints) }
+    private var hasData: Bool { analysis.points.count >= 2 && analysis.averagePower != nil }
+    private var liveValue: Double? { currentPower ?? analysis.points.last?.power }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Color.elitePrimaryLight)
-                    .frame(width: 32, height: 32)
-                    .background(Color.elitePrimary.opacity(0.16), in: Circle())
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("充电功率曲线")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(Color.elitePrimaryText)
-                    Text(isPreview ? "等待历史采样 · 实时预览" : "最近充电采样")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.eliteSecondaryText)
-                }
-
-                Spacer(minLength: 8)
-
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text(powerText(currentPower ?? validSamples.last?.power))
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.elitePrimaryLight)
-                    Text(isCharging ? "实时功率" : "充电已停止")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.eliteSecondaryText)
-                }
-            }
-
-            // Reserve a dedicated gutter for Y-axis labels. In the previous version they were
-            // drawn inside the plot and could be clipped or overlap the line.
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .trailing, spacing: 0) {
-                    Text("\(numberText(maxPower)) W")
-                    Spacer(minLength: 0)
-                    Text("0 W")
-                }
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(Color.eliteSecondaryText.opacity(0.82))
-                .frame(width: 38, height: 156, alignment: .topTrailing)
-                .minimumScaleFactor(0.7)
-                .lineLimit(1)
-
-                GeometryReader { proxy in
-                    let chartRect = CGRect(
-                        x: 0,
-                        y: 0,
-                        width: max(proxy.size.width, 1),
-                        height: max(proxy.size.height, 1)
-                    )
-                    let locations = sampleLocations(in: chartRect)
-
-                    ZStack {
-                        VStack(spacing: 0) {
-                            ForEach(0..<4, id: \.self) { _ in
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.07))
-                                    .frame(height: 0.5)
-                                    .frame(maxHeight: .infinity)
-                            }
-                        }
-
-                        HStack(spacing: 0) {
-                            ForEach(0..<4, id: \.self) { _ in
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.055))
-                                    .frame(width: 0.5)
-                                    .frame(maxWidth: .infinity)
-                            }
-                        }
-
-                        powerAreaPath(locations: locations, rect: chartRect)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.elitePrimary.opacity(0.30), Color.elitePrimary.opacity(0.035)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-
-                        powerLinePath(locations: locations)
-                            .stroke(
-                                LinearGradient(
-                                    colors: [Color.elitePrimaryLight, Color.cyan.opacity(0.82)],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                ),
-                                style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round)
-                            )
-                            .shadow(color: Color.elitePrimary.opacity(0.55), radius: 5)
-
-                        if let last = locations.last {
-                            TimelineView(.periodic(from: .now, by: 1.2)) { timeline in
-                                let pulse = 0.82 + 0.18 * sin(timeline.date.timeIntervalSince1970 * 4)
-                                Circle()
-                                    .fill(Color.white)
-                                    .frame(width: 8, height: 8)
-                                    .overlay(Circle().fill(Color.elitePrimaryLight).frame(width: 5, height: 5))
-                                    .shadow(color: Color.elitePrimaryLight.opacity(pulse), radius: 8)
-                                    .position(last)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 2)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 156)
-            }
-            .padding(.horizontal, 2)
-
-            HStack {
-                Text(timeText(samples.first?.date))
-                Spacer()
-                Text(timeText(samples.last?.date))
-            }
-            .font(.system(size: 10, weight: .medium, design: .monospaced))
-            .foregroundStyle(Color.eliteSecondaryText)
-
-            HStack(spacing: 0) {
-                ElitePowerStat(title: "峰值功率", value: "\(numberText(peakPower)) W")
-                Divider()
-                    .frame(height: 24)
-                    .overlay(Color.white.opacity(0.12))
-                ElitePowerStat(title: "平均功率", value: "\(numberText(averagePower)) W")
+            header
+            if hasData {
+                chart
+                summary
+                segmentStatistics
+            } else {
+                emptyState
             }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .eliteCard(cornerRadius: 26, glow: isCharging)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("充电功率曲线，当前 \(powerText(currentPower ?? validSamples.last?.power))")
+        .accessibilityLabel("充电功率曲线，\(hasData ? "已采集 \(analysis.points.count) 个数据点" : "数据采集中")")
     }
 
-    private func sampleLocations(in rect: CGRect) -> [CGPoint] {
-        guard !samples.isEmpty else { return [] }
-        let start = samples.first?.date ?? Date()
-        let end = samples.last?.date ?? start
-        let duration = end.timeIntervalSince(start)
-        return samples.map { sample in
-            let x: CGFloat = duration > 0
-                ? CGFloat(sample.date.timeIntervalSince(start) / duration) * rect.width
-                : rect.width / 2
-            let normalized = min(max(sample.power / maxPower, 0), 1)
-            let y = rect.height - CGFloat(normalized) * (rect.height - 6) - 3
-            return CGPoint(x: x, y: y)
+    private var header: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "bolt.fill")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.elitePrimaryLight)
+                .frame(width: 32, height: 32)
+                .background(Color.elitePrimary.opacity(0.16), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("充电功率曲线")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(Color.elitePrimaryText)
+                Text(hasData ? "最近一次充电 · \(durationText)" : "数据采集中")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.eliteSecondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            Spacer(minLength: 6)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(powerText(liveValue))
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.elitePrimaryLight)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Text(isCharging ? "实时功率" : "充电已停止")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.eliteSecondaryText)
+            }
         }
     }
 
-    private func powerLinePath(locations: [CGPoint]) -> Path {
-        guard let first = locations.first else { return Path() }
-        var path = Path()
-        path.move(to: first)
-        guard locations.count > 1 else { return path }
-        for index in 1..<locations.count {
-            let from = locations[index - 1]
-            let to = locations[index]
-            let midpointX = (from.x + to.x) / 2
-            path.addCurve(
-                to: to,
-                control1: CGPoint(x: midpointX, y: from.y),
-                control2: CGPoint(x: midpointX, y: to.y)
-            )
+    private var chart: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            GeometryReader { proxy in
+                let rect = CGRect(x: 0, y: 0, width: max(proxy.size.width, 1), height: max(proxy.size.height, 1))
+                let locations = locations(in: rect)
+                ZStack(alignment: .topLeading) {
+                    segmentBands(in: rect)
+                    VStack(spacing: 0) {
+                        ForEach(0..<4, id: \.self) { _ in
+                            Rectangle().fill(Color.white.opacity(0.065)).frame(height: 0.5).frame(maxHeight: .infinity)
+                        }
+                    }
+                    powerAreaPath(locations: locations, rect: rect)
+                        .fill(LinearGradient(colors: [Color.elitePrimary.opacity(0.26), Color.elitePrimary.opacity(0.025)], startPoint: .top, endPoint: .bottom))
+                    powerLinePath(locations: locations)
+                        .stroke(LinearGradient(colors: [Color.elitePrimaryLight, Color.cyan.opacity(0.82)], startPoint: .leading, endPoint: .trailing), style: StrokeStyle(lineWidth: 2.8, lineCap: .round, lineJoin: .round))
+                        .shadow(color: Color.elitePrimary.opacity(0.48), radius: 5)
+
+                    if let last = locations.last {
+                        Circle().fill(Color.white).frame(width: 9, height: 9)
+                            .overlay(Circle().fill(Color.elitePrimaryLight).frame(width: 5, height: 5))
+                            .shadow(color: Color.elitePrimaryLight.opacity(0.8), radius: 7)
+                            .position(last)
+                    }
+                    annotation(for: peakPoint, title: peakLabel, in: rect)
+                    annotation(for: lowPoint, title: "低峰", in: rect)
+                    if let selectedPoint, let location = location(for: selectedPoint, in: rect) {
+                        RuleMarkView()
+                            .stroke(Color.white.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                            .frame(width: 1, height: rect.height)
+                            .position(x: location.x, y: rect.midY)
+                        Tooltip(point: selectedPoint)
+                            .position(x: min(max(location.x, 74), rect.width - 74), y: 37)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                    selectedPointID = nearestPoint(toX: value.location.x, in: rect)?.id
+                }.onEnded { _ in
+                    withAnimation(.easeOut(duration: 0.18)) { selectedPointID = nil }
+                })
+            }
+            .frame(height: 174)
+
+            HStack(alignment: .top, spacing: 0) {
+                Text("\(numberText(max(analysis.peakPower ?? 0, 1))) W")
+                    .frame(width: 40, alignment: .trailing)
+                Spacer(minLength: 8)
+                ForEach(tickDates.indices, id: \.self) { index in
+                    Text(timeText(tickDates[index]))
+                        .frame(maxWidth: .infinity, alignment: index == 0 ? .leading : (index == tickDates.count - 1 ? .trailing : .center))
+                }
+            }
+            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .foregroundStyle(Color.eliteSecondaryText)
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
         }
-        return path
+    }
+
+    private var summary: some View {
+        HStack(spacing: 0) {
+            ElitePowerStat(title: "峰值功率", value: powerText(analysis.peakPower))
+            Divider().frame(height: 26).overlay(Color.white.opacity(0.12))
+            ElitePowerStat(title: "平均功率", value: powerText(analysis.averagePower))
+            if let instantaneousPeak = analysis.instantaneousPeak {
+                Divider().frame(height: 26).overlay(Color.white.opacity(0.12))
+                ElitePowerStat(title: "瞬时峰值", value: powerText(instantaneousPeak.power))
+            }
+        }
+    }
+
+    private var segmentStatistics: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("充电阶段").font(.system(size: 14, weight: .bold)).foregroundStyle(Color.elitePrimaryText)
+                Spacer()
+                Text("\(analysis.segments.count) 段").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.eliteSecondaryText)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 10) {
+                    ForEach(analysis.segments) { segment in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(segment.type.title).font(.system(size: 12, weight: .bold)).foregroundStyle(Color.elitePrimaryText)
+                            Text("\(timeText(segment.startTime)) → \(timeText(segment.endTime))")
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Color.eliteSecondaryText)
+                                .lineLimit(1)
+                            Text("平均 \(powerText(segment.averagePower))")
+                                .font(.system(size: 11, weight: .semibold, design: .rounded)).foregroundStyle(Color.elitePrimaryLight)
+                            Text("低 \(powerText(segment.minPower)) · 高 \(powerText(segment.maxPower))")
+                                .font(.system(size: 10, weight: .medium, design: .rounded)).foregroundStyle(Color.eliteSecondaryText)
+                                .lineLimit(1).minimumScaleFactor(0.78)
+                        }
+                        .padding(12)
+                        .frame(width: 164, alignment: .leading)
+                        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                    }
+                }
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "waveform.path.ecg").font(.system(size: 24, weight: .medium)).foregroundStyle(Color.elitePrimaryLight.opacity(0.8))
+            Text("数据采集中").font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.elitePrimaryText)
+            Text("收到至少两个有效采样点后显示功率趋势").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.eliteSecondaryText).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity).frame(height: 174)
+    }
+
+    private var selectedPoint: ChargingPowerPoint? {
+        guard let selectedPointID else { return nil }
+        return analysis.points.first { $0.id == selectedPointID }
+    }
+
+    private var peakPoint: ChargingPowerPoint? { analysis.points.max { $0.power < $1.power } }
+    private var lowPoint: ChargingPowerPoint? { analysis.points.filter { $0.power > 0 }.min { $0.power < $1.power } }
+    private var peakLabel: String { analysis.instantaneousPeak != nil ? "瞬时峰值" : "⚡ 高峰" }
+
+    private var durationText: String {
+        guard let first = analysis.points.first, let last = analysis.points.last else { return "--" }
+        return durationText(from: max(last.timestamp.timeIntervalSince(first.timestamp), 0))
+    }
+
+    private var tickDates: [Date] {
+        guard let start = analysis.points.first?.timestamp, let end = analysis.points.last?.timestamp else { return [] }
+        let duration = max(end.timeIntervalSince(start), 1)
+        let count = duration < 15 * 60 ? 2 : min(6, max(3, Int(duration / (90 * 60)).rounded(.up) + 1))
+        return (0..<count).map { start.addingTimeInterval(duration * Double($0) / Double(max(count - 1, 1))) }
+    }
+
+    private func locations(in rect: CGRect) -> [CGPoint] {
+        analysis.points.compactMap { location(for: $0, in: rect) }
+    }
+
+    private func location(for point: ChargingPowerPoint, in rect: CGRect) -> CGPoint? {
+        guard let start = analysis.points.first?.timestamp, let end = analysis.points.last?.timestamp else { return nil }
+        let span = max(end.timeIntervalSince(start), 1)
+        let x = CGFloat(point.timestamp.timeIntervalSince(start) / span) * rect.width
+        let top = max(analysis.peakPower ?? 1, 1)
+        let y = rect.height - CGFloat(min(max(point.power / top, 0), 1)) * (rect.height - 8) - 4
+        return CGPoint(x: min(max(x, 0), rect.width), y: y)
+    }
+
+    private func nearestPoint(toX x: CGFloat, in rect: CGRect) -> ChargingPowerPoint? {
+        analysis.points.min { abs((location(for: $0, in: rect)?.x ?? 0) - x) < abs((location(for: $1, in: rect)?.x ?? 0) - x) }
+    }
+
+    @ViewBuilder private func segmentBands(in rect: CGRect) -> some View {
+        ForEach(analysis.segments) { segment in
+            if let start = location(for: analysis.points.first(where: { $0.timestamp == segment.startTime }) ?? analysis.points.first!, in: rect),
+               let end = location(for: analysis.points.first(where: { $0.timestamp == segment.endTime }) ?? analysis.points.last!, in: rect) {
+                Rectangle().fill(Color.white.opacity(segment.type == .highPower ? 0.045 : 0.018))
+                    .frame(width: max(end.x - start.x, 1), height: rect.height)
+                    .position(x: (start.x + end.x) / 2, y: rect.midY)
+            }
+        }
+    }
+
+    @ViewBuilder private func annotation(for point: ChargingPowerPoint?, title: String, in rect: CGRect) -> some View {
+        if let point, let location = location(for: point, in: rect), point.power > 0 {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 10, weight: .bold)).foregroundStyle(Color.elitePrimaryLight)
+                Text(powerText(point.power)).font(.system(size: 11, weight: .bold, design: .rounded)).foregroundStyle(Color.elitePrimaryText)
+                Text(timeText(point.timestamp)).font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(Color.eliteSecondaryText)
+            }
+            .padding(.horizontal, 7).padding(.vertical, 5)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .position(x: min(max(location.x, 38), rect.width - 38), y: max(location.y - 27, 27))
+        }
     }
 
     private func powerAreaPath(locations: [CGPoint], rect: CGRect) -> Path {
         guard let first = locations.first, let last = locations.last else { return Path() }
         var path = powerLinePath(locations: locations)
-        path.addLine(to: CGPoint(x: last.x, y: rect.height))
-        path.addLine(to: CGPoint(x: first.x, y: rect.height))
-        path.closeSubpath()
+        path.addLine(to: CGPoint(x: last.x, y: rect.height)); path.addLine(to: CGPoint(x: first.x, y: rect.height)); path.closeSubpath(); return path
+    }
+
+    private func powerLinePath(locations: [CGPoint]) -> Path {
+        guard let first = locations.first else { return Path() }
+        var path = Path(); path.move(to: first)
+        for index in 1..<locations.count {
+            let from = locations[index - 1], to = locations[index], midpointX = (from.x + to.x) / 2
+            path.addCurve(to: to, control1: CGPoint(x: midpointX, y: from.y), control2: CGPoint(x: midpointX, y: to.y))
+        }
         return path
     }
 
     private func numberText(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.maximumFractionDigits = 0
-        formatter.minimumFractionDigits = 0
+        let formatter = NumberFormatter(); formatter.locale = Locale(identifier: "zh_CN"); formatter.maximumFractionDigits = 0; formatter.minimumFractionDigits = 0
         return formatter.string(from: NSNumber(value: value)) ?? "0"
     }
 
     private func powerText(_ value: Double?) -> String {
-        guard let value, value.isFinite, value >= 0 else { return "-- W" }
+        guard let value, value.isFinite, value >= 0 else { return "暂无数据" }
         return "\(numberText(value)) W"
     }
 
-    private func timeText(_ date: Date?) -> String {
-        guard let date else { return "--:--" }
-        return eliteTime(date)
+    private func timeText(_ date: Date) -> String { eliteTime(date) }
+    private func durationText(from seconds: TimeInterval) -> String {
+        let minutes = Int(seconds / 60)
+        if minutes < 60 { return "\(minutes)分钟" }
+        return "\(minutes / 60)小时\(minutes % 60)分钟"
+    }
+}
+
+private struct RuleMarkView: Shape {
+    func path(in rect: CGRect) -> Path { var path = Path(); path.move(to: CGPoint(x: rect.midX, y: rect.minY)); path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY)); return path }
+}
+
+private struct Tooltip: View {
+    let point: ChargingPowerPoint
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(point.timestamp, format: .dateTime.hour().minute().second()).font(.system(size: 10, weight: .semibold, design: .monospaced))
+            Text("充电功率  \(Int(point.power.rounded())) W").font(.system(size: 11, weight: .bold, design: .rounded))
+            Text("电池电压  \(point.voltage.map { String(format: "%.1f V", $0) } ?? "暂无数据")")
+            Text("电池电流  \(point.current.map { String(format: "%.1f A", $0) } ?? "暂无数据")")
+            Text("电池温度  \(point.temperature.map { String(format: "%.1f ℃", $0) } ?? "暂无数据")")
+            Text("电量 SOC  \(point.soc.map { "\(Int($0.rounded()))%" } ?? "暂无数据")")
+        }
+        .font(.system(size: 9, weight: .medium, design: .monospaced))
+        .foregroundStyle(Color.elitePrimaryText)
+        .padding(9)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
     }
 }
 
 private struct ElitePowerStat: View {
     let title: String
     let value: String
-
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color.eliteSecondaryText)
-            Text(value)
-                .font(.system(size: 14, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(Color.elitePrimaryText)
+            Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(Color.eliteSecondaryText)
+            Text(value).font(.system(size: 14, weight: .bold, design: .rounded)).monospacedDigit().foregroundStyle(Color.elitePrimaryText).lineLimit(1).minimumScaleFactor(0.72)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

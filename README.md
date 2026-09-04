@@ -26,7 +26,7 @@ switch between the supplied daytime and nighttime artwork by local time. The
 daytime window is 06:00–18:59, and the existing static route map and vehicle
 controls remain available.
 
-Version **30**, build **30** is configured in the Xcode project. In the
+Version **33**, build **33** is configured in the Xcode project. In the
 driving state, the home screen removes the cycling glyph from the vehicle-stage
 badge, shows a car icon with “车辆行驶中”, and replaces current speed with the
 live cumulative distance. App launch and each foreground restoration refresh
@@ -37,7 +37,7 @@ the vehicle dashboard while background refreshes reuse the short server cache.
 Web 版本 **v32** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v32` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v33` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. Artifact upload needs no release secret.
 If the repository blocks GitHub's automatic workflow token from creating
 releases, add a fine-grained `GH_RELEASE_TOKEN` Actions secret with repository
@@ -48,8 +48,16 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v32 --derived-data build/DerivedData-v32
+  scripts/package-unsigned-ipa.sh --output build/ipa-v33 --derived-data build/DerivedData-v33
 ```
+
+## v33 原生充电功率分析
+
+- 原生充电页的功率曲线使用真实历史采样，不再生成预览假数据。
+- 新增 `ChargingPowerPoint`、`ChargingSegment`、`ChargingSession` 与独立阶段分析器，支持启动、高功率、稳定、降功率和结束阶段。
+- 采用中位数滤波和至少连续 3 个采样点的高功率判定，单点尖峰会标记为“瞬时峰值”，不会误判为高功率阶段。
+- 每次车况同步在充电期间按 10 秒间隔缓存功率、电压、温度和 SOC；充电结束时保存本次充电会话。
+- 首页支持下拉刷新，同步数据沿用现有 Ninebot 服务和缓存链路。
 
 ## Backend
 

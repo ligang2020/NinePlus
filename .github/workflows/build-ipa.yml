@@ -9,9 +9,10 @@ on:
         default: true
         type: boolean
       release_tag:
-        description: "Release tag (must match the app version; default: v32)"
+        description: "Release tag (must match the app version; default: v33)"
         required: false
-        default: v32
+        default: v33
+        type: string
   push:
     branches: [main, master]
     tags: ['v*']
@@ -33,6 +34,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Verify Xcode and release version
         id: version
@@ -56,6 +59,13 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
           echo "Building unsigned NinePlus IPA $TAG_NAME (build $BUILD)."
+
+      - name: Check package script
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x scripts/package-unsigned-ipa.sh
+          bash -n scripts/package-unsigned-ipa.sh
 
       - name: Build and package unsigned IPA
         id: package

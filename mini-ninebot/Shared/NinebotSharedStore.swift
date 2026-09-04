@@ -12,6 +12,7 @@ struct NinebotSharedStore {
         static let lastAppRefreshEvent = "ninebot.last.app.refresh.event"
         static let lastWidgetRefreshEvent = "ninebot.last.widget.refresh.event"
         static let historyPrefix = "ninebot.vehicle.history."
+        static let chargingSessionsPrefix = "ninebot.vehicle.charging.sessions."
         static let interfaceRidePrefix = "ninebot.vehicle.interface.rides."
         static let vehicleImagePrefix = "ninebot.vehicle.image."
         static let recordedRides = "ninebot.recorded.rides"
@@ -209,6 +210,24 @@ struct NinebotSharedStore {
 
     func saveLastWidgetRefreshEvent(_ event: NinebotRefreshEvent) {
         saveRefreshEvent(event, key: Key.lastWidgetRefreshEvent)
+    }
+
+    func loadChargingSessions(sn: String) -> [ChargingSession] {
+        guard let data = defaults.data(forKey: chargingSessionsKey(sn: sn)),
+              let sessions = try? decoder.decode([ChargingSession].self, from: data) else { return [] }
+        return sessions.sorted { $0.startedAt > $1.startedAt }
+    }
+
+    func upsertChargingSession(_ session: ChargingSession) {
+        var sessions = loadChargingSessions(sn: session.vehicleSN)
+        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+            sessions[index] = session
+        } else {
+            sessions.insert(session, at: 0)
+        }
+        let limited = Array(sessions.sorted { $0.startedAt > $1.startedAt }.prefix(20))
+        guard let data = try? encoder.encode(limited) else { return }
+        defaults.set(data, forKey: chargingSessionsKey(sn: session.vehicleSN))
     }
 
     func historyCount(sn: String) -> Int {
@@ -415,22 +434,29 @@ struct NinebotSharedStore {
             && last.isPoweredOn == point.isPoweredOn
             && last.chargingPower == point.chargingPower
 
-        // The app polls every few seconds while charging. Keep at most one
-        // persisted sample per minute, while always retaining charge-state
-        // transitions. This makes a 7-day history useful instead of filling
-        // the cache in a few hours.
+        // The app polls every few seconds while charging. Keep a 10-second
+        // charging sample cadence, while retaining charge-state transitions.
+        // This gives the chart enough detail without unbounded growth.
         if point.isCharging != last.isCharging {
             return true
         }
-        if point.date.timeIntervalSince(last.date) < 60 {
+        let minimumInterval: TimeInterval = point.isCharging == true ? 10 : 60
+        if point.date.timeIntervalSince(last.date) < minimumInterval {
             return false
         }
 
+        // A reversed timestamp or a duplicate timestamp must never corrupt the
+        // time axis. The merge path below handles an occasional correction.
+        guard point.date >= last.date else { return false }
         return true
     }
 
     private func historyKey(sn: String) -> String {
         "\(Key.historyPrefix)\(sn)"
+    }
+
+    private func chargingSessionsKey(sn: String) -> String {
+        "\(Key.chargingSessionsPrefix)\(sn)"
     }
 
     private func interfaceRideKey(sn: String) -> String {

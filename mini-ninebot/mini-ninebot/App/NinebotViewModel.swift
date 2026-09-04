@@ -818,10 +818,57 @@ final class NinebotViewModel: ObservableObject {
         let previousDashboard = self.dashboard
         let archivedDashboard = store.saveDashboard(dashboard)
         recordVehicleEvents(previous: previousDashboard, current: archivedDashboard)
+        archiveCompletedChargingSessions(previous: previousDashboard, current: archivedDashboard)
         self.dashboard = archivedDashboard
         history = Self.historyMap(for: archivedDashboard, store: store)
         NinebotChargingLiveActivityManager.sync(with: archivedDashboard)
         return archivedDashboard
+    }
+
+    private func archiveCompletedChargingSessions(previous: NinebotDashboard, current: NinebotDashboard) {
+        for snapshot in current.vehicles {
+            guard previous.vehicles.first(where: { $0.vehicle.sn == snapshot.vehicle.sn })?.state.isCharging == true,
+                  snapshot.state.isCharging != true else { continue }
+
+            let cached = store.loadHistory(sn: snapshot.vehicle.sn).sorted { $0.date < $1.date }
+            guard let endIndex = cached.lastIndex(where: { point in
+                point.date <= snapshot.state.updatedAt &&
+                    (point.isCharging == true || (point.chargingPower ?? 0) > 0)
+            }) else { continue }
+
+            var startIndex = endIndex
+            while startIndex > 0 {
+                let current = cached[startIndex]
+                let previous = cached[startIndex - 1]
+                guard current.date.timeIntervalSince(previous.date) <= 20 * 60 else { break }
+                let previousActive = previous.isCharging == true || (previous.chargingPower ?? 0) > 0
+                if previousActive {
+                    startIndex -= 1
+                } else {
+                    break
+                }
+            }
+
+            var end = endIndex
+            if end + 1 < cached.count,
+               cached[end + 1].date.timeIntervalSince(cached[end].date) <= 20 * 60 {
+                end += 1 // keep the first zero-power endpoint after unplugging
+            }
+            let sessionPoints = cached[startIndex...end].compactMap { point -> ChargingPowerPoint? in
+                guard let power = point.chargingPower, power.isFinite, power >= 0 else { return nil }
+                return ChargingPowerPoint(id: point.id, timestamp: point.date, power: power,
+                                          voltage: point.batteryVoltage, current: point.batteryCurrent,
+                                          temperature: point.batteryTemperature, soc: point.battery.map(Double.init))
+            }
+            guard let first = sessionPoints.first, let last = sessionPoints.last, sessionPoints.count >= 2 else { continue }
+            store.upsertChargingSession(ChargingSession(
+                id: "\(snapshot.vehicle.sn)-\(Int(first.timestamp.timeIntervalSince1970))",
+                vehicleSN: snapshot.vehicle.sn,
+                startedAt: first.timestamp,
+                endedAt: last.timestamp,
+                points: sessionPoints
+            ))
+        }
     }
 
     private func recordVehicleEvents(previous: NinebotDashboard, current: NinebotDashboard) {

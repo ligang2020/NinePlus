@@ -1165,6 +1165,19 @@ struct NinebotVehicleState: Codable, Equatable {
     var rawTravel: [String: JSONValue]?
     var rawBattery: [String: JSONValue]?
 
+    /// Some firmware exposes charging current under the battery/status payload.
+    /// Keep it optional because many Ninebot endpoints do not return it.
+    var batteryCurrent: Double? {
+        let keys = ["current", "battery_current", "batteryCurrent", "charging_current", "chargingCurrent", "amp", "amps"]
+        for source in [rawBattery, rawStatus] {
+            guard let source else { continue }
+            if let value = keys.compactMap({ source[$0]?.doubleValue }).first(where: { $0.isFinite }) {
+                return value
+            }
+        }
+        return nil
+    }
+
     /// Best-known nominal battery capacity in Wh. Prefer the server prediction
     /// (which is configured per vehicle), then fall back to raw BMS fields.
     var batteryCapacityWh: Double? {
@@ -1913,9 +1926,12 @@ struct NinebotVehicleHistoryPoint: Codable, Equatable, Identifiable {
     var isLocked: Bool?
     var isPoweredOn: Bool?
     var chargingPower: Double?
+    var batteryVoltage: Double?
+    var batteryCurrent: Double?
+    var batteryTemperature: Double?
 
     enum CodingKeys: String, CodingKey {
-        case id, sn, date, battery, endurance, totalMileage, isCharging, isLocked, isPoweredOn, chargingPower
+        case id, sn, date, battery, endurance, totalMileage, isCharging, isLocked, isPoweredOn, chargingPower, batteryVoltage, batteryCurrent, batteryTemperature
     }
 
     init(from decoder: Decoder) throws {
@@ -1930,6 +1946,9 @@ struct NinebotVehicleHistoryPoint: Codable, Equatable, Identifiable {
         isLocked = try container.decodeIfPresent(Bool.self, forKey: .isLocked)
         isPoweredOn = try container.decodeIfPresent(Bool.self, forKey: .isPoweredOn)
         chargingPower = try container.decodeIfPresent(Double.self, forKey: .chargingPower)
+        batteryVoltage = try container.decodeIfPresent(Double.self, forKey: .batteryVoltage)
+        batteryCurrent = try container.decodeIfPresent(Double.self, forKey: .batteryCurrent)
+        batteryTemperature = try container.decodeIfPresent(Double.self, forKey: .batteryTemperature)
     }
 
     init(sn: String, state: NinebotVehicleState) {
@@ -1942,6 +1961,9 @@ struct NinebotVehicleHistoryPoint: Codable, Equatable, Identifiable {
         self.isLocked = state.isLocked
         self.isPoweredOn = state.isPoweredOn
         self.chargingPower = state.chargingPower
+        self.batteryVoltage = state.batteryVoltage
+        self.batteryCurrent = state.batteryCurrent
+        self.batteryTemperature = state.batteryTemperature
         self.id = "\(sn)-\(Int(state.updatedAt.timeIntervalSince1970))"
     }
 }
