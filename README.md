@@ -37,7 +37,7 @@ the vehicle dashboard while background refreshes reuse the short server cache.
 Web 版本 **v32** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v33` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v34` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. Artifact upload needs no release secret.
 If the repository blocks GitHub's automatic workflow token from creating
 releases, add a fine-grained `GH_RELEASE_TOKEN` Actions secret with repository
@@ -48,16 +48,18 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v33 --derived-data build/DerivedData-v33
+  scripts/package-unsigned-ipa.sh --output build/ipa-v34 --derived-data build/DerivedData-v34
 ```
 
-## v33 原生充电功率分析
+## v34 首页刷新与原生充电功率分析
 
 - 原生充电页的功率曲线使用真实历史采样，不再生成预览假数据。
 - 新增 `ChargingPowerPoint`、`ChargingSegment`、`ChargingSession` 与独立阶段分析器，支持启动、高功率、稳定、降功率和结束阶段。
 - 采用中位数滤波和至少连续 3 个采样点的高功率判定，单点尖峰会标记为“瞬时峰值”，不会误判为高功率阶段。
 - 每次车况同步在充电期间按 10 秒间隔缓存功率、电压、温度和 SOC；充电结束时保存本次充电会话。
 - 首页支持下拉刷新，同步数据沿用现有 Ninebot 服务和缓存链路。
+- 首页自动刷新调整为充电中 10 秒、非充电 30 秒；手动刷新增加 4 秒防抖，并与自动刷新互斥，避免重复请求。
+- 自动刷新统一携带 `fresh=1`，避免请求成功后仍展示后端短缓存；后端异常时保留最近有效快照并提示缓存时间。
 
 ## Backend
 

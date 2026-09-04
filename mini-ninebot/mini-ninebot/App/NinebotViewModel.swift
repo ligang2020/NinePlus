@@ -168,10 +168,14 @@ final class NinebotViewModel: ObservableObject {
     private var dashboardTravelEnrichmentTask: Task<Void, Never>?
     private var pendingAutomaticRefresh = false
     private var lastForegroundRefreshRequestAt: Date?
+    private var lastManualRefreshAt: Date?
 
     private var automaticRefreshInterval: TimeInterval {
-        // Keep charging feedback prompt while avoiding unnecessary requests when parked.
-        dashboard.primaryVehicle?.state.isCharging == true ? 3 : 6
+        // The dashboard endpoint is backed by a live Ninebot poll. Polling every
+        // few seconds can queue overlapping origin work and make a completed
+        // refresh look stale. Ten seconds is still responsive while charging;
+        // parked vehicles do not need a tight loop.
+        dashboard.primaryVehicle?.state.isCharging == true ? 10 : 30
     }
 
     init() {
@@ -338,6 +342,11 @@ final class NinebotViewModel: ObservableObject {
 
         // Launch and scene activation can arrive together. A request already
         // in flight is the fresh read we need, so never issue a duplicate.
+        if isRefreshingDashboard {
+            // A manual pull/button refresh is already the authoritative live
+            // read. Do not schedule another automatic request behind it.
+            return false
+        }
         if isLoading {
             pendingAutomaticRefresh = true
             return false
@@ -375,9 +384,13 @@ final class NinebotViewModel: ObservableObject {
         }
 
         do {
+            // `fresh=1` is required by the NinePlus aggregate endpoint. A
+            // non-fresh response can legitimately be an older server snapshot,
+            // which was the main reason the spinner finished without visible
+            // changes on the home screen.
             let refreshedDashboard = try await fetchDashboardWithSessionRecovery(
                 selectedSN: dashboard.selectedSN,
-                forceRefresh: false
+                forceRefresh: true
             )
             let archivedDashboard = saveDashboard(refreshedDashboard)
             await cacheVehicleImages(for: archivedDashboard)
@@ -463,9 +476,32 @@ final class NinebotViewModel: ObservableObject {
     }
 
     func refreshDashboard() async {
+        // Pull-to-refresh, the header button, onAppear, and scene activation can
+        // arrive together. Never start a second live read while the automatic
+        // read is still in flight; the in-flight result is the newest snapshot.
+        if isPerformingSilentDashboardRefresh {
+            pendingAutomaticRefresh = false
+            while isPerformingSilentDashboardRefresh && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            return
+        }
+
+        let now = Date()
+        if let lastManualRefreshAt,
+           now.timeIntervalSince(lastManualRefreshAt) < 4 {
+            return
+        }
+        guard !isLoading else { return }
+        lastManualRefreshAt = now
+        isRefreshingDashboard = true
+        defer { isRefreshingDashboard = false }
+
         await runLoadingOperation(message: "正在刷新车况") {
-            let client = try makeClient()
-            let dashboard = try await self.fetchDashboardWithSessionRecovery(selectedSN: self.dashboard.selectedSN)
+            let dashboard = try await self.fetchDashboardWithSessionRecovery(
+                selectedSN: self.dashboard.selectedSN,
+                forceRefresh: true
+            )
             let archivedDashboard = self.saveDashboard(dashboard)
             self.scheduleDashboardEnrichment(for: archivedDashboard)
             self.errorMessage = nil

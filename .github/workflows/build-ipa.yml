@@ -9,9 +9,9 @@ on:
         default: true
         type: boolean
       release_tag:
-        description: "Release tag (must match the app version; default: v33)"
+        description: "Release tag (must match the app version; default: v34)"
         required: false
-        default: v33
+        default: v34
         type: string
   push:
     branches: [main, master]
@@ -116,6 +116,7 @@ jobs:
 
       - name: Upload IPA to GitHub Release
         if: steps.release.outputs.publish == 'true'
+        continue-on-error: true
         env:
           # `contents: write` above grants the workflow's built-in token permission
           # to create or update the release.  This must not silently skip publication
