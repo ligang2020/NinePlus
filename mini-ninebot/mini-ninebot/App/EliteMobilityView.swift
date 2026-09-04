@@ -1283,7 +1283,7 @@ private struct EliteChargingPowerCurveCard: View {
     private var tickDates: [Date] {
         guard let start = analysis.points.first?.timestamp, let end = analysis.points.last?.timestamp else { return [] }
         let duration = max(end.timeIntervalSince(start), 1)
-        let count = duration < 15 * 60 ? 2 : min(6, max(3, Int(duration / (90 * 60)).rounded(.up) + 1))
+        let count = duration < 15 * 60 ? 2 : min(6, max(3, Int((duration / (90 * 60)).rounded(.up)) + 1))
         return (0..<count).map { start.addingTimeInterval(duration * Double($0) / Double(max(count - 1, 1))) }
     }
 
