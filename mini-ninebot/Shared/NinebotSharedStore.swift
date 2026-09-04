@@ -426,14 +426,6 @@ struct NinebotSharedStore {
     ) -> Bool {
         guard let last else { return true }
 
-        let hasSameValues = last.battery == point.battery
-            && last.endurance == point.endurance
-            && last.totalMileage == point.totalMileage
-            && last.isCharging == point.isCharging
-            && last.isLocked == point.isLocked
-            && last.isPoweredOn == point.isPoweredOn
-            && last.chargingPower == point.chargingPower
-
         // The app polls every few seconds while charging. Keep a 10-second
         // charging sample cadence, while retaining charge-state transitions.
         // This gives the chart enough detail without unbounded growth.

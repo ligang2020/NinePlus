@@ -579,7 +579,6 @@ private extension NinebotServerClient {
                     in: batterySources
                 )
             ),
-            batteryCurrent: firstDouble(["current", "battery_current", "batteryCurrent", "charging_current", "chargingCurrent", "amp", "amps"], in: batterySources),
             batteryTemperature: normalizedBatteryTemperature(
                 firstDouble(
                     [
