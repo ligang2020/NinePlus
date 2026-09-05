@@ -609,13 +609,14 @@ extension NinebotProxyClient {
         // while upstream/legacy reads may use `list`, `rows`, `travels`, or a
         // root array. Accept every documented shape so a successful historical
         // month response cannot be parsed as an empty list on iOS.
-        let rides = object["records"]?.arrayValue
-            ?? object["items"]?.arrayValue
-            ?? object["list"]?.arrayValue
-            ?? object["rows"]?.arrayValue
-            ?? object["travels"]?.arrayValue
-            ?? value.arrayValue
-            ?? []
+        var resolvedRides: [JSONValue]?
+        for key in ["records", "items", "list", "rows", "travels"] {
+            if let rides = object[key]?.arrayValue {
+                resolvedRides = rides
+                break
+            }
+        }
+        let rides = resolvedRides ?? value.arrayValue ?? []
         let records = rides.enumerated().compactMap { index, value in
             rideRecord(from: value, index: index)
         }
