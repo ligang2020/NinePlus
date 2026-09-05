@@ -736,7 +736,7 @@ private struct EliteRideSummaryCard: View {
         Button(action: onOpenRecords) {
             HStack(alignment: .center, spacing: 14) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("骑行记录")
+                    Text("行程记录")
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(Color.elitePrimaryText)
                     Text("最近一次 \(snapshot.state.lastRideSummaryText)")

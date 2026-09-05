@@ -1720,6 +1720,12 @@ private struct NinebotTripsView: View {
             }
             .padding(16)
         }
+        .task(id: "\(snapshot.vehicle.sn)|\(selectedMonth)") {
+            await model.syncTravelMonthIfNeeded(
+                vehicleSN: snapshot.vehicle.sn,
+                month: selectedMonth
+            )
+        }
         .background(Color.teslaPageBackground.ignoresSafeArea())
         .navigationTitle("行程")
         .navigationBarTitleDisplayMode(.inline)
@@ -5901,22 +5907,7 @@ private struct RideListSection: View {
             }
 
             if records.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("\(tripMonthDisplayName(selectedMonth)) 暂无行程")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.teslaPrimaryText)
-                    Text("可以切换已有月份，或继续向前获取服务器归档。")
-                        .font(.caption)
-                        .foregroundStyle(Color.teslaSecondaryText)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(14)
-                .background(Color.teslaCardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(Color.teslaHairline, lineWidth: 1)
-                }
+                emptyState
             } else {
                 VStack(spacing: 10) {
                     ForEach(Array(records.prefix(visibleLimit).enumerated()), id: \.element.id) { index, record in
@@ -5965,6 +5956,72 @@ private struct RideListSection: View {
         }
         .onChange(of: selectedMonth) { _ in
             visibleLimit = 30
+        }
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        let isSyncingSelectedMonth = model.syncingTravelMonth == selectedMonth
+        let syncError = vehicleSN.flatMap {
+            model.travelMonthSyncError(vehicleSN: $0, month: selectedMonth)
+        }
+        let didSync = vehicleSN.map {
+            model.hasSyncedTravelMonth(vehicleSN: $0, month: selectedMonth)
+        } ?? false
+
+        VStack(alignment: .leading, spacing: 7) {
+            if isSyncingSelectedMonth {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在获取 \(tripMonthDisplayName(selectedMonth)) 行程…")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.teslaPrimaryText)
+                Text("同步完成后会立即显示服务器返回的记录。")
+                    .font(.caption)
+                    .foregroundStyle(Color.teslaSecondaryText)
+            } else if let syncError {
+                Text("无法获取 \(tripMonthDisplayName(selectedMonth)) 行程")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                Text(syncError)
+                    .font(.caption)
+                    .foregroundStyle(Color.teslaSecondaryText)
+                    .lineLimit(2)
+                if let vehicleSN {
+                    Button("重新获取") {
+                        Task {
+                            await model.syncTravelMonth(vehicleSN: vehicleSN, month: selectedMonth)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(Color.teslaGreen)
+                    .font(.caption.weight(.semibold))
+                }
+            } else if didSync {
+                Text("\(tripMonthDisplayName(selectedMonth)) 暂无行程")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                Text("已完成服务器同步；如有新增记录，稍后重新进入本月即可更新。")
+                    .font(.caption)
+                    .foregroundStyle(Color.teslaSecondaryText)
+            } else {
+                Text("准备获取 \(tripMonthDisplayName(selectedMonth)) 行程")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                Text("正在连接服务器归档，请稍候。")
+                    .font(.caption)
+                    .foregroundStyle(Color.teslaSecondaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
         }
     }
 

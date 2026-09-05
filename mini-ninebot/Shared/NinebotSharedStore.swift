@@ -14,6 +14,7 @@ struct NinebotSharedStore {
         static let historyPrefix = "ninebot.vehicle.history."
         static let chargingSessionsPrefix = "ninebot.vehicle.charging.sessions."
         static let interfaceRidePrefix = "ninebot.vehicle.interface.rides."
+        static let travelMonthSyncPrefix = "ninebot.vehicle.travel.month.sync."
         static let vehicleImagePrefix = "ninebot.vehicle.image."
         static let recordedRides = "ninebot.recorded.rides"
         static let vehicleEvents = "ninebot.vehicle.events"
@@ -247,6 +248,23 @@ struct NinebotSharedStore {
         saveInterfaceRideRecords(mergedRecords, sn: sn)
     }
 
+    /// Returns the complete local archive for one vehicle. Historical months are
+    /// intentionally kept separate from the lightweight live-dashboard payload.
+    func interfaceRideRecords(sn: String) -> [NinebotRideRecord] {
+        loadInterfaceRideRecords(sn: sn)
+    }
+
+    /// A successful empty response is still a completed sync. Persisting that
+    /// fact prevents every view reconstruction from repeatedly requesting a
+    /// month that genuinely contains no rides.
+    func travelMonthLastSyncedAt(sn: String, month: String) -> Date? {
+        defaults.object(forKey: travelMonthSyncKey(sn: sn, month: month)) as? Date
+    }
+
+    func markTravelMonthSynced(sn: String, month: String, at date: Date = Date()) {
+        defaults.set(date, forKey: travelMonthSyncKey(sn: sn, month: month))
+    }
+
     func recordedRideCount() -> Int {
         loadRecordedRides().count
     }
@@ -453,6 +471,10 @@ struct NinebotSharedStore {
 
     private func interfaceRideKey(sn: String) -> String {
         "\(Key.interfaceRidePrefix)\(sn)"
+    }
+
+    private func travelMonthSyncKey(sn: String, month: String) -> String {
+        "\(Key.travelMonthSyncPrefix)\(sn).\(month)"
     }
 
     private func vehicleImageFallbackKey(sn: String) -> String {

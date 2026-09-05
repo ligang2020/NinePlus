@@ -26,7 +26,7 @@ switch between the supplied daytime and nighttime artwork by local time. The
 daytime window is 06:00–18:59, and the existing static route map and vehicle
 controls remain available.
 
-Version **33**, build **33** is configured in the Xcode project. In the
+Version **35**, build **35** is configured in the Xcode project. In the
 driving state, the home screen removes the cycling glyph from the vehicle-stage
 badge, shows a car icon with “车辆行驶中”, and replaces current speed with the
 live cumulative distance. App launch and each foreground restoration refresh
@@ -37,7 +37,7 @@ the vehicle dashboard while background refreshes reuse the short server cache.
 Web 版本 **v32** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v34` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v35` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. Artifact upload needs no release secret.
 If the repository blocks GitHub's automatic workflow token from creating
 releases, add a fine-grained `GH_RELEASE_TOKEN` Actions secret with repository
@@ -48,8 +48,15 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v34 --derived-data build/DerivedData-v34
+  scripts/package-unsigned-ipa.sh --output build/ipa-v35 --derived-data build/DerivedData-v35
 ```
+
+## v35 行程记录同步
+
+- 首页底部入口统一命名为“行程记录”。
+- 打开或切换月份时，App 会按需同步该月的真实 Ninebot 归档数据；成功的空月份也会被记录，避免重复请求。
+- 历史月同步成功后直接合并并展示本地行程归档，不再等待一次可能省略历史行程的 Dashboard 刷新。
+- 获取失败时显示明确错误和“重新获取”，不会误显示为“暂无行程”。
 
 ## v34 首页刷新与原生充电功率分析
 
