@@ -184,13 +184,17 @@ struct NinebotServerClient {
     }
 
     func syncTravelMonth(sn: String, month: String, pageSize: Int = 20) async throws -> NinebotTravelPage {
+        // A historical month is assembled from the official cloud's paged
+        // archive. Keep ordinary live requests responsive, but give this
+        // explicit user-initiated archive sync enough time to finish.
         let payload = try await request(
             method: "POST",
             path: ["vehicles", sn, "travel-sync"],
             queryItems: [
                 URLQueryItem(name: "month", value: month),
                 URLQueryItem(name: "page_size", value: "\(pageSize)")
-            ]
+            ],
+            timeoutInterval: 120
         )
         return Self.travelPage(from: payload, fallbackMonth: month)
     }
@@ -256,12 +260,13 @@ struct NinebotServerClient {
         method: String,
         path: [String],
         queryItems: [URLQueryItem] = [],
-        body: [String: String]? = nil
+        body: [String: String]? = nil,
+        timeoutInterval: TimeInterval = 20
     ) async throws -> JSONValue {
         let url = try buildURL(path: path, queryItems: queryItems)
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 20
+        request.timeoutInterval = timeoutInterval
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         let token = configuration.bearerToken.trimmingCharacters(in: .whitespacesAndNewlines)

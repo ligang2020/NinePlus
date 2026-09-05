@@ -313,13 +313,17 @@ struct NinebotProxyClient {
     }
 
     func syncTravelMonth(sn: String, month: String, pageSize: Int = 20) async throws -> NinebotTravelPage {
+        // A historical month is assembled from the official cloud's paged
+        // archive. Keep ordinary live requests responsive, but give this
+        // explicit user-initiated archive sync enough time to finish.
         let payload = try await request(
             method: "POST",
             path: ["vehicles", sn, "travel-sync"],
             queryItems: [
                 URLQueryItem(name: "month", value: month),
                 URLQueryItem(name: "page_size", value: "\(pageSize)")
-            ]
+            ],
+            timeoutInterval: 120
         )
         return Self.travelPage(from: payload, fallbackMonth: month)
     }
@@ -349,12 +353,13 @@ struct NinebotProxyClient {
         path: [String],
         queryItems: [URLQueryItem] = [],
         body: [String: String]? = nil,
+        timeoutInterval: TimeInterval = 20,
         allowSessionRecovery: Bool = true
     ) async throws -> JSONValue {
         let url = try buildURL(path: path, queryItems: queryItems)
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 20
+        request.timeoutInterval = timeoutInterval
         // The dashboard is explicitly a live read. Do not let URLSession reuse
         // an older cached HTTP response when the app returns from background.
         request.cachePolicy = .reloadIgnoringLocalCacheData
