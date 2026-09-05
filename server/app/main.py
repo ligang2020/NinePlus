@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import shutil
+import struct
 import sys
 import tempfile
 import time
@@ -48,6 +49,11 @@ DASHBOARD_STALE_TTL = max(0.0, float(os.getenv("NINEPLUS_DASHBOARD_STALE_TTL", "
 # screen has painted (the web UI hydrates the selected vehicle afterwards).
 DASHBOARD_INCLUDE_BATTERY = os.getenv("NINEPLUS_DASHBOARD_INCLUDE_BATTERY", "0").lower() in {"1", "true", "yes", "on"}
 READ_CONCURRENCY = max(1, int(os.getenv("NINEPLUS_READ_CONCURRENCY", "4")))
+# ninecli 0.1.7 exposes no public travel-page flag although the upstream API
+# supports it. We patch only a temporary executable copy and validate its
+# compiled `page` string before each use, so the installed client is untouched.
+TRAVEL_UPSTREAM_PAGE_SIZE = 20
+TRAVEL_UPSTREAM_MAX_PAGES = max(1, min(99, int(os.getenv("NINEPLUS_TRAVEL_UPSTREAM_MAX_PAGES", "99"))))
 READ_ONLY_COMMANDS = {"vehicles", "status", "battery", "travel"}
 COOKIE_SECURE = os.getenv("NINEPLUS_COOKIE_SECURE", "auto").lower()
 BOOT_TIME = time.time()
@@ -315,6 +321,47 @@ def upstream_travel_total(payload: Any) -> int | None:
     return None
 
 
+def travel_row_identity(row: Any) -> str:
+    """Return a stable de-duplication key without inventing a ride identity."""
+    if not isinstance(row, dict):
+        return f"raw:{repr(row)}"
+    for key in ("id", "travel_id", "travelId", "record_id", "recordId", "trip_id", "tripId", "ride_id", "rideId"):
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return f"id:{value}"
+    start = first_travel_timestamp(row, TRAVEL_START_TIME_KEYS)
+    end = first_travel_timestamp(row, TRAVEL_END_TIME_KEYS)
+    return "time:" + json.dumps([start, end, row.get("mileages"), row.get("distance")], ensure_ascii=False, sort_keys=True, default=str)
+
+
+def merge_upstream_travel_pages(
+    payloads: list[Any],
+    *,
+    pages_requested: int,
+    pagination_supported: bool,
+    complete: bool,
+) -> dict[str, Any]:
+    """Merge only real upstream list rows, retaining the first response metadata."""
+    first_payload = payloads[0] if payloads else {}
+    merged = copy.deepcopy(first_payload) if isinstance(first_payload, dict) else {}
+    rows: list[Any] = []
+    seen: set[str] = set()
+    for payload in payloads:
+        for row in upstream_travel_rows(payload):
+            key = travel_row_identity(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(copy.deepcopy(row))
+    merged["list"] = rows
+    merged["items"] = rows
+    merged["records"] = rows
+    merged["nineplus_upstream_pages_requested"] = pages_requested
+    merged["nineplus_upstream_pagination_supported"] = pagination_supported
+    merged["nineplus_upstream_complete"] = complete
+    return merged
+
+
 def normalize_travel_page(payload: Any, month: str, page: int, page_size: int) -> dict[str, Any]:
     """Expose real ride times and a month range, never a month-end statement.
 
@@ -376,7 +423,15 @@ def normalize_travel_page(payload: Any, month: str, page: int, page_size: int) -
     # claim there are hundreds of additional pages. That previously triggered
     # repeated, slow syncs which could never return additional trip records.
     has_more = len(all_rows) > start_index + len(page_rows)
-    upstream_page_limited = reported_total is not None and reported_total > len(raw_rows)
+    upstream_pagination_supported = bool(isinstance(payload, dict) and payload.get("nineplus_upstream_pagination_supported"))
+    upstream_complete = bool(isinstance(payload, dict) and payload.get("nineplus_upstream_complete"))
+    upstream_pages_requested = int(payload.get("nineplus_upstream_pages_requested", 1)) if isinstance(payload, dict) else 1
+    # A full aggregate is authoritative even when the upstream response lacks
+    # an explicit total field. Otherwise expose a truthful limited state.
+    upstream_page_limited = not upstream_complete and (
+        upstream_pages_requested >= TRAVEL_UPSTREAM_MAX_PAGES
+        or (reported_total is not None and reported_total > len(raw_rows))
+    )
     result = copy.deepcopy(payload) if isinstance(payload, dict) else {}
     result.update({
         "month": month,
@@ -389,10 +444,9 @@ def normalize_travel_page(payload: Any, month: str, page: int, page_size: int) -
         "source_record_count": len(raw_rows),
         "returned": len(page_rows),
         "has_more": has_more,
-        # Exposed so clients can distinguish local pagination from a cloud
-        # response that is known to be truncated. There is currently no safe
-        # public ninecli switch for requesting another upstream page.
-        "upstream_pagination_supported": False,
+        "upstream_pagination_supported": upstream_pagination_supported,
+        "upstream_pages_requested": upstream_pages_requested,
+        "upstream_complete": upstream_complete,
         "upstream_page_limited": upstream_page_limited,
         "items": page_rows,
         "records": page_rows,
@@ -1339,28 +1393,118 @@ async def auth_from_request(request: Request, cookie: str | None) -> tuple[str, 
         return token, cloud
 
 
-async def run_cli(
+def _elf_load_segments(binary: bytes) -> list[tuple[int, int, int]]:
+    """Return ``(file_offset, virtual_address, file_size)`` ELF load ranges."""
+    if binary[:4] != b"\x7fELF" or len(binary) < 64 or binary[4] != 2 or binary[5] != 1:
+        return []
+    program_offset = struct.unpack_from("<Q", binary, 32)[0]
+    entry_size = struct.unpack_from("<H", binary, 54)[0]
+    count = struct.unpack_from("<H", binary, 56)[0]
+    ranges: list[tuple[int, int, int]] = []
+    for index in range(count):
+        offset = program_offset + index * entry_size
+        if offset + 56 > len(binary):
+            break
+        segment_type = struct.unpack_from("<I", binary, offset)[0]
+        if segment_type != 1:  # PT_LOAD
+            continue
+        file_offset, virtual_address, _, file_size = struct.unpack_from("<QQQQ", binary, offset + 8)
+        if file_size:
+            ranges.append((file_offset, virtual_address, file_size))
+    return ranges
+
+
+def _file_to_virtual(offset: int, segments: list[tuple[int, int, int]]) -> int | None:
+    for file_offset, virtual_address, file_size in segments:
+        if file_offset <= offset < file_offset + file_size:
+            return virtual_address + offset - file_offset
+    return None
+
+
+def _virtual_to_file(address: int, segments: list[tuple[int, int, int]]) -> int | None:
+    for file_offset, virtual_address, file_size in segments:
+        if virtual_address <= address < virtual_address + file_size:
+            return file_offset + address - virtual_address
+    return None
+
+
+def find_ninecli_page_literal(binary_path: Path) -> tuple[int, int] | None:
+    """Locate the compiled page text and its Go string header in ninecli."""
+    try:
+        binary = binary_path.read_bytes()
+    except OSError:
+        return None
+    segments = _elf_load_segments(binary)
+    if not segments:
+        return None
+    page_addresses = {
+        address for position in range(len(binary))
+        if binary.startswith(b"page", position)
+        if (address := _file_to_virtual(position, segments)) is not None
+    }
+    candidates: set[tuple[int, int]] = set()
+    for position in range(0, len(binary) - 7):
+        if binary[position:position + 3] not in (b"\x48\x8d\x0d", b"\x48\x8d\x15"):
+            continue
+        instruction_address = _file_to_virtual(position, segments)
+        if instruction_address is None:
+            continue
+        displacement = struct.unpack_from("<i", binary, position + 3)[0]
+        if instruction_address + 7 + displacement not in page_addresses:
+            continue
+        # In ninecli's Travel method the value header immediately follows the
+        # `page` key construction. Restrict the scan to that short sequence.
+        for value_position in range(position + 7, min(position + 96, len(binary) - 7)):
+            if binary[value_position:value_position + 3] not in (b"\x48\x8d\x0d", b"\x48\x8d\x15"):
+                continue
+            value_instruction_address = _file_to_virtual(value_position, segments)
+            if value_instruction_address is None:
+                continue
+            value_displacement = struct.unpack_from("<i", binary, value_position + 3)[0]
+            header_offset = _virtual_to_file(value_instruction_address + 7 + value_displacement, segments)
+            if header_offset is None or header_offset + 16 > len(binary):
+                continue
+            string_address, string_length = struct.unpack_from("<QQ", binary, header_offset)
+            string_offset = _virtual_to_file(string_address, segments)
+            if string_length == 1 and string_offset is not None and binary[string_offset:string_offset + 1] == b"1":
+                candidates.add((string_offset, header_offset))
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def find_ninecli_page_literal_offset(binary_path: Path) -> int | None:
+    """Compatibility helper used by verification tests."""
+    location = find_ninecli_page_literal(binary_path)
+    return location[0] if location is not None else None
+
+def bundled_ninecli_binary() -> Path | None:
+    """Resolve the installed Go executable, rather than its Python shim."""
+    if NINECLI_BIN:
+        configured = Path(NINECLI_BIN)
+        try:
+            if configured.is_file() and configured.read_bytes()[:4] == b"\x7fELF":
+                return configured
+        except OSError:
+            pass
+    try:
+        import ninecli  # type: ignore[import-not-found]
+        candidate = Path(ninecli.__file__).resolve().parent / "bin" / ("ninecli.exe" if os.name == "nt" else "ninecli")
+        return candidate if candidate.is_file() else None
+    except (ImportError, OSError):
+        return None
+
+
+async def run_cli_with_binary(
     session: CloudSession,
+    binary: Path | None,
     *args: str,
     password: str | None = None,
 ) -> Any:
-    """Run ninecli using the same argument order as the official integration.
-
-    The upstream Home Assistant integration invokes ``python -m ninecli`` and
-    places ``--json`` after the subcommand arguments.  Keeping that shape is
-    important because ninecli parses global and subcommand options separately.
-    """
-    if NINECLI_BIN:
+    if binary is not None:
+        command = [str(binary), "--config", str(session.config_dir), *args]
+    elif NINECLI_BIN:
         command = [NINECLI_BIN, "--config", str(session.config_dir), *args]
     else:
-        command = [
-            sys.executable,
-            "-m",
-            NINECLI_MODULE,
-            "--config",
-            str(session.config_dir),
-            *args,
-        ]
+        command = [sys.executable, "-m", NINECLI_MODULE, "--config", str(session.config_dir), *args]
     if password is not None:
         command.extend(["-p", password])
     if "--json" not in command:
@@ -1380,7 +1524,6 @@ async def run_cli(
         error(504, "ninebot_cloud_timeout", "九号云请求超时，请稍后重试")
     except OSError:
         error(503, "ninecli_unavailable", "ninecli 未安装或不可执行")
-
     if process.returncode != 0:
         diagnostic = stderr.decode("utf-8", errors="replace").strip().replace("\n", " ")
         diagnostic_lower = diagnostic.lower()
@@ -1393,6 +1536,58 @@ async def run_cli(
             error(502, "ninebot_cloud_error", "服务器绑定九号云失败，请查看后端日志")
         error(502, "ninebot_cloud_error", "九号云请求失败，请稍后重试")
     return parse_cli_json(stdout)
+
+
+async def run_cli_travel_page(session: CloudSession, sn: str, month: str, upstream_page: int) -> Any:
+    """Call a real upstream travel page using a short-lived patched copy.
+
+    The official wheel currently hard-codes page 1 and offers no CLI flag. A
+    copy is patched only for the lifetime of this request; the installed wheel
+    and its credentials are never modified.
+    """
+    if upstream_page == 1:
+        return await run_cli(session, "travel", sn, "--month", month)
+    if not 2 <= upstream_page <= TRAVEL_UPSTREAM_MAX_PAGES:
+        raise ValueError("unsupported upstream travel page")
+    source_binary = bundled_ninecli_binary()
+    if source_binary is None:
+        raise RuntimeError("ninecli binary is unavailable")
+    page_literal = find_ninecli_page_literal(source_binary)
+    if page_literal is None:
+        raise RuntimeError("ninecli travel page literal was not found")
+    literal_offset, header_offset = page_literal
+    page_text = str(upstream_page).encode("ascii")
+    temp_file = tempfile.NamedTemporaryFile(prefix=".nineplus-travel-page-", dir=SESSION_ROOT, delete=False)
+    patched_path = Path(temp_file.name)
+    temp_file.close()
+    try:
+        shutil.copyfile(source_binary, patched_path)
+        with patched_path.open("r+b") as stream:
+            stream.seek(literal_offset)
+            # The original one-byte literal is followed by zero padding in
+            # ninecli 0.1.7. Two-byte page values use that padding and update
+            # only this temporary copy's Go string length header.
+            original = stream.read(len(page_text))
+            if not original or original[:1] != b"1" or (len(page_text) > 1 and original[1:] != b"\0" * (len(page_text) - 1)):
+                raise RuntimeError("ninecli travel page literal changed")
+            stream.seek(literal_offset)
+            stream.write(page_text)
+            if len(page_text) > 1:
+                stream.seek(header_offset + 8)
+                stream.write(struct.pack("<Q", len(page_text)))
+        patched_path.chmod(0o700)
+        return await run_cli_with_binary(session, patched_path, "travel", sn, "--month", month)
+    finally:
+        patched_path.unlink(missing_ok=True)
+
+
+async def run_cli(
+    session: CloudSession,
+    *args: str,
+    password: str | None = None,
+) -> Any:
+    """Run ninecli using the official integration's argument order."""
+    return await run_cli_with_binary(session, None, *args, password=password)
 
 
 async def _run_cloud_call(session: CloudSession, args: tuple[str, ...]) -> Any:
@@ -1432,6 +1627,87 @@ async def _run_cloud_call(session: CloudSession, args: tuple[str, ...]) -> Any:
     elapsed = time.perf_counter() - started
     logger.info("ninecli %s finished in %.3fs", " ".join(args), elapsed)
     return result
+
+
+async def _run_cloud_travel_page(session: CloudSession, sn: str, month: str, upstream_page: int) -> Any:
+    """Use a private config copy for a patched read-only travel request."""
+    async with official_binding_lock:
+        source_dir = session.config_dir
+        if not source_dir.is_dir():
+            return await run_cli_travel_page(session, sn, month, upstream_page)
+        SESSION_ROOT.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(tempfile.mkdtemp(prefix=".nineplus-read-", dir=SESSION_ROOT))
+        try:
+            temp_dir.rmdir()
+            shutil.copytree(source_dir, temp_dir, symlinks=True)
+        except Exception:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+    read_session = CloudSession(session.account, temp_dir, session.expires_at)
+    try:
+        async with session.read_semaphore:
+            return await run_cli_travel_page(read_session, sn, month, upstream_page)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+async def fetch_complete_travel_month(session: CloudSession, sn: str, month: str) -> Any:
+    """Fetch and merge the actual upstream pages for one calendar month."""
+    cache_key = ("travel-complete", sn, month)
+    now = time.monotonic()
+    cached = session.cache.get(cache_key)
+    if cached is not None:
+        expires_at, value = cached
+        if expires_at > now:
+            return copy.deepcopy(value)
+        session.cache.pop(cache_key, None)
+    task = session.inflight.get(cache_key)
+    if task is None or task.done():
+        async def collect() -> Any:
+            payloads: list[Any] = []
+            previous_signatures: set[str] = set()
+            complete = False
+            pagination_supported = True
+            for upstream_page in range(1, TRAVEL_UPSTREAM_MAX_PAGES + 1):
+                try:
+                    payload = await _run_cloud_travel_page(session, sn, month, upstream_page)
+                except (RuntimeError, ValueError) as exc:
+                    pagination_supported = False
+                    logger.warning("upstream travel pagination unavailable page=%d: %s", upstream_page, type(exc).__name__)
+                    break
+                rows = upstream_travel_rows(payload)
+                signature = json.dumps(rows, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+                if not rows:
+                    complete = True
+                    break
+                if signature in previous_signatures:
+                    # Some cloud versions silently return page 1 again. Stop
+                    # rather than adding duplicates or looping forever.
+                    complete = True
+                    break
+                previous_signatures.add(signature)
+                payloads.append(payload)
+                if len(rows) < TRAVEL_UPSTREAM_PAGE_SIZE:
+                    complete = True
+                    break
+            if not payloads:
+                # Preserve the existing API error semantics for the first page.
+                payloads.append(await _run_cloud_travel_page(session, sn, month, 1))
+            return merge_upstream_travel_pages(
+                payloads,
+                pages_requested=len(payloads),
+                pagination_supported=pagination_supported,
+                complete=complete,
+            )
+        task = asyncio.create_task(collect())
+        session.inflight[cache_key] = task
+    try:
+        value = await asyncio.shield(task)
+    finally:
+        if task.done() and session.inflight.get(cache_key) is task:
+            session.inflight.pop(cache_key, None)
+    session.cache[cache_key] = (time.monotonic() + CACHE_TTL_TRAVEL, copy.deepcopy(value))
+    return copy.deepcopy(value)
 
 
 def invalidate_session_cache(session: CloudSession) -> None:
@@ -2089,14 +2365,8 @@ async def vehicle_travel(
         error(400, "invalid_pagination", "分页参数超出范围")
     _, session = await auth_from_request(request, nineplus_session)
     normalized_month = normalize_month(month) or current_month_string()
-    payload = await cloud_call(
-        session,
-        "travel",
-        validate_sn(sn),
-        "--month",
-        normalized_month,
-        cache_ttl=CACHE_TTL_TRAVEL,
-    )
+    normalized_sn = validate_sn(sn)
+    payload = await fetch_complete_travel_month(session, normalized_sn, normalized_month)
     return ok(normalize_travel_page(payload, normalized_month, page, page_size))
 
 
@@ -2124,11 +2394,13 @@ async def travel_sync(
         error(400, "invalid_pagination", "分页参数超出范围")
     _, session = await auth_from_request(request, nineplus_session)
     normalized_month = normalize_month(month) or current_month_string()
-    payload = await cloud_call(
-        session, "travel", validate_sn(sn), "--month", normalized_month,
-        cache_ttl=CACHE_TTL_TRAVEL,
-    )
-    return ok(normalize_travel_page(payload, normalized_month, 1, page_size))
+    normalized_sn = validate_sn(sn)
+    payload = await fetch_complete_travel_month(session, normalized_sn, normalized_month)
+    # Sync is the native app's archive operation, not a scrolling page load.
+    # Return the complete normalized month in one response so an older month
+    # cannot silently stop at the first 100 local rows.
+    full_month_size = max(page_size, len(upstream_travel_rows(payload)), 1)
+    return ok(normalize_travel_page(payload, normalized_month, 1, full_month_size))
 
 
 CONTROL_COMMANDS = {
