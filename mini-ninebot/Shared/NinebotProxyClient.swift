@@ -605,7 +605,17 @@ extension NinebotProxyClient {
 
     static func travelPage(from value: JSONValue, fallbackMonth: String) -> NinebotTravelPage {
         let object = value.objectValue ?? [:]
-        let rides = object["list"]?.arrayValue ?? []
+        // `/travel-sync` returns its rows as `records` (and also `items`),
+        // while upstream/legacy reads may use `list`, `rows`, `travels`, or a
+        // root array. Accept every documented shape so a successful historical
+        // month response cannot be parsed as an empty list on iOS.
+        let rides = object["records"]?.arrayValue
+            ?? object["items"]?.arrayValue
+            ?? object["list"]?.arrayValue
+            ?? object["rows"]?.arrayValue
+            ?? object["travels"]?.arrayValue
+            ?? value.arrayValue
+            ?? []
         let records = rides.enumerated().compactMap { index, value in
             rideRecord(from: value, index: index)
         }

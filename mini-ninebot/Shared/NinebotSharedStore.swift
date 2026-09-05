@@ -14,7 +14,7 @@ struct NinebotSharedStore {
         static let historyPrefix = "ninebot.vehicle.history."
         static let chargingSessionsPrefix = "ninebot.vehicle.charging.sessions."
         static let interfaceRidePrefix = "ninebot.vehicle.interface.rides."
-        static let travelMonthSyncPrefix = "ninebot.vehicle.travel.month.sync."
+        static let travelMonthSyncPrefix = "ninebot.vehicle.travel.month.sync.v2."
         static let vehicleImagePrefix = "ninebot.vehicle.image."
         static let recordedRides = "ninebot.recorded.rides"
         static let vehicleEvents = "ninebot.vehicle.events"
