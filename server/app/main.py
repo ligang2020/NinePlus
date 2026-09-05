@@ -221,6 +221,195 @@ def normalize_month(month: str) -> str:
     return normalized
 
 
+TRAVEL_ROW_KEYS = ("list", "rows", "records", "travels", "items")
+TRAVEL_START_TIME_KEYS = (
+    "start_time", "startTime", "start_at", "startAt", "start_timestamp", "startTimestamp",
+    "begin_time", "beginTime", "begin_at", "beginAt", "travel_start_time", "travelStartTime",
+    "ride_start_time", "rideStartTime", "stime",
+)
+TRAVEL_END_TIME_KEYS = (
+    "end_time", "endTime", "end_at", "endAt", "end_timestamp", "endTimestamp",
+    "stop_time", "stopTime", "finish_time", "finishTime", "travel_end_time", "travelEndTime", "etime",
+)
+SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def month_time_range(month: str) -> tuple[datetime, datetime]:
+    """Return the exact China-time range for a ``YYYYMM`` travel archive.
+
+    Ninebot's monthly ``day_total_mileage`` is a statement value and may carry
+    the last day of the month. It is never used as a ride timestamp here.
+    """
+    year, month_number = int(month[:4]), int(month[4:])
+    start = datetime(year, month_number, 1, tzinfo=SHANGHAI_TIMEZONE)
+    if month_number == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=SHANGHAI_TIMEZONE)
+    else:
+        end = datetime(year, month_number + 1, 1, tzinfo=SHANGHAI_TIMEZONE)
+    return start, end
+
+
+def travel_timestamp(value: Any) -> float | None:
+    """Parse an upstream ride time without accepting archive statement dates."""
+    if isinstance(value, bool) or value is None:
+        return None
+    numeric = _number(value)
+    if numeric is not None:
+        # Ninebot endpoints normally use epoch seconds. Keep millisecond,
+        # microsecond and nanosecond variants tolerant for model/API changes.
+        absolute = abs(numeric)
+        if absolute >= 1e17:
+            numeric /= 1e9
+        elif absolute >= 1e14:
+            numeric /= 1e6
+        elif absolute >= 1e11:
+            numeric /= 1e3
+        return numeric if 946684800 <= numeric <= 4102444800 else None
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=SHANGHAI_TIMEZONE)
+    timestamp = parsed.timestamp()
+    return timestamp if 946684800 <= timestamp <= 4102444800 else None
+
+
+def first_travel_timestamp(row: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        timestamp = travel_timestamp(row.get(key))
+        if timestamp is not None:
+            return timestamp
+    return None
+
+
+def upstream_travel_rows(payload: Any) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in TRAVEL_ROW_KEYS:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def upstream_travel_total(payload: Any) -> int | None:
+    """Read only explicit list-total fields from an upstream travel response.
+
+    ``times`` is a monthly aggregate/statistic in the Ninebot response, not a
+    reliable number of trip rows. Treating it as a total made clients request
+    hundreds of nonexistent pages and made a normal sync look incomplete.
+    """
+    if not isinstance(payload, dict):
+        return None
+    for key in ("total", "total_count", "totalCount"):
+        number = _number(payload.get(key))
+        if number is not None and number >= 0:
+            return int(number)
+    return None
+
+
+def normalize_travel_page(payload: Any, month: str, page: int, page_size: int) -> dict[str, Any]:
+    """Expose real ride times and a month range, never a month-end statement.
+
+    The cloud list contains both per-ride ``start_time``/``end_time`` and
+    monthly aggregate fields such as ``day_total_mileage``. Earlier clients
+    could mistakenly render that aggregate's month-end date for every ride.
+    This adapter canonicalizes actual ride timestamps, filters the requested
+    range [month-01 00:00, next-month-01 00:00), and reports if the upstream
+    CLI returned a truncated list instead of claiming it is a complete month.
+    """
+    range_start, range_end = month_time_range(month)
+    raw_rows = upstream_travel_rows(payload)
+    normalized_rows: list[tuple[float, dict[str, Any]]] = []
+    excluded_outside_month = 0
+    excluded_without_start = 0
+
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            excluded_without_start += 1
+            continue
+        start_timestamp = first_travel_timestamp(raw, TRAVEL_START_TIME_KEYS)
+        if start_timestamp is None:
+            # Do not turn a monthly `date`/`day_total_mileage` marker into a
+            # fake ride. A missing real start time is safer than wrong data.
+            excluded_without_start += 1
+            continue
+        started_at = datetime.fromtimestamp(start_timestamp, SHANGHAI_TIMEZONE)
+        if not (range_start <= started_at < range_end):
+            excluded_outside_month += 1
+            continue
+
+        row = copy.deepcopy(raw)
+        ended_timestamp = first_travel_timestamp(row, TRAVEL_END_TIME_KEYS)
+        # Canonical fields make both current and older native clients use the
+        # real trip time. Preserve aggregate fields separately but never read
+        # them as ride dates.
+        row["start_time"] = int(start_timestamp)
+        row["start_time_iso"] = started_at.isoformat()
+        row["start_date"] = started_at.strftime("%Y-%m-%d")
+        row["date"] = row["start_date"]
+        row["day"] = started_at.day
+        if ended_timestamp is not None:
+            ended_at = datetime.fromtimestamp(ended_timestamp, SHANGHAI_TIMEZONE)
+            row["end_time"] = int(ended_timestamp)
+            row["end_time_iso"] = ended_at.isoformat()
+        if "day_total_mileage" in raw:
+            row["monthly_day_total_mileage"] = raw["day_total_mileage"]
+        normalized_rows.append((start_timestamp, row))
+
+    # Return a deterministic chronological archive, starting at the first day
+    # that has a ride. UI layers can still choose their own visual sort order.
+    normalized_rows.sort(key=lambda item: item[0])
+    all_rows = [row for _, row in normalized_rows]
+    reported_total = upstream_travel_total(payload)
+    start_index = (page - 1) * page_size
+    page_rows = all_rows[start_index:start_index + page_size]
+    # Paginate the rows actually returned by ninecli. The public ninecli
+    # command has no page argument, so do not use monthly aggregate fields to
+    # claim there are hundreds of additional pages. That previously triggered
+    # repeated, slow syncs which could never return additional trip records.
+    has_more = len(all_rows) > start_index + len(page_rows)
+    upstream_page_limited = reported_total is not None and reported_total > len(raw_rows)
+    result = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    result.update({
+        "month": month,
+        "month_start": range_start.isoformat(),
+        "month_end": range_end.isoformat(),
+        "page": page,
+        "page_size": page_size,
+        "total": max(reported_total or 0, len(all_rows)),
+        "upstream_total": reported_total,
+        "source_record_count": len(raw_rows),
+        "returned": len(page_rows),
+        "has_more": has_more,
+        # Exposed so clients can distinguish local pagination from a cloud
+        # response that is known to be truncated. There is currently no safe
+        # public ninecli switch for requesting another upstream page.
+        "upstream_pagination_supported": False,
+        "upstream_page_limited": upstream_page_limited,
+        "items": page_rows,
+        "records": page_rows,
+        "list": page_rows,
+        "rows": page_rows,
+        "travels": page_rows,
+        "excluded_outside_month": excluded_outside_month,
+        "excluded_without_start_time": excluded_without_start,
+    })
+    if upstream_page_limited:
+        logger.warning(
+            "travel month response may be upstream-limited month=%s reported=%d received=%d",
+            month, reported_total, len(raw_rows),
+        )
+    return result
+
+
 def cli_available() -> bool:
     if NINECLI_BIN:
         return bool(shutil.which(NINECLI_BIN) or Path(NINECLI_BIN).exists())
@@ -1899,23 +2088,16 @@ async def vehicle_travel(
     if page < 1 or page > 1000 or page_size < 1 or page_size > 100:
         error(400, "invalid_pagination", "分页参数超出范围")
     _, session = await auth_from_request(request, nineplus_session)
-    normalized_month = normalize_month(month)
-    payload = (
-        await cloud_call(
-            session,
-            "travel",
-            validate_sn(sn),
-            "--month",
-            normalized_month,
-            cache_ttl=CACHE_TTL_TRAVEL,
-        )
-        if normalized_month
-        else await cloud_call(session, "travel", validate_sn(sn), cache_ttl=CACHE_TTL_TRAVEL)
+    normalized_month = normalize_month(month) or current_month_string()
+    payload = await cloud_call(
+        session,
+        "travel",
+        validate_sn(sn),
+        "--month",
+        normalized_month,
+        cache_ttl=CACHE_TTL_TRAVEL,
     )
-    if isinstance(payload, list):
-        start = (page - 1) * page_size
-        return ok(payload[start:start + page_size])
-    return ok(payload)
+    return ok(normalize_travel_page(payload, normalized_month, page, page_size))
 
 
 @app.get("/vehicles/{sn}/travel/{travel_id}")
@@ -1946,26 +2128,7 @@ async def travel_sync(
         session, "travel", validate_sn(sn), "--month", normalized_month,
         cache_ttl=CACHE_TTL_TRAVEL,
     )
-    if isinstance(payload, list):
-        all_rows = payload
-        upstream_total = None
-    elif isinstance(payload, dict):
-        all_rows = payload.get("list") or payload.get("rows") or payload.get("records") or payload.get("travels") or []
-        upstream_total = _number(payload.get("times") or payload.get("total"))
-    else:
-        all_rows = []
-        upstream_total = None
-    rows = all_rows[:page_size] if isinstance(all_rows, list) else []
-    total = int(upstream_total) if upstream_total is not None else len(all_rows)
-    return ok({
-        "month": normalized_month,
-        "page": 1,
-        "page_size": page_size,
-        "total": total,
-        "items": rows,
-        "records": rows,
-        "has_more": total > len(rows),
-    })
+    return ok(normalize_travel_page(payload, normalized_month, 1, page_size))
 
 
 CONTROL_COMMANDS = {
