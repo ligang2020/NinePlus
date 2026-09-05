@@ -937,8 +937,15 @@ extension NinebotRideRecord {
             return "id:\(explicitIdentifier)"
         }
 
-        if let rawStart = firstRawText(["start_time", "startTime", "begin_time", "beginTime", "stime", "date", "day", "create_time", "createTime"]) {
-            let rawEnd = firstRawText(["end_time", "endTime", "stop_time", "stopTime", "etime", "finish_time", "finishTime"]) ?? "none"
+        if let rawStart = firstRawText([
+            "start_time", "startTime", "start_at", "startAt", "start_timestamp", "startTimestamp",
+            "begin_time", "beginTime", "begin_at", "beginAt", "begin_timestamp", "beginTimestamp",
+            "travel_start_time", "travelStartTime", "ride_start_time", "rideStartTime", "stime"
+        ]) {
+            let rawEnd = firstRawText([
+                "end_time", "endTime", "end_at", "endAt", "end_timestamp", "endTimestamp",
+                "stop_time", "stopTime", "finish_time", "finishTime", "travel_end_time", "travelEndTime", "etime"
+            ]) ?? "none"
             let rawMileage = firstRawText(["mileages", "mileage", "distance", "rideMileage"]) ?? Self.metricText(mileage, scale: 100)
             let rawUsed = firstRawText(["used_electricity", "usedElectricity", "usedElectric", "useElectricity"]) ?? Self.metricText(usedElectricity, scale: 100)
             return "raw:start=\(rawStart)|end=\(rawEnd)|km=\(rawMileage)|used=\(rawUsed)"

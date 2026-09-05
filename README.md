@@ -26,7 +26,7 @@ switch between the supplied daytime and nighttime artwork by local time. The
 daytime window is 06:00–18:59, and the existing static route map and vehicle
 controls remain available.
 
-Version **36**, build **36** is configured in the Xcode project. In the
+Version **37**, build **37** is configured in the Xcode project. In the
 driving state, the home screen removes the cycling glyph from the vehicle-stage
 badge, shows a car icon with “车辆行驶中”, and replaces current speed with the
 live cumulative distance. App launch and each foreground restoration refresh
@@ -37,7 +37,7 @@ the vehicle dashboard while background refreshes reuse the short server cache.
 Web 版本 **v32** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v36` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v37` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. Artifact upload needs no release secret.
 If the repository blocks GitHub's automatic workflow token from creating
 releases, add a fine-grained `GH_RELEASE_TOKEN` Actions secret with repository
@@ -48,8 +48,15 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v36 --derived-data build/DerivedData-v36
+  scripts/package-unsigned-ipa.sh --output build/ipa-v37 --derived-data build/DerivedData-v37
 ```
+
+## v37 行程日期校正
+
+- 修复历史月行程列表把月度归档 `date` / `day`（常为该月最后一天）误当作每一条行程开始时间的问题。
+- 优先解析真实的开始/结束时间字段，并支持常见的嵌套行程详情字段。
+- 仅在同月记录拥有多个不同的明确日期时才使用日期型回退；同一个月末日期重复出现时不再伪造为真实行程日期。
+- 升级后自动失效旧的行程归档和月度同步标记，重新同步历史月份以清除 v36 留下的错误日期缓存。
 
 ## v36 历史月份行程解析修复
 

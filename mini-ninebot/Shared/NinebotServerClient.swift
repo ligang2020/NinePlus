@@ -520,8 +520,19 @@ private extension NinebotServerClient {
             }
         }
         let rides = resolvedRides ?? value.arrayValue ?? []
-        let records = rides.enumerated().compactMap { index, value in
-            rideRecord(from: value, index: index)
+        let archiveDateFallbacks = safeArchiveDateFallbacks(for: rides, expectedMonth: fallbackMonth)
+        var records = rides.enumerated().compactMap { index, value -> NinebotRideRecord? in
+            guard var record = rideRecord(from: value, index: index) else { return nil }
+            // Some monthly archives expose only a date-only field. It is safe
+            // to use only when dates vary within the month; an identical date
+            // for every row is the monthly statement marker, not trip time.
+            if record.startedAt == nil {
+                record.startedAt = archiveDateFallbacks[index]
+            }
+            return record
+        }
+        if hasRepeatedMonthlyStatementDate(records, expectedMonth: fallbackMonth) {
+            records.indices.forEach { records[$0].startedAt = nil }
         }
         return NinebotTravelPage(
             month: firstString(["month"], in: object) ?? fallbackMonth,
@@ -670,13 +681,33 @@ private extension NinebotServerClient {
 
     static func rideRecord(from value: JSONValue, index: Int) -> NinebotRideRecord? {
         guard let object = value.objectValue else { return nil }
-        let startedAt = firstDate(
-            ["start_time", "startTime", "begin_time", "beginTime", "stime", "date", "day", "create_time", "createTime"],
-            in: object
+        let timeObjects = tripTimeObjects(from: object)
+        // `date` / `day` in the monthly archive can be the statement date
+        // (commonly the last day of the selected month), not a ride start.
+        // Only use explicit trip start/end fields so one month-end marker
+        // cannot make every historical ride appear to happen on that day.
+        let startedAt = firstTripDate(
+            [
+                "start_time", "startTime", "start_at", "startAt", "start_timestamp", "startTimestamp", "start_ts", "startTs",
+                "begin_time", "beginTime", "begin_at", "beginAt", "begin_timestamp", "beginTimestamp", "begin_ts", "beginTs",
+                "travel_start_time", "travelStartTime", "travel_start_at", "travelStartAt", "travel_start_timestamp", "travelStartTimestamp",
+                "travel_begin_time", "travelBeginTime", "travel_begin_at", "travelBeginAt", "begin_date", "beginDate",
+                "start_date_time", "startDateTime", "start_datetime", "startDatetime", "started_at", "startedAt",
+                "departure_time", "departureTime", "ride_start_time", "rideStartTime", "ride_start_at", "rideStartAt",
+                "start_time_ms", "startTimeMs", "stime", "travel_timestamp", "travelTimestamp"
+            ],
+            in: timeObjects
         )
-        let endedAt = firstDate(
-            ["end_time", "endTime", "stop_time", "stopTime", "etime", "finish_time", "finishTime"],
-            in: object
+        let endedAt = firstTripDate(
+            [
+                "end_time", "endTime", "end_at", "endAt", "end_timestamp", "endTimestamp", "end_ts", "endTs",
+                "stop_time", "stopTime", "stop_at", "stopAt", "stop_timestamp", "stopTimestamp", "finish_time", "finishTime",
+                "finish_at", "finishAt", "finish_timestamp", "finishTimestamp", "travel_end_time", "travelEndTime",
+                "travel_end_at", "travelEndAt", "travel_end_timestamp", "travelEndTimestamp", "end_date_time", "endDateTime",
+                "end_datetime", "endDatetime", "ended_at", "endedAt", "arrival_time", "arrivalTime", "ride_end_time", "rideEndTime",
+                "ride_end_at", "rideEndAt", "end_time_ms", "endTimeMs", "end_date", "endDate", "etime"
+            ],
+            in: timeObjects
         )
         let mileage = firstDouble(["mileages", "mileage", "distance", "rideMileage"], in: object)
         let energy = firstDouble(["ec", "energy", "electricity", "consume"], in: object)
@@ -855,6 +886,108 @@ private extension NinebotServerClient {
             }
         }
         return nil
+    }
+
+    static func firstTripDate(_ keys: [String], in objects: [[String: JSONValue]]) -> Date? {
+        for object in objects {
+            if let date = firstDate(keys, in: object) {
+                return date
+            }
+        }
+        return nil
+    }
+
+    static func tripTimeObjects(from object: [String: JSONValue]) -> [[String: JSONValue]] {
+        let containerKeys = [
+            "detail", "travel", "ride", "trip", "data", "record", "result", "item", "content",
+            "travel_detail", "travelDetail", "travel_info", "travelInfo", "trip_info", "tripInfo"
+        ]
+        var objects: [[String: JSONValue]] = []
+        var pending: [([String: JSONValue], Int)] = [(object, 0)]
+
+        while let (current, depth) = pending.popLast() {
+            objects.append(current)
+            guard depth < 3 else { continue }
+            for key in containerKeys {
+                if let nested = current[key]?.objectValue {
+                    pending.append((nested, depth + 1))
+                }
+            }
+        }
+        return objects
+    }
+
+    /// Date-only values are a fallback for older list responses. The monthly
+    /// API may instead repeat its statement date (usually month-end) on every
+    /// row, so that pattern is deliberately ignored rather than displayed as
+    /// a fabricated ride date.
+    static func safeArchiveDateFallbacks(for rides: [JSONValue], expectedMonth: String) -> [Date?] {
+        let candidates = rides.map { archiveDateFallback(from: $0) }
+        let validDates = candidates.compactMap { $0 }
+        guard !validDates.isEmpty else { return candidates }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = chinaTimeZone
+        let expectedComponents = expectedMonth.count == 6
+            ? (year: Int(expectedMonth.prefix(4)), month: Int(expectedMonth.suffix(2)))
+            : (year: nil, month: nil)
+        let monthMatched = candidates.map { date -> Date? in
+            guard let date else { return nil }
+            guard let expectedYear = expectedComponents.year, let expectedMonth = expectedComponents.month else {
+                return date
+            }
+            let components = calendar.dateComponents([.year, .month], from: date)
+            return components.year == expectedYear && components.month == expectedMonth ? date : nil
+        }
+        let matchedDates = monthMatched.compactMap { $0 }
+        guard !matchedDates.isEmpty else { return Array(repeating: nil, count: rides.count) }
+
+        let distinctDays = Set(matchedDates.map {
+            let components = calendar.dateComponents([.year, .month, .day], from: $0)
+            return "\(components.year ?? 0)-\(components.month ?? 0)-\(components.day ?? 0)"
+        })
+        // One repeated archive day must not be promoted to every trip's date.
+        guard distinctDays.count > 1 else { return Array(repeating: nil, count: rides.count) }
+        return monthMatched
+    }
+
+    static func archiveDateFallback(from value: JSONValue) -> Date? {
+        guard let object = value.objectValue else { return nil }
+        return firstDate(["ride_date", "rideDate", "travel_date", "travelDate", "date", "day"], in: object)
+    }
+
+    static func hasRepeatedMonthlyStatementDate(_ records: [NinebotRideRecord], expectedMonth: String) -> Bool {
+        let dates = records.compactMap(\.startedAt)
+        guard dates.count >= 2, dates.count == records.count, expectedMonth.count == 6 else { return false }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = chinaTimeZone
+        guard let expectedYear = Int(expectedMonth.prefix(4)),
+              let expectedMonthNumber = Int(expectedMonth.suffix(2)),
+              let firstDate = dates.first else {
+            return false
+        }
+        let firstComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: firstDate)
+        guard firstComponents.year == expectedYear,
+              firstComponents.month == expectedMonthNumber,
+              firstComponents.hour == 0,
+              firstComponents.minute == 0,
+              firstComponents.second == 0,
+              let monthStart = calendar.date(from: DateComponents(year: expectedYear, month: expectedMonthNumber, day: 1)),
+              let lastDay = calendar.range(of: .day, in: .month, for: monthStart)?.count,
+              firstComponents.day == lastDay else {
+            return false
+        }
+
+        return dates.allSatisfy {
+            let components = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: $0)
+            return components.year == firstComponents.year
+                && components.month == firstComponents.month
+                && components.day == firstComponents.day
+                && components.hour == 0
+                && components.minute == 0
+                && components.second == 0
+        }
     }
 
     static func serverDateValue(_ value: JSONValue?) -> Date? {
