@@ -155,11 +155,11 @@ struct NinebotProxyClient {
                 queryItems: dashboardQuery
             )
             if let dashboard = Self.dashboard(from: aggregatePayload, selectedSN: selectedSN) {
-                // The optimized server snapshot deliberately omits BMS and
-                // travel payloads. Hydrate those missing fields before returning
-                // so the home screen never settles on a permanently partial
-                // state with blank mileage and charging metrics.
-                return await hydrateDashboardIfNeeded(dashboard, month: Self.currentMonthString())
+                // Keep the first paint fast. The aggregate endpoint returns the
+                // live status immediately; current-month travel and BMS details
+                // are hydrated by the view model in the background so today's
+                // mileage can update without blocking the home screen.
+                return dashboard
             }
         } catch let error as NinebotProxyError {
             switch error {

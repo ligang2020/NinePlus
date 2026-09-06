@@ -68,10 +68,6 @@ struct NinebotCloudLoginView: View {
             && !model.isLoading
     }
 
-    private var canTestConnection: Bool {
-        model.hasConfiguration && !model.isLoading
-    }
-
     var body: some View {
         ZStack {
             LinearGradient(
@@ -161,21 +157,6 @@ struct NinebotCloudLoginView: View {
                     }
 
                     HStack(spacing: 10) {
-                        Button {
-                            focusedField = nil
-                            Task { await model.testConnection() }
-                        } label: {
-                            HStack(spacing: 7) {
-                                Image(systemName: "bolt.horizontal.circle")
-                                Text("测试连接")
-                            }
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 48)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!canTestConnection)
-
                         Button {
                             focusedField = nil
                             Task { await model.loginToNinePlus() }

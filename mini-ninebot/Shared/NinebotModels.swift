@@ -1269,22 +1269,22 @@ struct NinebotVehicleState: Codable, Equatable {
     }
 
     var batteryVoltageText: String {
-        guard let batteryVoltage else { return "接口未返回" }
+        guard let batteryVoltage else { return "--" }
         return "\(Self.numberText(batteryVoltage, maximumFractionDigits: 1)) V"
     }
 
     var batteryTemperatureText: String {
-        guard let batteryTemperature else { return "接口未返回" }
+        guard let batteryTemperature else { return "--" }
         return "\(Self.numberText(batteryTemperature, maximumFractionDigits: 1)) °C"
     }
 
     var batteryCycleCountText: String {
-        guard let batteryCycleCount else { return "接口未返回" }
+        guard let batteryCycleCount else { return "--" }
         return "\(batteryCycleCount) 次"
     }
 
     var chargingPowerText: String {
-        guard let chargingPower else { return "接口未返回" }
+        guard let chargingPower else { return "--" }
         return "\(Self.numberText(chargingPower, maximumFractionDigits: 0)) W"
     }
 
@@ -1303,7 +1303,7 @@ struct NinebotVehicleState: Codable, Equatable {
     }
 
     var currentSpeedText: String {
-        guard let currentSpeedKmh else { return "接口未返回" }
+        guard let currentSpeedKmh else { return "--" }
         return "\(Self.numberText(currentSpeedKmh, maximumFractionDigits: 0)) km/h"
     }
 
@@ -1335,7 +1335,7 @@ struct NinebotVehicleState: Codable, Equatable {
     }
 
     var aiEstimatedMileageText: String {
-        guard let aiEstimatedMileage else { return "接口未返回" }
+        guard let aiEstimatedMileage else { return "--" }
         return "\(Self.numberText(aiEstimatedMileage, maximumFractionDigits: 1)) km"
     }
 

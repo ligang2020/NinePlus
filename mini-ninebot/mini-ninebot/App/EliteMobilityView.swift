@@ -23,6 +23,7 @@ struct EliteMobilityShell: View {
                         EliteHomeView(
                             model: model,
                             onOpenRecords: { selectedTab = .records },
+                            onOpenCharge: { selectedTab = .charge },
                             onOpenMap: { selectedTab = .map },
                             onOpenSettings: { showsSettings = true }
                         )
@@ -153,6 +154,7 @@ private struct EliteTabBar: View {
 private struct EliteHomeView: View {
     @ObservedObject var model: NinebotViewModel
     var onOpenRecords: () -> Void
+    var onOpenCharge: () -> Void
     var onOpenMap: () -> Void
     var onOpenSettings: () -> Void
 
@@ -190,12 +192,11 @@ private struct EliteHomeView: View {
                     )
 
                     HStack(alignment: .top, spacing: 12) {
-                        NavigationLink {
-                            EliteChargeDetailView(snapshot: snapshot)
-                        } label: {
+                        Button(action: onOpenCharge) {
                             EliteBatteryCard(snapshot: snapshot)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityHint("打开充电中心")
 
                         EliteLocationMapCard(
                             snapshot: snapshot,

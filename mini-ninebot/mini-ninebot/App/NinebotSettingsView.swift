@@ -49,10 +49,19 @@ struct NinebotSettingsView: View {
                     .padding(16)
                     .ninePlusCard(cornerRadius: 24)
 
-                AlarmRecordsCard(events: model.vehicleEvents)
+                NavigationLink {
+                    VehicleNotificationsView(events: model.vehicleEvents)
+                } label: {
+                    SettingsNavigationRow(
+                        title: "车辆通知",
+                        subtitle: model.vehicleEvents.isEmpty ? "暂无充电、骑行或报警记录" : "查看完整通知时间线 · 共 \(model.vehicleEvents.count) 条",
+                        systemImage: "bell.badge.fill"
+                    )
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                    .ninePlusCard(cornerRadius: 24)
+                }
+                .buttonStyle(.plain)
+                .padding(16)
+                .ninePlusCard(cornerRadius: 24)
 
                 NavigationLink {
                     NinebotDiagnosticsView(model: model)
@@ -169,23 +178,13 @@ private struct ServerConnectionCard: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 10) {
-                Button {
-                    Task { await model.testConnection() }
-                } label: {
-                    SettingsCompactButtonLabel(title: "测试连接", systemImage: "bolt.horizontal.circle")
-                }
-                .buttonStyle(.bordered)
-                .disabled(!canUseAddress)
-
-                Button {
-                    Task { await model.connectToService() }
-                } label: {
-                    SettingsCompactButtonLabel(title: "保存并连接", systemImage: "checkmark.circle.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!canUseAddress)
+            Button {
+                Task { await model.connectToService() }
+            } label: {
+                SettingsCompactButtonLabel(title: "保存并连接", systemImage: "checkmark.circle.fill")
             }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canUseAddress)
 
             HStack(spacing: 8) {
                 Image(systemName: model.bearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "key.slash" : "key.fill")
@@ -260,6 +259,37 @@ private struct DeviceNotificationsCard: View {
     }
 }
 
+struct VehicleNotificationsView: View {
+    var events: [NinebotVehicleEvent]
+
+    private var sortedEvents: [NinebotVehicleEvent] {
+        events.sorted { $0.occurredAt > $1.occurredAt }
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                if sortedEvents.isEmpty {
+                    EmptySettingsRecord(
+                        message: "刷新车况后，新的充电、骑行和报警会自动记录。",
+                        systemImage: "bell.slash"
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 180)
+                } else {
+                    ForEach(sortedEvents) { event in
+                        VehicleNotificationRecordRow(event: event)
+                    }
+                }
+            }
+            .padding(16)
+            .padding(.bottom, 32)
+        }
+        .background(Color.teslaPageBackground.ignoresSafeArea())
+        .navigationTitle("车辆通知")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 private struct AlarmRecordsCard: View {
     var events: [NinebotVehicleEvent]
 
@@ -299,6 +329,13 @@ private struct VehicleNotificationRecordRow: View {
         }
     }
 
+    private static let fullDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年MM月dd日 HH:mm:ss"
+        return formatter
+    }()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
@@ -315,9 +352,15 @@ private struct VehicleNotificationRecordRow: View {
                     HStack(spacing: 6) {
                         Text(event.title).font(.subheadline.weight(.semibold)).foregroundStyle(tint)
                         Text("·").foregroundStyle(.secondary)
-                        Text(event.occurredAt.formatted(.dateTime.month().day().hour().minute()))
+                        Text(Self.fullDateFormatter.string(from: event.occurredAt))
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
+                    HStack(spacing: 5) {
+                        Image(systemName: "clock")
+                        Text(event.occurredAt, style: .relative)
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 4)
             }
@@ -549,9 +592,7 @@ private struct EventLocationMap: View {
                     .padding(8)
             }
         } else {
-            Label("接口未返回事件坐标", systemImage: "location.slash")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            EmptyView()
         }
     }
 

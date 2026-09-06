@@ -715,7 +715,7 @@ private struct NinebotChargingSession {
         return formatDuration(minutes)
     }
     var startTimeText: String { hasRecordedStart ? formatDate(startDate) : "刚刚开始" }
-    var startBatteryText: String { startBattery.map { "\($0)%" } ?? "接口未返回" }
+    var startBatteryText: String { startBattery.map { "\($0)%" } ?? "--" }
     var distanceSinceLastChargeText: String {
         guard let current = snapshot.state.totalMileage,
               let previous = previousChargeEndPoint?.totalMileage,
@@ -1719,7 +1719,11 @@ private struct NinebotTripsView: View {
                 )
             }
             .padding(16)
+            // Keep the final card above the floating tab bar so it can always
+            // be scrolled fully into view on compact iPhones.
+            .padding(.bottom, 104)
         }
+        .safeAreaPadding(.bottom, 8)
         .task(id: "\(snapshot.vehicle.sn)|\(selectedMonth)") {
             await model.syncTravelMonthIfNeeded(
                 vehicleSN: snapshot.vehicle.sn,

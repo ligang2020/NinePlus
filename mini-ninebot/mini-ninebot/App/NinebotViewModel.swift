@@ -1035,7 +1035,7 @@ final class NinebotViewModel: ObservableObject {
                     vehicleName: snapshot.vehicle.name,
                     type: .rideStarted,
                     title: NinebotVehicleEventType.rideStarted.title,
-                    detail: "接口检测到车辆开始骑行\(snapshot.state.currentSpeedKmh.map { "，当前 \(Int($0.rounded())) km/h" } ?? "")",
+                    detail: "车辆已开始骑行\(snapshot.state.currentSpeedKmh.map { "，当前 \(Int($0.rounded())) km/h" } ?? "")",
                     occurredAt: now,
                     latitude: snapshot.state.latitude,
                     longitude: snapshot.state.longitude,
@@ -1053,7 +1053,7 @@ final class NinebotViewModel: ObservableObject {
                     vehicleName: snapshot.vehicle.name,
                     type: .rideEnded,
                     title: NinebotVehicleEventType.rideEnded.title,
-                    detail: "接口检测到车辆结束骑行",
+                    detail: "车辆已结束骑行",
                     occurredAt: now,
                     latitude: snapshot.state.latitude,
                     longitude: snapshot.state.longitude,
@@ -1127,7 +1127,7 @@ final class NinebotViewModel: ObservableObject {
         // The optimized server dashboard deliberately omits travel history and
         // heavyweight BMS diagnostics so the home screen can render quickly.
         // Do not cancel this task on every 3-second charging refresh: doing so
-        // starves the hydration request and leaves the cards at “接口未返回”.
+        // starves the hydration request and leaves the cards at “--”.
         // The task merges into the latest dashboard when it completes.
         if dashboardTravelEnrichmentTask == nil {
             dashboardTravelEnrichmentTask = Task { [weak self] in
