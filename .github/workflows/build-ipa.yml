@@ -36,8 +36,8 @@ jobs:
           PROJECT=mini-ninebot/mini-ninebot.xcodeproj/project.pbxproj
           VERSION="$(awk -F ' = ' '/MARKETING_VERSION = / { gsub(/;/, "", $2); print $2; exit }' "$PROJECT")"
           BUILD="$(awk -F ' = ' '/CURRENT_PROJECT_VERSION = / { gsub(/;/, "", $2); print $2; exit }' "$PROJECT")"
-          test "$VERSION" = "39"
-          test "$BUILD" = "39"
+          test "$VERSION" = "40"
+          test "$BUILD" = "40"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             test "v$VERSION" = "$GITHUB_REF_NAME"
           fi
