@@ -26,7 +26,7 @@ switch between the supplied daytime and nighttime artwork by local time. The
 daytime window is 06:00–18:59, and the existing static route map and vehicle
 controls remain available.
 
-Version **42**, build **42** is configured in the Xcode project. In the
+Version **43**, build **43** is configured in the Xcode project. In the
 driving state, the home screen removes the cycling glyph from the vehicle-stage
 badge, shows a car icon with “车辆行驶中”, and replaces current speed with the
 live cumulative distance. App launch and each foreground restoration refresh
@@ -38,7 +38,7 @@ background without delaying the first screen.
 Web 版本 **v32** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v42` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v43` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. The workflow uses the repository
 `GITHUB_TOKEN` by default; if repository policy prevents release creation, add a
 fine-grained `GH_RELEASE_TOKEN` Actions secret with repository **Contents: Read
@@ -49,8 +49,15 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v42 --derived-data build/DerivedData-v42
+  scripts/package-unsigned-ipa.sh --output build/ipa-v43 --derived-data build/DerivedData-v43
 ```
+
+## v43 历史行程快速加载
+
+- 修复“记录 / 行程”选择历史月份（例如 `2026.07`、`2026.06`）长时间停在加载状态的问题：前台只请求九号云的第一页真实行程，不再等待最多 99 个串行 `ninecli` 归档请求。
+- 首批记录写入本地归档后立即显示；若该月还有更多页，App 会在后台逐页补齐，并检测上游重复页以避免无效循环或重复数据。
+- 服务端 `travel-sync` 默认也改为快速首屏模式；只有显式传入 `complete=true` 的维护任务才会执行完整月归档，旧版 App 同样不会再等待两分钟。
+- iOS App 与 Widget 的 Marketing Version / Build 均升级为 **43**；推送 `v43` 标签会由 GitHub Actions 打包 unsigned IPA，并将 IPA 与 SHA-256 发布到 GitHub Release。
 
 ## v42 本月总里程
 

@@ -167,6 +167,10 @@ final class NinebotViewModel: ObservableObject {
     private var foregroundRefreshTask: Task<Void, Never>?
     private var dashboardEnrichmentTask: Task<Void, Never>?
     private var dashboardTravelEnrichmentTask: Task<Void, Never>?
+    // Extra pages are deliberately fetched after page one has rendered. Keep
+    // one continuation per vehicle/month so quick re-selections cannot start
+    // duplicate cloud reads.
+    private var prefetchingTravelMonthKeys: Set<String> = []
     private var pendingAutomaticRefresh = false
     private var lastForegroundRefreshRequestAt: Date?
     private var lastManualRefreshAt: Date?
@@ -516,15 +520,14 @@ final class NinebotViewModel: ObservableObject {
         }
     }
 
-    /// Loads one calendar month from the existing Ninebot endpoint. The result
-    /// is applied to the local archive immediately; it must not depend on a
-    /// second dashboard request, because that request is intentionally light
-    /// weight and may omit historical travel data.
+    /// Quickly loads the first real cloud page for a calendar month. Remaining
+    /// pages continue only after the first records are saved and rendered, so
+    /// historical month selection never waits for a complete archive.
     func syncTravelMonth(vehicleSN: String, month: String) async {
         guard syncingTravelMonth == nil else { return }
         let key = Self.travelMonthSyncKey(vehicleSN: vehicleSN, month: month)
 
-        await runLoadingOperation(message: "正在获取 \(Self.displayMonth(month)) 行程") {
+        await runLoadingOperation(message: "正在快速获取 \(Self.displayMonth(month)) 行程") {
             guard self.dataSourceMode == .platform else {
                 throw NinebotInputError.platformOnly
             }
@@ -533,29 +536,106 @@ final class NinebotViewModel: ObservableObject {
 
             do {
                 let client = try makeClient()
-                let page = try await client.syncTravelMonth(sn: vehicleSN, month: month, pageSize: 100)
-                self.store.upsertInterfaceRideRecords(page.records, sn: vehicleSN)
-                self.store.markTravelMonthSynced(sn: vehicleSN, month: month)
+                // `/travel` performs one ninecli request. The former
+                // `/travel-sync` first assembled up to 99 pages serially,
+                // keeping the view in a loading state for minutes.
+                let firstPage = try await client.fetchTravelMonth(sn: vehicleSN, month: month)
+                self.store.upsertInterfaceRideRecords(firstPage.records, sn: vehicleSN)
                 self.travelMonthSyncErrors.removeValue(forKey: key)
 
-                // Update the published archive directly. Previously a successful
-                // month response was followed by another dashboard request; if
-                // that lightweight request timed out or omitted old rides, the UI
-                // incorrectly continued to show an empty month.
+                // Update the published archive directly. Do not trigger a
+                // second dashboard request: that endpoint intentionally omits
+                // old rides and could otherwise overwrite this visible month.
                 let archivedDashboard = self.applyingArchivedTravelRecords(for: vehicleSN)
                 if let archivedDashboard {
                     self.scheduleDashboardEnrichment(for: archivedDashboard)
                 }
 
-                let receivedCount = max(page.total, page.records.count)
-                self.statusMessage = receivedCount == 0
-                    ? "\(Self.displayMonth(month)) 暂无行程"
-                    : "已获取 \(Self.displayMonth(month)) \(receivedCount) 条行程"
+                if firstPage.hasMore {
+                    self.prefetchRemainingTravelPages(
+                        vehicleSN: vehicleSN,
+                        month: month,
+                        firstPage: firstPage
+                    )
+                } else {
+                    // A successful empty response is also complete; recording
+                    // it avoids an endless request loop for a month with no
+                    // rides.
+                    self.store.markTravelMonthSynced(sn: vehicleSN, month: month)
+                }
+
+                let visibleCount = firstPage.records.count
+                let knownTotal = max(firstPage.total, visibleCount)
+                if visibleCount == 0 {
+                    self.statusMessage = "\(Self.displayMonth(month)) 暂无行程"
+                } else if firstPage.hasMore && knownTotal > visibleCount {
+                    self.statusMessage = "已显示 \(Self.displayMonth(month)) \(visibleCount) 条行程，正在后台补齐其余 \(knownTotal - visibleCount) 条"
+                } else {
+                    self.statusMessage = "已获取 \(Self.displayMonth(month)) \(visibleCount) 条行程"
+                }
                 self.errorMessage = nil
                 WidgetCenter.shared.reloadAllTimelines()
             } catch {
                 self.travelMonthSyncErrors[key] = error.localizedDescription
                 throw error
+            }
+        }
+    }
+
+    /// Fetch additional upstream pages only after page one is visible. This is
+    /// bounded by the server's upstream limit and stops immediately when a
+    /// cloud version ignores the page parameter and repeats a page.
+    private func prefetchRemainingTravelPages(
+        vehicleSN: String,
+        month: String,
+        firstPage: NinebotTravelPage
+    ) {
+        let key = Self.travelMonthSyncKey(vehicleSN: vehicleSN, month: month)
+        guard firstPage.hasMore, !prefetchingTravelMonthKeys.contains(key) else { return }
+        prefetchingTravelMonthKeys.insert(key)
+
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.prefetchingTravelMonthKeys.remove(key) }
+
+            do {
+                let client = try self.makeClient()
+                var currentPage = firstPage
+                var nextPageNumber = max(firstPage.page + 1, 2)
+                var seenRideIDs = Set(firstPage.records.map(\.id))
+
+                while currentPage.hasMore,
+                      nextPageNumber <= 99,
+                      !Task.isCancelled {
+                    let nextPage = try await client.fetchTravelMonth(
+                        sn: vehicleSN,
+                        month: month,
+                        page: nextPageNumber
+                    )
+                    guard !nextPage.records.isEmpty else { break }
+
+                    let pageRideIDs = Set(nextPage.records.map(\.id))
+                    // A few upstream versions silently return page one for
+                    // every page number. Never burn through 99 requests or
+                    // duplicate records in that case.
+                    guard !pageRideIDs.isSubset(of: seenRideIDs) else { break }
+                    seenRideIDs.formUnion(pageRideIDs)
+
+                    self.store.upsertInterfaceRideRecords(nextPage.records, sn: vehicleSN)
+                    _ = self.applyingArchivedTravelRecords(for: vehicleSN)
+                    currentPage = nextPage
+                    nextPageNumber += 1
+                }
+
+                // Either all known pages were received, the upstream ended,
+                // or it repeated a page. In every successful case the local
+                // archive is now as complete as that cloud response allows.
+                self.store.markTravelMonthSynced(sn: vehicleSN, month: month)
+                WidgetCenter.shared.reloadAllTimelines()
+            } catch {
+                // Page one remains valid and visible. Leave the month unmarked
+                // so a later selection can resume the incomplete background
+                // fetch instead of replacing real records with an error state.
             }
         }
     }

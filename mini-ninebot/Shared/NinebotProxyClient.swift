@@ -302,37 +302,46 @@ struct NinebotProxyClient {
         )
     }
 
-    /// Loads one month of trips without forcing the fast dashboard endpoint to
-    /// include travel. The dashboard is intentionally lightweight; the view
-    /// model calls this in a cancellable background enrichment task so vehicle
-    /// status appears immediately while trip records still populate shortly
-    /// afterwards.
-    func fetchTravelMonth(sn: String, month: String) async throws -> NinebotTravelPage {
-        let payload = try await fetchTravel(sn: sn, month: month)
+    /// Loads a single upstream page for a month without forcing dashboard data
+    /// to include travel. Returning page one as soon as it arrives keeps the
+    /// history screen responsive; callers may continue with later pages after
+    /// the first real records are already visible.
+    func fetchTravelMonth(
+        sn: String,
+        month: String,
+        page: Int = 1,
+        pageSize: Int = 20
+    ) async throws -> NinebotTravelPage {
+        let payload = try await fetchTravel(sn: sn, month: month, page: page, pageSize: pageSize)
         return Self.travelPage(from: payload, fallbackMonth: month)
     }
 
+    /// Compatibility entry point retained for older call sites. Historical
+    /// loading must never wait for a complete month before showing records;
+    /// use the fast paged endpoint instead of the legacy 120-second archive
+    /// sync request.
     func syncTravelMonth(sn: String, month: String, pageSize: Int = 20) async throws -> NinebotTravelPage {
-        // A historical month is assembled from the official cloud's paged
-        // archive. Keep ordinary live requests responsive, but give this
-        // explicit user-initiated archive sync enough time to finish.
-        let payload = try await request(
-            method: "POST",
-            path: ["vehicles", sn, "travel-sync"],
-            queryItems: [
-                URLQueryItem(name: "month", value: month),
-                URLQueryItem(name: "page_size", value: "\(pageSize)")
-            ],
-            timeoutInterval: 120
-        )
-        return Self.travelPage(from: payload, fallbackMonth: month)
+        try await fetchTravelMonth(sn: sn, month: month, page: 1, pageSize: pageSize)
     }
 
-    private func fetchTravel(sn: String, month: String) async throws -> JSONValue {
+    private func fetchTravel(
+        sn: String,
+        month: String,
+        page: Int = 1,
+        pageSize: Int = 20
+    ) async throws -> JSONValue {
         try await request(
             method: "GET",
             path: ["vehicles", sn, "travel"],
-            queryItems: [URLQueryItem(name: "month", value: month)]
+            queryItems: [
+                URLQueryItem(name: "month", value: month),
+                URLQueryItem(name: "page", value: "\(page)"),
+                URLQueryItem(name: "page_size", value: "\(pageSize)")
+            ],
+            // A history page is one cloud request, not a full archive. Fail
+            // promptly so the UI can offer Retry rather than spinning for two
+            // minutes when the upstream cloud is unavailable.
+            timeoutInterval: 15
         )
     }
 

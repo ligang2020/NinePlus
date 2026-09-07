@@ -436,8 +436,9 @@ def normalize_travel_page(
     # A full aggregate is authoritative even when the upstream response lacks
     # an explicit total field. Otherwise expose a truthful limited state.
     # A normal history page intentionally contains only one upstream page. It
-    # is not a failed/truncated archive request; ``travel-sync`` is the only
-    # endpoint that asks the cloud for the complete month.
+    # is not a failed/truncated archive request; only an explicit
+    # ``travel-sync?complete=true`` maintenance request asks the cloud for a
+    # complete month.
     upstream_page_limited = not source_is_paginated and not upstream_complete and (
         upstream_pages_requested >= TRAVEL_UPSTREAM_MAX_PAGES
         or (reported_total is not None and reported_total > len(raw_rows))
@@ -2419,8 +2420,8 @@ async def vehicle_travel(
     normalized_sn = validate_sn(sn)
     # The interactive history view needs its first visible page quickly. Do
     # not wait for a complete archive here: a complete month can require many
-    # serial ninecli calls. ``/travel-sync`` below remains the explicit,
-    # complete archive operation used by the native history screen.
+    # serial ninecli calls. Additional pages are requested by the native app
+    # only after page one is visible.
     payload = await fetch_travel_upstream_page(session, normalized_sn, normalized_month, page)
     result = normalize_travel_page(
         payload,
@@ -2466,19 +2467,54 @@ async def travel_sync(
     request: Request,
     month: str = "",
     page_size: int = 20,
+    complete: bool = False,
     nineplus_session: str | None = Cookie(default=None),
 ):
+    """Return history promptly by default; reserve full archives for explicit jobs.
+
+    Older native builds called this endpoint as their visible month load. The
+    former implementation serially spawned up to 99 ``ninecli`` processes
+    before returning even the first ride, which made months such as 2026.07
+    appear to load forever. Page one is now the default response, matching the
+    GET endpoint. A maintenance client that truly needs an entire archive can
+    opt in with ``complete=true`` and run it outside the foreground UI.
+    """
     if page_size < 1 or page_size > 100:
         error(400, "invalid_pagination", "分页参数超出范围")
     _, session = await auth_from_request(request, nineplus_session)
     normalized_month = normalize_month(month) or current_month_string()
     normalized_sn = validate_sn(sn)
-    payload = await fetch_complete_travel_month(session, normalized_sn, normalized_month)
-    # Sync is the native app's archive operation, not a scrolling page load.
-    # Return the complete normalized month in one response so an older month
-    # cannot silently stop at the first 100 local rows.
-    full_month_size = max(page_size, len(upstream_travel_rows(payload)), 1)
-    return ok(normalize_travel_page(payload, normalized_month, 1, full_month_size))
+
+    if complete:
+        payload = await fetch_complete_travel_month(session, normalized_sn, normalized_month)
+        full_month_size = max(page_size, len(upstream_travel_rows(payload)), 1)
+        return ok(normalize_travel_page(payload, normalized_month, 1, full_month_size))
+
+    payload = await fetch_travel_upstream_page(session, normalized_sn, normalized_month, 1)
+    result = normalize_travel_page(
+        payload,
+        normalized_month,
+        1,
+        page_size,
+        source_is_paginated=True,
+    )
+    source_rows = upstream_travel_rows(payload)
+    upstream_total = upstream_travel_total(payload)
+    known_total = max(upstream_total or 0, len(source_rows))
+    result.update({
+        "page": 1,
+        "total": known_total,
+        "has_more": (
+            upstream_total > TRAVEL_UPSTREAM_PAGE_SIZE
+            if upstream_total is not None
+            else len(source_rows) >= TRAVEL_UPSTREAM_PAGE_SIZE
+        ),
+        "upstream_pagination_supported": True,
+        "upstream_pages_requested": 1,
+        "upstream_complete": False,
+        "upstream_page_limited": False,
+    })
+    return ok(result)
 
 
 CONTROL_COMMANDS = {

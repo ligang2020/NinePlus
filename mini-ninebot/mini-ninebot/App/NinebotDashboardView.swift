@@ -5978,11 +5978,11 @@ private struct RideListSection: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("正在获取 \(tripMonthDisplayName(selectedMonth)) 行程…")
+                    Text("正在快速获取 \(tripMonthDisplayName(selectedMonth)) 行程…")
                 }
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.teslaPrimaryText)
-                Text("同步完成后会立即显示服务器返回的记录。")
+                Text("首批真实记录返回后立即显示，其余记录会在后台补齐。")
                     .font(.caption)
                     .foregroundStyle(Color.teslaSecondaryText)
             } else if let syncError {
@@ -6007,7 +6007,7 @@ private struct RideListSection: View {
                 Text("\(tripMonthDisplayName(selectedMonth)) 暂无行程")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.teslaPrimaryText)
-                Text("已完成服务器同步；如有新增记录，稍后重新进入本月即可更新。")
+                Text("已获取服务器返回的真实行程；重新进入本月可再次更新。")
                     .font(.caption)
                     .foregroundStyle(Color.teslaSecondaryText)
             } else {

@@ -184,26 +184,28 @@ struct NinebotServerClient {
     }
 
     func syncTravelMonth(sn: String, month: String, pageSize: Int = 20) async throws -> NinebotTravelPage {
-        // A historical month is assembled from the official cloud's paged
-        // archive. Keep ordinary live requests responsive, but give this
-        // explicit user-initiated archive sync enough time to finish.
-        let payload = try await request(
-            method: "POST",
-            path: ["vehicles", sn, "travel-sync"],
-            queryItems: [
-                URLQueryItem(name: "month", value: month),
-                URLQueryItem(name: "page_size", value: "\(pageSize)")
-            ],
-            timeoutInterval: 120
-        )
+        // Keep the legacy client on the same fast, single-page path as the
+        // current app. A complete month is fetched progressively by callers,
+        // never as a foreground 120-second archive operation.
+        let payload = try await fetchTravel(sn: sn, month: month, page: 1, pageSize: pageSize)
         return Self.travelPage(from: payload, fallbackMonth: month)
     }
 
-    private func fetchTravel(sn: String, month: String) async throws -> JSONValue {
+    private func fetchTravel(
+        sn: String,
+        month: String,
+        page: Int = 1,
+        pageSize: Int = 20
+    ) async throws -> JSONValue {
         try await request(
             method: "GET",
             path: ["vehicles", sn, "travel"],
-            queryItems: [URLQueryItem(name: "month", value: month)]
+            queryItems: [
+                URLQueryItem(name: "month", value: month),
+                URLQueryItem(name: "page", value: "\(page)"),
+                URLQueryItem(name: "page_size", value: "\(pageSize)")
+            ],
+            timeoutInterval: 15
         )
     }
 
