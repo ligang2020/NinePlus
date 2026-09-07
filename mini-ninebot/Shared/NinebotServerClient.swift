@@ -83,70 +83,32 @@ struct NinebotServerClient {
         let vehicles = vehicleValues.compactMap(Self.vehicleInfo)
         let currentMonth = Self.currentMonthString()
 
-        var snapshots: [NinebotVehicleSnapshot] = []
-        for vehicle in vehicles {
-            let dashboard: JSONValue?
-            do {
-                dashboard = try await request(method: "GET", path: ["vehicles", vehicle.sn, "dashboard"])
-            } catch {
-                dashboard = nil
-            }
-            let dashboardObject = dashboard?.objectValue
-            let status: JSONValue?
-            let travel: JSONValue?
-            let battery: JSONValue?
-            let prediction: NinebotServerPrediction?
-            let stableState = dashboardObject?["state"]
-            if let stableState, Self.hasVehicleStatus(stableState) {
-                status = stableState
-                travel = dashboardObject?["travel"]
-                battery = Self.hasBatteryData(dashboardObject?["battery"])
-                    ? dashboardObject?["battery"]
-                    : stableState
-                prediction = dashboardObject?["prediction"].flatMap(Self.serverPrediction)
-            } else if let dashboardObject,
-               Self.hasVehicleStatus(dashboardObject["status"]),
-               Self.hasBatteryData(dashboardObject["battery"]) {
-                status = dashboardObject["status"]
-                travel = dashboardObject["travel"]
-                battery = dashboardObject["battery"]
-                prediction = dashboardObject["prediction"].flatMap(Self.serverPrediction)
-            } else {
-                // Status and battery are the authoritative snapshot.  Never turn a
-                // failed request into an empty, apparently successful dashboard.
-                let fallbackStatus = try await request(method: "GET", path: ["vehicles", vehicle.sn, "status"])
-                let fallbackBattery = try await request(method: "GET", path: ["vehicles", vehicle.sn, "battery"])
-                guard Self.hasVehicleStatus(fallbackStatus) else {
-                    throw NinebotServerError.server("服务器没有返回车辆状态，请在管理端检查该车辆最近一次轮询")
+        // The old implementation waited for every vehicle in turn.  More
+        // importantly, it fetched every month from the account binding date
+        // before the first screen could render.  Fetch the current dashboard
+        // for all vehicles concurrently; historical months remain available
+        // through the explicit "sync month" action instead of blocking launch.
+        let fetchedSnapshots = try await withThrowingTaskGroup(
+            of: NinebotVehicleSnapshot.self,
+            returning: [NinebotVehicleSnapshot].self
+        ) { group in
+            for vehicle in vehicles {
+                group.addTask {
+                    try await fetchVehicleSnapshot(vehicle, currentMonth: currentMonth)
                 }
-                guard Self.hasBatteryData(fallbackBattery) else {
-                    throw NinebotServerError.server("服务器没有返回电池数据，请在管理端检查该车辆最近一次轮询")
-                }
-                status = fallbackStatus
-                travel = try? await fetchTravel(sn: vehicle.sn, month: currentMonth)
-                battery = fallbackBattery
-                prediction = try? await fetchPrediction(sn: vehicle.sn)
             }
-            let monthlyTravels = await fetchMonthlyTravels(
-                sn: vehicle.sn,
-                authDate: vehicle.authDate,
-                currentMonth: currentMonth,
-                currentTravel: travel
-            )
-            var state = Self.vehicleState(
-                status: status,
-                travel: travel,
-                battery: battery,
-                prediction: prediction,
-                updatedAt: Self.serverDateValue(dashboardObject?["updated_at"] ?? dashboardObject?["updatedAt"]) ?? Date()
-            )
-            if let totalMileage = Self.totalMileage(fromMonthlyTravels: monthlyTravels) {
-                state.totalMileage = totalMileage
+
+            var snapshots: [NinebotVehicleSnapshot] = []
+            for try await snapshot in group {
+                snapshots.append(snapshot)
             }
-            let dashboardVehicle = dashboardObject?["vehicle"].flatMap(Self.vehicleInfo) ?? vehicle
-            let resolvedVehicle = Self.vehicleInfo(dashboardVehicle, addingImageFrom: status, battery: battery)
-            snapshots.append(NinebotVehicleSnapshot(vehicle: resolvedVehicle, state: state))
+            return snapshots
         }
+
+        // Task groups complete in network order.  Restore the stable vehicle
+        // order returned by the server so selection and UI do not jump around.
+        let snapshotsBySN = Dictionary(uniqueKeysWithValues: fetchedSnapshots.map { ($0.vehicle.sn, $0) })
+        let snapshots = vehicles.compactMap { snapshotsBySN[$0.sn] }
 
         let resolvedSelectedSN: String?
         if let selectedSN, snapshots.contains(where: { $0.vehicle.sn == selectedSN }) {
@@ -160,6 +122,74 @@ struct NinebotServerClient {
             selectedSN: resolvedSelectedSN,
             updatedAt: Date()
         )
+    }
+
+    private func fetchVehicleSnapshot(
+        _ vehicle: NinebotVehicleInfo,
+        currentMonth: String
+    ) async throws -> NinebotVehicleSnapshot {
+        let dashboard: JSONValue?
+        do {
+            dashboard = try await request(method: "GET", path: ["vehicles", vehicle.sn, "dashboard"])
+        } catch {
+            dashboard = nil
+        }
+        let dashboardObject = dashboard?.objectValue
+        let status: JSONValue?
+        let travel: JSONValue?
+        let battery: JSONValue?
+        let prediction: NinebotServerPrediction?
+        let stableState = dashboardObject?["state"]
+        if let stableState, Self.hasVehicleStatus(stableState) {
+            status = stableState
+            travel = dashboardObject?["travel"]
+            battery = Self.hasBatteryData(dashboardObject?["battery"])
+                ? dashboardObject?["battery"]
+                : stableState
+            prediction = dashboardObject?["prediction"].flatMap(Self.serverPrediction)
+        } else if let dashboardObject,
+           Self.hasVehicleStatus(dashboardObject["status"]),
+           Self.hasBatteryData(dashboardObject["battery"]) {
+            status = dashboardObject["status"]
+            travel = dashboardObject["travel"]
+            battery = dashboardObject["battery"]
+            prediction = dashboardObject["prediction"].flatMap(Self.serverPrediction)
+        } else {
+            // Status and battery are the authoritative snapshot. Never turn a
+            // failed request into an empty, apparently successful dashboard.
+            async let fallbackStatus = request(method: "GET", path: ["vehicles", vehicle.sn, "status"])
+            async let fallbackBattery = request(method: "GET", path: ["vehicles", vehicle.sn, "battery"])
+            let (resolvedStatus, resolvedBattery) = try await (fallbackStatus, fallbackBattery)
+            guard Self.hasVehicleStatus(resolvedStatus) else {
+                throw NinebotServerError.server("服务器没有返回车辆状态，请在管理端检查该车辆最近一次轮询")
+            }
+            guard Self.hasBatteryData(resolvedBattery) else {
+                throw NinebotServerError.server("服务器没有返回电池数据，请在管理端检查该车辆最近一次轮询")
+            }
+            status = resolvedStatus
+            travel = try? await fetchTravel(sn: vehicle.sn, month: currentMonth)
+            battery = resolvedBattery
+            prediction = try? await fetchPrediction(sn: vehicle.sn)
+        }
+
+        var state = Self.vehicleState(
+            status: status,
+            travel: travel,
+            battery: battery,
+            prediction: prediction,
+            updatedAt: Self.serverDateValue(dashboardObject?["updated_at"] ?? dashboardObject?["updatedAt"]) ?? Date()
+        )
+        // `vehicleState` already prefers the authoritative lifetime mileage
+        // from status. Use the current-month value only as a fallback.  Do not
+        // serially download years of monthly travel payloads at app launch.
+        if state.totalMileage == nil,
+           let currentTravel = travel,
+           let totalMileage = Self.totalMileage(fromMonthlyTravels: [currentTravel]) {
+            state.totalMileage = totalMileage
+        }
+        let dashboardVehicle = dashboardObject?["vehicle"].flatMap(Self.vehicleInfo) ?? vehicle
+        let resolvedVehicle = Self.vehicleInfo(dashboardVehicle, addingImageFrom: status, battery: battery)
+        return NinebotVehicleSnapshot(vehicle: resolvedVehicle, state: state)
     }
 
     func fetchTravelDetail(sn: String, travelID: String) async throws -> NinebotRideDetail {
@@ -200,33 +230,6 @@ struct NinebotServerClient {
     private func fetchPrediction(sn: String) async throws -> NinebotServerPrediction? {
         let payload = try await request(method: "GET", path: ["vehicles", sn, "prediction"])
         return Self.serverPrediction(from: payload)
-    }
-
-    private func fetchMonthlyTravels(
-        sn: String,
-        authDate: Date?,
-        currentMonth: String,
-        currentTravel: JSONValue?
-    ) async -> [JSONValue]? {
-        let months = Self.monthStrings(from: authDate, through: Date())
-        guard !months.isEmpty else {
-            return currentTravel.map { [$0] }
-        }
-
-        var payloads: [JSONValue] = []
-        for month in months {
-            if month == currentMonth, let currentTravel {
-                payloads.append(currentTravel)
-                continue
-            }
-
-            do {
-                payloads.append(try await fetchTravel(sn: sn, month: month))
-            } catch {
-                return nil
-            }
-        }
-        return payloads
     }
 
     func registerPushDevice(token: String, bundleID: String, environment: String) async throws {
@@ -983,31 +986,6 @@ private extension NinebotServerClient {
         formatter.timeZone = chinaTimeZone
         formatter.dateFormat = "yyyyMM"
         return formatter.string(from: date)
-    }
-
-    static func monthStrings(from startDate: Date?, through endDate: Date) -> [String] {
-        guard let startDate else {
-            return [monthString(for: endDate)]
-        }
-
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = chinaTimeZone
-        let startComponents = calendar.dateComponents([.year, .month], from: startDate)
-        let endComponents = calendar.dateComponents([.year, .month], from: endDate)
-        guard let start = calendar.date(from: startComponents),
-              let end = calendar.date(from: endComponents),
-              start <= end else {
-            return [monthString(for: endDate)]
-        }
-
-        var result: [String] = []
-        var cursor = start
-        while cursor <= end {
-            result.append(monthString(for: cursor))
-            guard let next = calendar.date(byAdding: .month, value: 1, to: cursor) else { break }
-            cursor = next
-        }
-        return result
     }
 
     static var chinaTimeZone: TimeZone {
