@@ -7,6 +7,7 @@ const state = {
   battery: null,
   travels: null,
   pendingAction: null,
+  travelLoadGeneration: 0,
 };
 
 // Render the most recent dashboard immediately after a browser reload, then
@@ -267,6 +268,31 @@ function travelRows(payload) {
   return single && typeof single === 'object' ? [single] : [];
 }
 
+function travelTimestamp(travel, key) {
+  const value = fields(travel, key === 'start'
+    ? ['start_time', 'startTime', 'start_at', 'startAt', 'begin_time', 'beginTime', 'create_time', 'createTime', 'timestamp', 'date']
+    : ['end_time', 'endTime', 'end_at', 'endAt', 'finish_time', 'finishTime', 'stop_time', 'stopTime', 'end_timestamp']);
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    // Ninebot normally sends epoch seconds; accept milliseconds as well.
+    return numeric > 100000000000 ? numeric / 1000 : numeric;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed / 1000 : null;
+}
+
+function sortedTravelRows(payload) {
+  return travelRows(payload).map((row, index) => ({ row, index, timestamp: travelTimestamp(row, 'start') }))
+    .sort((a, b) => {
+      if (a.timestamp !== null && b.timestamp !== null && a.timestamp !== b.timestamp) return b.timestamp - a.timestamp;
+      if (a.timestamp !== null) return -1;
+      if (b.timestamp !== null) return 1;
+      return a.index - b.index;
+    })
+    .map(({ row }) => row);
+}
+
 function travelId(travel) {
   return fields(travel, ['id', 'travel_id', 'travelId', 'record_id', 'recordId', 'trip_id', 'tripId', 'ride_id', 'rideId']);
 }
@@ -318,7 +344,7 @@ function renderDashboard() {
   const battery = state.battery || {};
   const travels = state.travels || {};
   const rows = travelRows(travels);
-  const recent = rows[0] || lastRide();
+  const recent = sortedTravelRows(travels)[0] || lastRide();
   const batteryPercent = fields(status, ['dump_energy', 'dumpEnergy', 'battery_percent', 'batteryPercent', 'remaining_power', 'remainingPower', 'battery_level', 'batteryLevel', 'soc', 'battery', 'power'], fields(battery, ['soc', 'battery', 'remaining_power', 'battery_percent', 'battery_level']));
   const range = fields(status, ['precise_estimate_mileage', 'preciseEstimateMileage', 'endurance', 'remaining_mileage', 'remainingMileage', 'remaining_range', 'remainingRange', 'range']);
   const totalMileage = fields(status, ['total_mileage', 'totalMileage']);
@@ -366,7 +392,7 @@ function renderDashboard() {
   $('#vehiclePlaceholder').hidden = Boolean(image);
   if (image) imageElement.src = image;
 
-  renderTravelRows(rows);
+  renderTravelRows(sortedTravelRows(travels));
 }
 
 function escapeHTML(value) {
@@ -464,40 +490,115 @@ function createLeafletMap(element, points, track = [], vehicle = false) {
   setTimeout(() => map.invalidateSize(), 0);
 }
 
+function travelRowKey(row, index = 0) {
+  const id = travelId(row);
+  if (id !== null && id !== undefined && id !== '') return `id:${id}`;
+  const start = fields(row, ['start_time', 'startTime', 'start_at', 'startAt', 'begin_time', 'beginTime', 'date', 'timestamp'], '');
+  const end = fields(row, ['end_time', 'endTime', 'end_at', 'endAt', 'finish_time', 'finishTime'], '');
+  return `time:${start}:${end}:${fields(row, ['mileages', 'distance', 'mileage'], '')}`;
+}
+
+function mergeTravelPages(base, next) {
+  const existing = travelRows(base);
+  const incoming = travelRows(next);
+  const seen = new Set(existing.map((row, index) => travelRowKey(row, index)));
+  const mergedRows = [...existing];
+  incoming.forEach((row, index) => {
+    const key = travelRowKey(row, existing.length + index);
+    if (!seen.has(key)) {
+      seen.add(key);
+      mergedRows.push(row);
+    }
+  });
+  const merged = base && typeof base === 'object' && !Array.isArray(base) ? { ...base } : {};
+  Object.assign(merged, next && typeof next === 'object' ? next : {});
+  merged.list = mergedRows;
+  merged.items = mergedRows;
+  merged.records = mergedRows;
+  merged.rows = mergedRows;
+  merged.travels = mergedRows;
+  merged.returned = mergedRows.length;
+  return merged;
+}
+
+function travelHasMore(payload, page) {
+  if (payload && typeof payload.has_more === 'boolean') return payload.has_more;
+  const rows = travelRows(payload);
+  const total = numberValue(fields(payload, ['total', 'upstream_total']));
+  if (total !== null) return page * 20 < total;
+  return rows.length >= 20;
+}
+
+function renderTravelProgress(label) {
+  const status = $('#travelSyncStatus');
+  if (status) status.textContent = label;
+}
+
 function renderMaps() {
   clearMaps();
   const vehiclePoint = statusCoordinate(state.status || {});
   createLeafletMap($('#vehicleMap'), vehiclePoint ? [vehiclePoint] : [], [], true);
-  travelRows(state.travels).forEach((travel, index) => {
+  // A full month can contain dozens of rides. Only initialize the first three
+  // maps immediately; the complete record list remains visible without
+  // launching a tile request for every historical ride.
+  sortedTravelRows(state.travels).slice(0, 3).forEach((travel, index) => {
     const track = travelTrack(travel);
     const points = [travelCoordinate(travel, 'start') || track[0], travelCoordinate(travel, 'end') || track[track.length - 1]].filter(Boolean);
     createLeafletMap(document.querySelector(`#travel-map-${index}`), points, track);
+  });
+  sortedTravelRows(state.travels).slice(3).forEach((_, index) => {
+    const element = document.querySelector(`#travel-map-${index + 3}`);
+    if (element) element.innerHTML = '<div class="map-empty">完整记录已加载，地图按需显示</div>';
   });
 }
 
 async function loadTravelRecords(vehicle, month = $('#monthPicker')?.value) {
   if (!vehicle || !$('#travelList')) return;
+  const generation = ++state.travelLoadGeneration;
   const sn = encodeURIComponent(vehicleSN(vehicle));
   const requestedSN = vehicleSN(vehicle);
   const requestedMonth = month || '';
+  const isCurrentRequest = () => generation === state.travelLoadGeneration
+    && vehicleSN(state.selected) === requestedSN
+    && $('#monthPicker')?.value === requestedMonth;
   $('#travelList').innerHTML = '<div class="travel-loading"><span class="loading-dot"></span>正在加载骑行记录…</div>';
+  renderTravelProgress('同步本月全部记录');
   try {
-    const payload = await api(`/vehicles/${sn}/travel?month=${encodeURIComponent(requestedMonth)}&page_size=20`);
-    if (vehicleSN(state.selected) !== requestedSN || $('#monthPicker')?.value !== requestedMonth) return;
+    let payload = await api(`/vehicles/${sn}/travel?month=${encodeURIComponent(requestedMonth)}&page=1&page_size=20`);
+    if (!isCurrentRequest()) return;
     state.travels = payload;
     renderDashboard();
     requestAnimationFrame(renderMaps);
 
-    // Detail/track calls are optional and happen only after the list is visible.
-    // Hydrate a small number of recent rows so the first paint stays fast.
+    // The API is page-based so the first 20 records can paint quickly. Keep
+    // fetching every remaining page and merge it into the same month list;
+    // this prevents August/July/June from silently showing only page one.
+    let page = 1;
+    while (travelHasMore(payload, page) && page < 99) {
+      page += 1;
+      renderTravelProgress(`正在同步第 ${page} 页 · 已加载 ${travelRows(payload).length} 条`);
+      const nextPage = await api(`/vehicles/${sn}/travel?month=${encodeURIComponent(requestedMonth)}&page=${page}&page_size=20`);
+      if (!isCurrentRequest()) return;
+      const nextRows = travelRows(nextPage);
+      payload = mergeTravelPages(payload, nextPage);
+      state.travels = payload;
+      renderDashboard();
+      requestAnimationFrame(renderMaps);
+      if (!nextRows.length) break;
+    }
+    renderTravelProgress(`已加载本月全部 ${travelRows(payload).length} 条记录`);
+
+    // Detail/track calls are optional and happen only after the full list is
+    // present. Hydrate only a few recent rows to keep the page responsive.
     const enriched = await enrichTravelRows(sn, payload, { limit: 3 });
-    if (vehicleSN(state.selected) !== requestedSN || $('#monthPicker')?.value !== requestedMonth || enriched === payload) return;
+    if (!isCurrentRequest() || enriched === payload) return;
     state.travels = enriched;
     renderDashboard();
     requestAnimationFrame(renderMaps);
   } catch (error) {
-    if (vehicleSN(state.selected) !== requestedSN || $('#monthPicker')?.value !== requestedMonth) return;
+    if (!isCurrentRequest()) return;
     $('#travelList').innerHTML = `<div class="travel-empty">骑行记录加载失败：${escapeHTML(error.message)}</div>`;
+    renderTravelProgress('同步失败');
   }
 }
 

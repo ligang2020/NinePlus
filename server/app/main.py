@@ -362,7 +362,14 @@ def merge_upstream_travel_pages(
     return merged
 
 
-def normalize_travel_page(payload: Any, month: str, page: int, page_size: int) -> dict[str, Any]:
+def normalize_travel_page(
+    payload: Any,
+    month: str,
+    page: int,
+    page_size: int,
+    *,
+    source_is_paginated: bool = False,
+) -> dict[str, Any]:
     """Expose real ride times and a month range, never a month-end statement.
 
     The cloud list contains both per-ride ``start_time``/``end_time`` and
@@ -428,7 +435,10 @@ def normalize_travel_page(payload: Any, month: str, page: int, page_size: int) -
     upstream_pages_requested = int(payload.get("nineplus_upstream_pages_requested", 1)) if isinstance(payload, dict) else 1
     # A full aggregate is authoritative even when the upstream response lacks
     # an explicit total field. Otherwise expose a truthful limited state.
-    upstream_page_limited = not upstream_complete and (
+    # A normal history page intentionally contains only one upstream page. It
+    # is not a failed/truncated archive request; ``travel-sync`` is the only
+    # endpoint that asks the cloud for the complete month.
+    upstream_page_limited = not source_is_paginated and not upstream_complete and (
         upstream_pages_requested >= TRAVEL_UPSTREAM_MAX_PAGES
         or (reported_total is not None and reported_total > len(raw_rows))
     )
@@ -1651,6 +1661,47 @@ async def _run_cloud_travel_page(session: CloudSession, sn: str, month: str, ups
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+async def fetch_travel_upstream_page(
+    session: CloudSession,
+    sn: str,
+    month: str,
+    upstream_page: int,
+) -> Any:
+    """Return one cloud travel page with per-page cache and request coalescing.
+
+    The cloud API always returns a fixed-size page. Fetching every page before
+    returning page one made the web console's visible ride history wait for an
+    entire month (and, in the worst case, up to 99 ninecli processes). Keep the
+    cache key page-specific so a foreground list request and an archive sync
+    can safely share the first request without blocking unrelated pages.
+    """
+    if not 1 <= upstream_page <= TRAVEL_UPSTREAM_MAX_PAGES:
+        raise ValueError("unsupported upstream travel page")
+
+    cache_key = ("travel-page", sn, month, str(upstream_page))
+    now = time.monotonic()
+    cached = session.cache.get(cache_key)
+    if cached is not None:
+        expires_at, value = cached
+        if expires_at > now:
+            return copy.deepcopy(value)
+        session.cache.pop(cache_key, None)
+
+    task = session.inflight.get(cache_key)
+    if task is None or task.done():
+        task = asyncio.create_task(_run_cloud_travel_page(session, sn, month, upstream_page))
+        session.inflight[cache_key] = task
+
+    try:
+        value = await asyncio.shield(task)
+    finally:
+        if task.done() and session.inflight.get(cache_key) is task:
+            session.inflight.pop(cache_key, None)
+
+    session.cache[cache_key] = (time.monotonic() + CACHE_TTL_TRAVEL, copy.deepcopy(value))
+    return copy.deepcopy(value)
+
+
 async def fetch_complete_travel_month(session: CloudSession, sn: str, month: str) -> Any:
     """Fetch and merge the actual upstream pages for one calendar month."""
     cache_key = ("travel-complete", sn, month)
@@ -1670,7 +1721,7 @@ async def fetch_complete_travel_month(session: CloudSession, sn: str, month: str
             pagination_supported = True
             for upstream_page in range(1, TRAVEL_UPSTREAM_MAX_PAGES + 1):
                 try:
-                    payload = await _run_cloud_travel_page(session, sn, month, upstream_page)
+                    payload = await fetch_travel_upstream_page(session, sn, month, upstream_page)
                 except (RuntimeError, ValueError) as exc:
                     pagination_supported = False
                     logger.warning("upstream travel pagination unavailable page=%d: %s", upstream_page, type(exc).__name__)
@@ -2361,13 +2412,40 @@ async def vehicle_travel(
     page_size: int = 20,
     nineplus_session: str | None = Cookie(default=None),
 ):
-    if page < 1 or page > 1000 or page_size < 1 or page_size > 100:
+    if page < 1 or page > TRAVEL_UPSTREAM_MAX_PAGES or page_size < 1 or page_size > 100:
         error(400, "invalid_pagination", "分页参数超出范围")
     _, session = await auth_from_request(request, nineplus_session)
     normalized_month = normalize_month(month) or current_month_string()
     normalized_sn = validate_sn(sn)
-    payload = await fetch_complete_travel_month(session, normalized_sn, normalized_month)
-    return ok(normalize_travel_page(payload, normalized_month, page, page_size))
+    # The interactive history view needs its first visible page quickly. Do
+    # not wait for a complete archive here: a complete month can require many
+    # serial ninecli calls. ``/travel-sync`` below remains the explicit,
+    # complete archive operation used by the native history screen.
+    payload = await fetch_travel_upstream_page(session, normalized_sn, normalized_month, page)
+    result = normalize_travel_page(
+        payload,
+        normalized_month,
+        1,
+        page_size,
+        source_is_paginated=True,
+    )
+    source_rows = upstream_travel_rows(payload)
+    upstream_total = upstream_travel_total(payload)
+    known_total = max(upstream_total or 0, (page - 1) * TRAVEL_UPSTREAM_PAGE_SIZE + len(source_rows))
+    result.update({
+        "page": page,
+        "total": known_total,
+        "has_more": (
+            upstream_total > page * TRAVEL_UPSTREAM_PAGE_SIZE
+            if upstream_total is not None
+            else len(source_rows) >= TRAVEL_UPSTREAM_PAGE_SIZE
+        ),
+        "upstream_pagination_supported": True,
+        "upstream_pages_requested": 1,
+        "upstream_complete": False,
+        "upstream_page_limited": False,
+    })
+    return ok(result)
 
 
 @app.get("/vehicles/{sn}/travel/{travel_id}")

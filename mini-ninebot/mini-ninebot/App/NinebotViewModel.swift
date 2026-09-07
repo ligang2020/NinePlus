@@ -394,8 +394,13 @@ final class NinebotViewModel: ObservableObject {
                 forceRefresh: true
             )
             let archivedDashboard = saveDashboard(refreshedDashboard)
-            await cacheVehicleImages(for: archivedDashboard)
-            await refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+            // Do not make the launch/foreground refresh wait for reverse
+            // geocoding, remote images, or the optional travel/BMS reads.
+            // Those operations previously kept `isRefreshingDashboard` true
+            // for several seconds (or up to their request timeout), which made
+            // the dashboard look slow even though a live vehicle snapshot had
+            // already arrived. Start them after publishing the snapshot.
+            scheduleDashboardEnrichment(for: archivedDashboard)
             errorMessage = nil
             statusMessage = "已静默更新 \(Self.timeFormatter.string(from: archivedDashboard.updatedAt))"
             WidgetCenter.shared.reloadAllTimelines()
@@ -1144,17 +1149,24 @@ final class NinebotViewModel: ObservableObject {
         guard dataSourceMode == .platform, !dashboard.vehicles.isEmpty else { return }
         guard let client = try? makeClient() else { return }
         let month = NinebotProxyClient.currentMonthString()
-        var mergedDashboard = self.dashboard
-        var didUpdate = false
 
-        // Keep the first dashboard request lightweight. Hydrate the two optional
-        // detail reads in the background, so neither request delays the first
-        // screen. Keep this path deliberately simple for older Xcode toolchains.
-        for snapshot in dashboard.vehicles {
-            guard !Task.isCancelled,
-                  let index = mergedDashboard.vehicles.firstIndex(where: { $0.vehicle.sn == snapshot.vehicle.sn }) else {
-                continue
-            }
+        // The selected vehicle is the one visible on the home screen. Hydrate
+        // it first so its battery card and "今日里程" have the shortest path,
+        // then continue with any additional bound vehicles.
+        let snapshots = dashboard.vehicles.sorted { lhs, rhs in
+            let selectedSN = dashboard.selectedSN ?? self.dashboard.selectedSN
+            if lhs.vehicle.sn == selectedSN { return true }
+            if rhs.vehicle.sn == selectedSN { return false }
+            return lhs.vehicle.sn < rhs.vehicle.sn
+        }
+
+        // Travel and BMS run concurrently for each vehicle. Apply each result
+        // as soon as it arrives rather than waiting for every bound vehicle.
+        // Re-read `self.dashboard` at that point: an automatic status refresh
+        // can finish while these requests are in flight, and saving a snapshot
+        // captured before the await would otherwise overwrite newer telemetry.
+        for snapshot in snapshots {
+            guard !Task.isCancelled else { return }
 
             async let pageResult = try? await client.fetchTravelMonth(
                 sn: snapshot.vehicle.sn,
@@ -1164,8 +1176,13 @@ final class NinebotViewModel: ObservableObject {
             let page = await pageResult
             let battery = await batteryResult
 
-            guard page != nil || battery != nil else { continue }
-            let current = mergedDashboard.vehicles[index]
+            guard !Task.isCancelled, page != nil || battery != nil else { continue }
+            var dashboardToUpdate = self.dashboard
+            guard let index = dashboardToUpdate.vehicles.firstIndex(where: { $0.vehicle.sn == snapshot.vehicle.sn }) else {
+                continue
+            }
+
+            let current = dashboardToUpdate.vehicles[index]
             if let page, !page.records.isEmpty {
                 store.upsertInterfaceRideRecords(page.records, sn: snapshot.vehicle.sn)
             }
@@ -1180,13 +1197,10 @@ final class NinebotViewModel: ObservableObject {
             mergedState.serverPrediction = current.state.serverPrediction
             mergedState.totalMileage = state.totalMileage ?? current.state.totalMileage
             mergedState.lastMileage = state.lastMileage ?? current.state.lastMileage
-            mergedDashboard.vehicles[index].state = mergedState
-            didUpdate = true
+            dashboardToUpdate.vehicles[index].state = mergedState
+            _ = saveDashboard(dashboardToUpdate)
+            WidgetCenter.shared.reloadAllTimelines()
         }
-
-        guard !Task.isCancelled, didUpdate else { return }
-        _ = saveDashboard(mergedDashboard)
-        WidgetCenter.shared.reloadAllTimelines()
     }
 
     private func cacheVehicleImages(for dashboard: NinebotDashboard) async {

@@ -9,9 +9,9 @@ on:
         default: true
         type: boolean
       release_tag:
-        description: "Release tag (must match the app version; default: v38)"
+        description: "Release tag (must match the app version; default: v41)"
         required: false
-        default: v38
+        default: v41
         type: string
   push:
     branches: [main, master]
@@ -24,12 +24,11 @@ permissions:
 jobs:
   build-ipa:
     name: Build unsigned iOS IPA
-    # Pin the hosted image's Xcode version so the synchronized Xcode project
-    # format and the iOS 18 SDK stay reproducible across runs.
+    # macOS 15 provides an iPhoneOS SDK compatible with the project's iOS 18
+    # deployment target. Use the runner's selected Xcode instead of a brittle
+    # absolute app path, which can disappear when GitHub refreshes its image.
     runs-on: macos-15
     timeout-minutes: 45
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
 
     steps:
       - name: Check out source
@@ -42,7 +41,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -d "$DEVELOPER_DIR"
           xcodebuild -version
 
           PROJECT=mini-ninebot/mini-ninebot.xcodeproj/project.pbxproj

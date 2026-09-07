@@ -73,7 +73,7 @@
         </div>
         <section class="section-block control-section"><div class="section-heading"><div><span class="kicker">REMOTE ACTIONS</span><h2>远程操作</h2></div><span id="controlStatus" class="status-pill">已就绪</span></div><div class="control-grid"><button class="control-button" data-action="bell"><span>♬</span><strong>鸣笛</strong><small>发出提示音</small></button><button class="control-button" data-action="buck"><span>⌃</span><strong>开座桶</strong><small>解锁后备箱</small></button><button class="control-button positive" data-action="engine_start"><span>▶</span><strong>启动</strong><small>远程启动车辆</small></button><button class="control-button destructive" data-action="engine_stop"><span>■</span><strong>熄火</strong><small>关闭车辆动力</small></button></div></section>
 
-        <section class="section-block travel-section"><div class="section-heading"><div><span class="kicker">RIDE HISTORY</span><h2>骑行记录</h2></div><label class="month-control"><span>查看月份</span><input id="monthPicker" class="month-picker" type="month" aria-label="选择月份"></label></div><div id="travelList" class="travel-list"><div class="travel-loading"><span class="loading-dot"></span>正在加载骑行记录…</div></div></section>
+        <section class="section-block travel-section"><div class="section-heading"><div><span class="kicker">RIDE HISTORY</span><h2>骑行记录</h2><span id="travelSyncStatus" class="travel-sync-status">同步本月全部记录</span></div><label class="month-control"><span>查看月份</span><input id="monthPicker" class="month-picker" type="month" aria-label="选择月份"></label></div><div id="travelList" class="travel-list"><div class="travel-loading"><span class="loading-dot"></span>正在加载骑行记录…</div></div></section>
 
         <details class="raw-panel"><summary>查看原始车辆数据 <span>开发者诊断</span></summary><pre id="rawData"></pre></details>
       </div>
@@ -81,6 +81,6 @@
   </section>
   <dialog id="confirmDialog" class="confirm-dialog"><form method="dialog"><div class="dialog-mark">!</div><h2 id="confirmTitle">确认操作</h2><p id="confirmMessage"></p><div class="dialog-actions"><button value="cancel" class="secondary-button">取消</button><button id="confirmAction" value="confirm" class="primary-button">确认执行</button></div></form></dialog>
   <script src="/assets/vendor/leaflet/leaflet.js"></script>
-  <script src="/assets/app.js?v=1.2.69" defer></script>
+  <script src="/assets/app.js?v=1.2.71" defer></script>
 </body>
 </html>

@@ -26,30 +26,38 @@ switch between the supplied daytime and nighttime artwork by local time. The
 daytime window is 06:00–18:59, and the existing static route map and vehicle
 controls remain available.
 
-Version **37**, build **37** is configured in the Xcode project. In the
+Version **41**, build **41** is configured in the Xcode project. In the
 driving state, the home screen removes the cycling glyph from the vehicle-stage
 badge, shows a car icon with “车辆行驶中”, and replaces current speed with the
 live cumulative distance. App launch and each foreground restoration refresh
-the vehicle dashboard while background refreshes reuse the short server cache.
+the live vehicle dashboard; optional travel and BMS details hydrate in the
+background without delaying the first screen.
 
 首页里程卡片显示今日里程；充电详情在后台补抓电池诊断数据，并提供充电功率曲线卡片。
 
 Web 版本 **v32** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v37` also creates or updates the matching GitHub Release
-with the IPA and its SHA-256 checksum. Artifact upload needs no release secret.
-If the repository blocks GitHub's automatic workflow token from creating
-releases, add a fine-grained `GH_RELEASE_TOKEN` Actions secret with repository
-**Contents: Read and write** permission; otherwise the workflow still succeeds
-and leaves the IPA in Actions artifacts.
+artifacts. Pushing tag `v41` also creates or updates the matching GitHub Release
+with the IPA and its SHA-256 checksum. The workflow uses the repository
+`GITHUB_TOKEN` by default; if repository policy prevents release creation, add a
+fine-grained `GH_RELEASE_TOKEN` Actions secret with repository **Contents: Read
+and write** permission. Release-upload failures are reported as workflow
+failures rather than being silently ignored.
 
 For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v37 --derived-data build/DerivedData-v37
+  scripts/package-unsigned-ipa.sh --output build/ipa-v41 --derived-data build/DerivedData-v41
 ```
+
+## v41 首屏实时数据加载
+
+- 修复自动启动/回到前台刷新：此前拿到实时车辆快照后还会同步等待图片下载和地址反查，且不会启动骑行/BMS 补全任务，造成车辆、电池与“今日里程”卡片长时间显示旧值或 `--`。现在快照会立即发布，耗时增强任务全部转入后台。
+- 首页优先并发补全当前车辆的当前月骑行数据和 BMS 电池数据；今日里程、月统计、电压、温度、循环次数与充电功率会在补全后直接写回本地快照。
+- 快速 Dashboard 响应不再覆盖已验证的本地骑行/BMS 数据，网络补全期间仍显示最近一次真实采样；`今日里程` 同日重复桶取最新累计值中较大的值，避免短暂回退。
+- iOS App 与 Widget 的 Marketing Version / Build 均升级为 **41**；推送 `v41` 标签会由 GitHub Actions 构建 unsigned IPA、上传 Actions Artifact，并发布 IPA 与 SHA-256 到 GitHub Release。
 
 ## v37 行程日期校正
 

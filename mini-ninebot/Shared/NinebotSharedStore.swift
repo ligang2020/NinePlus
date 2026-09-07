@@ -119,8 +119,8 @@ struct NinebotSharedStore {
         // current-month endpoint does not return it, instead of replacing it
         // with "-- km" on the home screen.
         let dashboardWithCachedVehicles = preservingCachedVehicles(in: dashboard)
-        let dashboardWithPreservedTotals = preservingKnownTotals(in: dashboardWithCachedVehicles)
-        let archivedDashboard = dashboardWithArchivedInterfaceRides(dashboardWithPreservedTotals)
+        let dashboardWithPreservedDetails = preservingKnownHomeDetails(in: dashboardWithCachedVehicles)
+        let archivedDashboard = dashboardWithArchivedInterfaceRides(dashboardWithPreservedDetails)
         guard let data = try? encoder.encode(archivedDashboard) else { return archivedDashboard }
         defaults.set(data, forKey: Key.dashboard)
         defaults.removeObject(forKey: Key.lastError)
@@ -321,7 +321,11 @@ struct NinebotSharedStore {
         return previous
     }
 
-    private func preservingKnownTotals(in dashboard: NinebotDashboard) -> NinebotDashboard {
+    /// The fast aggregate intentionally omits the current-month travel and
+    /// full BMS payload. Keep the last verified values while those two reads
+    /// refresh in parallel, rather than briefly replacing real values with
+    /// placeholders every time the app becomes active.
+    private func preservingKnownHomeDetails(in dashboard: NinebotDashboard) -> NinebotDashboard {
         guard let previous = loadDashboard() else { return dashboard }
 
         var merged = dashboard
@@ -331,9 +335,31 @@ struct NinebotSharedStore {
                 continue
             }
 
-            if merged.vehicles[index].state.totalMileage == nil {
-                merged.vehicles[index].state.totalMileage = previousSnapshot.state.totalMileage
-            }
+            var state = merged.vehicles[index].state
+            let cached = previousSnapshot.state
+
+            // Status values from the fresh aggregate always win. These fields
+            // are only filled from disk when that lean response omits them.
+            state.totalMileage = state.totalMileage ?? cached.totalMileage
+            state.monthMileage = state.monthMileage ?? cached.monthMileage
+            state.monthEnergy = state.monthEnergy ?? cached.monthEnergy
+            state.monthUsedElectricity = state.monthUsedElectricity ?? cached.monthUsedElectricity
+            state.lastMileage = state.lastMileage ?? cached.lastMileage
+            state.lastEnergy = state.lastEnergy ?? cached.lastEnergy
+            state.lastUsedElectricity = state.lastUsedElectricity ?? cached.lastUsedElectricity
+            state.rideRecords = state.rideRecords ?? cached.rideRecords
+            state.dailyMileageRecords = state.dailyMileageRecords ?? cached.dailyMileageRecords
+            state.rawTravel = state.rawTravel ?? cached.rawTravel
+
+            state.battery = state.battery ?? cached.battery
+            state.batteryVoltage = state.batteryVoltage ?? cached.batteryVoltage
+            state.batteryTemperature = state.batteryTemperature ?? cached.batteryTemperature
+            state.batteryCycleCount = state.batteryCycleCount ?? cached.batteryCycleCount
+            state.chargingPower = state.chargingPower ?? cached.chargingPower
+            state.remainingChargeTime = state.remainingChargeTime ?? cached.remainingChargeTime
+            state.rawBattery = state.rawBattery ?? cached.rawBattery
+
+            merged.vehicles[index].state = state
         }
         return merged
     }

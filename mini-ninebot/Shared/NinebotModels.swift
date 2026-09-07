@@ -1609,15 +1609,22 @@ struct NinebotVehicleState: Codable, Equatable {
         // North America, producing a blank "今日里程" card.
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        if let record = dailyMileages.last(where: { record in
+        let sameDayRecords = dailyMileages.filter { record in
             guard let date = record.date else { return false }
             return calendar.isDate(date, inSameDayAs: updatedAt)
-        }) {
-            return record.mileage
+        }
+        if let mileage = sameDayRecords.map(\.mileage).max() {
+            // Some upstream payloads include both an earlier partial total and
+            // the latest daily total. Prefer the largest non-negative total so
+            // the Today card does not briefly regress to an older sample.
+            return mileage
         }
 
         let currentDay = calendar.component(.day, from: updatedAt)
-        return dailyMileages.last(where: { $0.day == currentDay })?.mileage
+        return dailyMileages
+            .filter { $0.day == currentDay }
+            .map(\.mileage)
+            .max()
     }
 
     var todayMileageText: String {
