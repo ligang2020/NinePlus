@@ -4571,7 +4571,7 @@ private struct TripHeroPanel: View {
                 BasicInfoTile(title: "今日里程", value: snapshot.state.todayMileageText, systemImage: "sun.max.fill")
                 BasicInfoTile(title: "最高速度", value: snapshot.state.maximumSpeedText, systemImage: "speedometer")
                 BasicInfoTile(title: "有效样本", value: "\(snapshot.state.observedRangeSampleCount) 次", systemImage: "scope")
-                BasicInfoTile(title: "本月日均", value: snapshot.state.dailyAverageMileageText, systemImage: "calendar")
+                BasicInfoTile(title: "本月总里程", value: snapshot.state.monthMileageText, systemImage: "road.lanes")
             }
 
             Label(snapshot.state.rangeEstimateAccuracyDetailText, systemImage: "target")

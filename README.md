@@ -26,7 +26,7 @@ switch between the supplied daytime and nighttime artwork by local time. The
 daytime window is 06:00–18:59, and the existing static route map and vehicle
 controls remain available.
 
-Version **41**, build **41** is configured in the Xcode project. In the
+Version **42**, build **42** is configured in the Xcode project. In the
 driving state, the home screen removes the cycling glyph from the vehicle-stage
 badge, shows a car icon with “车辆行驶中”, and replaces current speed with the
 live cumulative distance. App launch and each foreground restoration refresh
@@ -38,7 +38,7 @@ background without delaying the first screen.
 Web 版本 **v32** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v41` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v42` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. The workflow uses the repository
 `GITHUB_TOKEN` by default; if repository policy prevents release creation, add a
 fine-grained `GH_RELEASE_TOKEN` Actions secret with repository **Contents: Read
@@ -49,8 +49,13 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v41 --derived-data build/DerivedData-v41
+  scripts/package-unsigned-ipa.sh --output build/ipa-v42 --derived-data build/DerivedData-v42
 ```
+
+## v42 本月总里程
+
+- “行程”页的概要卡片将原来的“本月日均”替换为“本月总里程”，直接显示当前月 Ninebot 行程接口返回的真实 `total_mileages` / `monthMileage`，不会再以日期推算平均值。
+- iOS App 与 Widget 的 Marketing Version / Build 均升级为 **42**；推送 `v42` 标签会由 GitHub Actions 打包 unsigned IPA，并将 IPA 与 SHA-256 发布到 GitHub Release。
 
 ## v41 首屏实时数据加载
 
