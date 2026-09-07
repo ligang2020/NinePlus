@@ -38,7 +38,7 @@ background without delaying the first screen.
 Web 版本 **v32** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v46` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v47` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. The workflow uses the repository
 `GITHUB_TOKEN` by default; if repository policy prevents release creation, add a
 fine-grained `GH_RELEASE_TOKEN` Actions secret with repository **Contents: Read
@@ -49,8 +49,16 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v46 --derived-data build/DerivedData-v46
+  scripts/package-unsigned-ipa.sh --output build/ipa-v47 --derived-data build/DerivedData-v47
 ```
+
+## v47 历史月份加载与后端诊断修复
+
+- 修复记录页历史月份停留在“准备获取”的问题：月份请求不再由 SwiftUI `.task` 生命周期托管，改由 ViewModel 独立任务管理；切换月份或记录页重建时不会再把请求取消掉。
+- 进入记录页和切换月份立即显示真实的“正在获取”状态；服务器模式错误、网络错误、真实时间字段缺失都会显示明确原因，并提供重试入口，不再静默停留。
+- 历史月份同步标记升级为 v4，自动避开 v46 及更早版本可能留下的错误空月份缓存，重新获取 2026.07、2026.06 等月份。
+- 后端兼容 `YYYYMM` 与 `YYYY-MM` 月份参数，统一使用 `YYYYMM` 请求 ninecli，并记录请求月份、返回条数和无法识别时间字段数量，便于确认是云端无数据还是解析问题。
+- App 与 Widget 的 Marketing Version / Build 均升级为 **47**；推送 `v47` 标签会由 GitHub Actions 打包 unsigned IPA、上传 Actions Artifact，并发布 IPA 与 SHA-256 到 GitHub Release。
 
 ## v46 记录月份筛选修复
 

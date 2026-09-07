@@ -59,6 +59,8 @@ COOKIE_SECURE = os.getenv("NINEPLUS_COOKIE_SECURE", "auto").lower()
 BOOT_TIME = time.time()
 SN_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 TRAVEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+# Accept both formats used by old app builds and the native client. The
+# upstream ninecli command is always called with the canonical YYYYMM form.
 MONTH_PATTERN = re.compile(r"^(?:\d{4}-?\d{2})$")
 SESSION_ROOT = Path(os.getenv("NINEPLUS_SESSION_ROOT", "/run/nineplus/sessions"))
 DASHBOARD_SNAPSHOT_FILE = SESSION_ROOT / "dashboard-snapshot.json"
@@ -218,8 +220,9 @@ def validate_travel_id(travel_id: str) -> str:
 def normalize_month(month: str) -> str:
     if not month:
         return ""
+    month = month.strip()
     if not MONTH_PATTERN.fullmatch(month):
-        error(400, "invalid_month", "月份格式应为 YYYY-MM")
+        error(400, "invalid_month", "月份格式应为 YYYY-MM 或 YYYYMM")
     normalized = month.replace("-", "")
     year, month_number = int(normalized[:4]), int(normalized[4:])
     if year < 2000 or year > 2100 or not 1 <= month_number <= 12:
@@ -2479,8 +2482,22 @@ async def vehicle_travel(
     )
     source_rows = upstream_travel_rows(payload)
     upstream_total = upstream_travel_total(payload)
+    logger.info(
+        "travel page sn=%s month=%s page=%d source=%d returned=%d excluded_time=%d",
+        normalized_sn,
+        normalized_month,
+        page,
+        result.get("source_record_count", len(source_rows)),
+        result.get("returned", 0),
+        result.get("excluded_without_start_time", 0),
+    )
     known_total = max(upstream_total or 0, (page - 1) * TRAVEL_UPSTREAM_PAGE_SIZE + len(source_rows))
     result.update({
+        # Diagnostics are intentionally returned with the page. They make a
+        # cloud/parser problem distinguishable from a cancelled UI task and
+        # let the app show a useful retry message instead of “准备获取”.
+        "requested_month": normalized_month,
+        "upstream_month": normalized_month,
         "page": page,
         "total": known_total,
         "has_more": (

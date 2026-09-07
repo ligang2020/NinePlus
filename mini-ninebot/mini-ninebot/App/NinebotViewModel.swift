@@ -547,22 +547,57 @@ final class NinebotViewModel: ObservableObject {
     /// Toggling the global `isLoading` flag here invalidates the whole dashboard
     /// while the tab is opening and was the remaining source of the visible hitch.
     func syncTravelMonth(vehicleSN: String, month: String) async {
+        guard beginTravelMonthSync(vehicleSN: vehicleSN, month: month) else { return }
+        await performTravelMonthSync(vehicleSN: vehicleSN, month: month)
+    }
+
+    /// Starts a month request that is independent from the lifetime of the
+    /// SwiftUI Records view. `.task` is allowed to cancel during navigation;
+    /// the cloud request must not be cancelled with it after it has started.
+    func startTravelMonthSyncIfNeeded(vehicleSN: String, month: String) {
         let key = Self.travelMonthSyncKey(vehicleSN: vehicleSN, month: month)
-        guard !syncingTravelMonthKeys.contains(key) else { return }
-        guard dataSourceMode == .platform else {
-            travelMonthSyncErrors[key] = NinebotInputError.platformOnly.localizedDescription
+        guard dataSourceMode == .platform,
+              shouldSyncTravelMonth(vehicleSN: vehicleSN, month: month) else {
+            if dataSourceMode != .platform {
+                travelMonthSyncErrors[key] = NinebotInputError.platformOnly.localizedDescription
+            }
             return
         }
 
-        // Do not serialize unrelated months behind one global optional. The
-        // previous implementation made a month selected during another fetch
-        // return immediately; because SwiftUI cancelled that old task, the new
-        // month was never requested at all.
-        syncingTravelMonthKeys.insert(key)
-        syncingTravelMonth = month
-        defer {
+        guard beginTravelMonthSync(vehicleSN: vehicleSN, month: month) else { return }
+        Task { [weak self] in
+            await self?.performTravelMonthSync(vehicleSN: vehicleSN, month: month)
+        }
+    }
+
+    private func beginTravelMonthSync(vehicleSN: String, month: String) -> Bool {
+        let key = Self.travelMonthSyncKey(vehicleSN: vehicleSN, month: month)
+        guard !syncingTravelMonthKeys.contains(key) else { return false }
+        guard dataSourceMode == .platform else {
+            travelMonthSyncErrors[key] = NinebotInputError.platformOnly.localizedDescription
+            return false
+        }
+        syncingTravelMonthSyncState(key: key, month: month, isActive: true)
+        travelMonthSyncErrors.removeValue(forKey: key)
+        return true
+    }
+
+    private func syncingTravelMonthSyncState(key: String, month: String, isActive: Bool) {
+        if isActive {
+            syncingTravelMonthKeys.insert(key)
+            syncingTravelMonth = month
+        } else {
             syncingTravelMonthKeys.remove(key)
-            syncingTravelMonth = syncingTravelMonthKeys.first.flatMap { $0.split(separator: "|").last.map(String.init) }
+            syncingTravelMonth = syncingTravelMonthKeys.first.flatMap {
+                $0.split(separator: "|").last.map(String.init)
+            }
+        }
+    }
+
+    private func performTravelMonthSync(vehicleSN: String, month: String) async {
+        let key = Self.travelMonthSyncKey(vehicleSN: vehicleSN, month: month)
+        defer {
+            syncingTravelMonthSyncState(key: key, month: month, isActive: false)
         }
 
         do {
@@ -592,15 +627,18 @@ final class NinebotViewModel: ObservableObject {
                     firstPage: firstPage
                 )
             } else if firstPage.records.isEmpty && firstPage.sourceRecordCount > 0 {
-                // Do not cache a false empty month. The server may have
-                // returned rows in an envelope we could not parse, or
-                // rows without the start-time field needed for safe month
-                // filtering. Leaving it unmarked lets a later retry fetch
-                // the month after a server/parser upgrade.
-                statusMessage = "云端返回了行程，但时间字段暂未识别，正在保留重试"
+                // Do not leave the UI in the ambiguous “准备获取” state when
+                // the cloud returned rows that the normalizer could not map to
+                // real trip start times. Surface the diagnostics and allow a
+                // retry after the server parser is updated.
+                let excluded = firstPage.excludedWithoutStartTime
+                travelMonthSyncErrors[key] = excluded > 0
+                    ? "服务器返回了 \(firstPage.sourceRecordCount) 条行程，但 \(excluded) 条缺少真实开始时间，未伪造日期。请重试或更新服务器。"
+                    : "服务器返回了行程，但没有可显示的真实记录。请重试。"
+                statusMessage = "\(Self.displayMonth(month)) 行程时间字段无法识别，未显示虚假数据"
             } else {
-                // Only an explicit zero-row response is a trustworthy
-                // empty month and may be cached as complete.
+                // Only an explicit zero-row response is a trustworthy empty
+                // month and may be cached as complete.
                 store.markTravelMonthSynced(sn: vehicleSN, month: month)
             }
 
@@ -614,6 +652,11 @@ final class NinebotViewModel: ObservableObject {
                 statusMessage = "已获取 \(Self.displayMonth(month)) \(visibleCount) 条行程"
             }
             WidgetCenter.shared.reloadAllTimelines()
+        } catch is CancellationError {
+            // The view task may cancel, but the view-model-owned task should
+            // normally survive. Keep a visible retry state if a caller did
+            // cancel a manually started request.
+            travelMonthSyncErrors[key] = "获取请求被取消，请点击重新获取。"
         } catch {
             // Keep any previously cached real records visible. Only the
             // month-local error is published so the app-wide banner/loading
@@ -686,15 +729,10 @@ final class NinebotViewModel: ObservableObject {
     /// Used by the month picker so a historical month is requested once when it
     /// is first selected, while successful empty months do not trigger a loop.
     func syncTravelMonthIfNeeded(vehicleSN: String, month: String) async {
-        guard !Task.isCancelled,
-              dataSourceMode == .platform,
-              shouldSyncTravelMonth(vehicleSN: vehicleSN, month: month) else {
-            return
-        }
-        // Requests are keyed by month. Do not wait for another selection: the
-        // old wait loop observed task cancellation and abandoned the newly
-        // selected month before it ever reached syncTravelMonth.
-        await syncTravelMonth(vehicleSN: vehicleSN, month: month)
+        guard !Task.isCancelled else { return }
+        // Launch from the view model so SwiftUI cancelling `.task(id:)` during
+        // a tab transition cannot cancel the actual month request.
+        startTravelMonthSyncIfNeeded(vehicleSN: vehicleSN, month: month)
     }
 
     func isSyncingTravelMonth(vehicleSN: String, month: String) -> Bool {

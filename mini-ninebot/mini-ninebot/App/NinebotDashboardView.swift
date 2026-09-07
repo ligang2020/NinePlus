@@ -1727,14 +1727,17 @@ private struct NinebotTripsView: View {
             .padding(.bottom, 104)
         }
         .safeAreaPadding(.bottom, 8)
-        .task(id: "\(snapshot.vehicle.sn)|\(selectedMonth)") {
-            // Let the tab transition and its first frame commit before a cloud
-            // task changes observable state or begins archive work. This keeps
-            // opening “记录” responsive even with a large local history.
-            await Task.yield()
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled else { return }
-            await model.syncTravelMonthIfNeeded(
+        .onAppear {
+            // Start synchronously from the view model. Its unstructured task
+            // survives a SwiftUI tab transition, so a cancelled view task can
+            // no longer leave the month stuck at “准备获取”.
+            model.startTravelMonthSyncIfNeeded(
+                vehicleSN: snapshot.vehicle.sn,
+                month: selectedMonth
+            )
+        }
+        .onChange(of: selectedMonth) { _ in
+            model.startTravelMonthSyncIfNeeded(
                 vehicleSN: snapshot.vehicle.sn,
                 month: selectedMonth
             )
