@@ -519,14 +519,20 @@ private extension NinebotServerClient {
         // while upstream/legacy reads may use `list`, `rows`, `travels`, or a
         // root array. Accept every documented shape so a successful historical
         // month response cannot be parsed as an empty list on iOS.
-        var resolvedRides: [JSONValue]?
-        for key in ["records", "items", "list", "rows", "travels"] {
-            if let rides = object[key]?.arrayValue {
-                resolvedRides = rides
-                break
+        func rows(in value: JSONValue, depth: Int = 0) -> [JSONValue]? {
+            if let direct = value.arrayValue { return direct }
+            guard depth < 4, let nested = value.objectValue else { return nil }
+            for key in ["records", "items", "list", "rows", "travels", "travel_list", "travelList", "trip_list", "tripList"] {
+                if let direct = nested[key]?.arrayValue { return direct }
             }
+            for key in ["data", "result", "response", "payload", "body", "travel", "travel_data", "travelData"] {
+                if let wrapped = nested[key], let result = rows(in: wrapped, depth: depth + 1) {
+                    return result
+                }
+            }
+            return nil
         }
-        let rides = resolvedRides ?? value.arrayValue ?? []
+        let rides = rows(in: value) ?? []
         let archiveDateFallbacks = safeArchiveDateFallbacks(for: rides, expectedMonth: fallbackMonth)
         var records = rides.enumerated().compactMap { index, value -> NinebotRideRecord? in
             guard var record = rideRecord(from: value, index: index) else { return nil }
@@ -548,7 +554,10 @@ private extension NinebotServerClient {
             total: object["total"]?.intValue ?? records.count,
             hasMore: object["has_more"]?.boolValue ?? object["hasMore"]?.boolValue ?? false,
             records: records,
-            raw: value
+            raw: value,
+            sourceRecordCount: object["source_record_count"]?.intValue ?? rides.count,
+            excludedWithoutStartTime: object["excluded_without_start_time"]?.intValue ?? 0,
+            upstreamComplete: object["upstream_complete"]?.boolValue ?? false
         )
     }
 

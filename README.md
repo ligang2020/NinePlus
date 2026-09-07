@@ -38,7 +38,7 @@ background without delaying the first screen.
 Web 版本 **v32** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v43` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v44` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. The workflow uses the repository
 `GITHUB_TOKEN` by default; if repository policy prevents release creation, add a
 fine-grained `GH_RELEASE_TOKEN` Actions secret with repository **Contents: Read
@@ -49,8 +49,15 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v43 --derived-data build/DerivedData-v43
+  scripts/package-unsigned-ipa.sh --output build/ipa-v44 --derived-data build/DerivedData-v44
 ```
+
+## v44 历史月份行程与启动同步优化
+
+- 修复 `2026.07`、`2026.06` 等历史月份行程响应嵌套、真实开始时间解析和本地归档显示问题；月份页面从持久化行程归档读取并去重，避免主页刷新后历史月份消失。
+- 历史月份首屏改为单页快速请求，先显示已获取的真实行程，再后台补齐后续分页；无法识别真实开始时间时不伪造日期，并保留重试。
+- 启动时先显示本地缓存，车辆行程与电池详情并发同步，选中车辆优先更新；反向地理编码、图片和非首屏数据移到后台，目标在 3–5 秒内完成真实首页状态更新。
+- iOS App 与 Widget 的 Marketing Version / Build 均升级为 **44**；推送 `v44` 标签会由 GitHub Actions 打包 unsigned IPA、上传 Actions Artifact，并发布 IPA 与 SHA-256 到 GitHub Release。
 
 ## v43 历史行程快速加载
 

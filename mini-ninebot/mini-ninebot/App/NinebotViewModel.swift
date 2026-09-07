@@ -278,13 +278,21 @@ final class NinebotViewModel: ObservableObject {
             await self.syncPushDeviceTokenIfPossible()
         }
         startForegroundRefreshLoop()
-        // A launch must always request fresh vehicle data instead of being
-        // suppressed by a timestamp from the previous foreground session.
-        let refreshed = await refreshAutomaticallyIfPossible(force: true)
-        if !refreshed, hasConnectionSession {
-            // Do not leave a many-hours-old cached timestamp on screen after a
-            // transient wake/network failure. The normal poll will recover too,
-            // but this short retry makes cold starts deterministic.
+        // Paint the persisted dashboard first. When the server already has a
+        // snapshot this returns in milliseconds and schedules a background
+        // refresh; a forced cold read is only needed when there is no local
+        // vehicle data at all. This prevents launch from waiting on every
+        // telemetry endpoint before the home screen becomes usable.
+        let hasCachedDashboard = !dashboard.vehicles.isEmpty
+        let refreshed = await refreshAutomaticallyIfPossible(force: !hasCachedDashboard)
+        if hasCachedDashboard {
+            // The stale snapshot path starts a server-side refresh. Re-read it
+            // shortly after so real live status/battery values land within the
+            // normal 3–5 second launch window without blocking first paint.
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            _ = await refreshAutomaticallyIfPossible(force: true)
+        } else if !refreshed, hasConnectionSession {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             _ = await refreshAutomaticallyIfPossible(force: true)
         }
@@ -557,10 +565,16 @@ final class NinebotViewModel: ObservableObject {
                         month: month,
                         firstPage: firstPage
                     )
+                } else if firstPage.records.isEmpty && firstPage.sourceRecordCount > 0 {
+                    // Do not cache a false empty month. The server may have
+                    // returned rows in an envelope we could not parse, or
+                    // rows without the start-time field needed for safe month
+                    // filtering. Leaving it unmarked lets a later retry fetch
+                    // the month after a server/parser upgrade.
+                    self.statusMessage = "云端返回了行程，但时间字段暂未识别，正在保留重试"
                 } else {
-                    // A successful empty response is also complete; recording
-                    // it avoids an endless request loop for a month with no
-                    // rides.
+                    // Only an explicit zero-row response is a trustworthy
+                    // empty month and may be cached as complete.
                     self.store.markTravelMonthSynced(sn: vehicleSN, month: month)
                 }
 
@@ -804,6 +818,17 @@ final class NinebotViewModel: ObservableObject {
 
     func history(for sn: String) -> [NinebotVehicleHistoryPoint] {
         history[sn] ?? []
+    }
+
+    /// Reads the durable travel archive directly instead of relying only on
+    /// the last dashboard snapshot. This keeps an older selected month visible
+    /// even while the lightweight home snapshot is being refreshed.
+    func travelRecords(for vehicleSN: String, month: String? = nil) -> [NinebotRideRecord] {
+        store.interfaceRideRecords(sn: vehicleSN).filter { record in
+            guard let month else { return true }
+            guard let date = record.startedAt ?? record.endedAt else { return false }
+            return Self.travelMonthKey(for: date) == month
+        }
     }
 
     func recordedRides(for sn: String?) -> [NinebotRecordedRide] {
@@ -1240,31 +1265,38 @@ final class NinebotViewModel: ObservableObject {
             return lhs.vehicle.sn < rhs.vehicle.sn
         }
 
-        // Travel and BMS run concurrently for each vehicle. Apply each result
-        // as soon as it arrives rather than waiting for every bound vehicle.
-        // Re-read `self.dashboard` at that point: an automatic status refresh
-        // can finish while these requests are in flight, and saving a snapshot
-        // captured before the await would otherwise overwrite newer telemetry.
-        for snapshot in snapshots {
+        // Start every vehicle's travel and BMS reads together. The selected
+        // vehicle is sorted first, so its result is applied first while the
+        // remaining vehicles continue in parallel instead of blocking the
+        // home screen one ninecli request at a time.
+        let requests = snapshots.map { snapshot in
+            Task { () -> (String, NinebotTravelPage?, JSONValue?) in
+                async let pageResult = try? await client.fetchTravelMonth(
+                    sn: snapshot.vehicle.sn,
+                    month: month
+                )
+                async let batteryResult = try? await client.fetchBattery(sn: snapshot.vehicle.sn)
+                return (snapshot.vehicle.sn, await pageResult, await batteryResult)
+            }
+        }
+
+        // Re-read `self.dashboard` for every result: an automatic status
+        // refresh can finish while these requests are in flight, and saving a
+        // snapshot captured before the await would otherwise overwrite newer
+        // telemetry.
+        for request in requests {
             guard !Task.isCancelled else { return }
-
-            async let pageResult = try? await client.fetchTravelMonth(
-                sn: snapshot.vehicle.sn,
-                month: month
-            )
-            async let batteryResult = try? await client.fetchBattery(sn: snapshot.vehicle.sn)
-            let page = await pageResult
-            let battery = await batteryResult
-
+            let (vehicleSN, page, battery) = await request.value
             guard !Task.isCancelled, page != nil || battery != nil else { continue }
+
             var dashboardToUpdate = self.dashboard
-            guard let index = dashboardToUpdate.vehicles.firstIndex(where: { $0.vehicle.sn == snapshot.vehicle.sn }) else {
+            guard let index = dashboardToUpdate.vehicles.firstIndex(where: { $0.vehicle.sn == vehicleSN }) else {
                 continue
             }
 
             let current = dashboardToUpdate.vehicles[index]
             if let page, !page.records.isEmpty {
-                store.upsertInterfaceRideRecords(page.records, sn: snapshot.vehicle.sn)
+                store.upsertInterfaceRideRecords(page.records, sn: vehicleSN)
             }
 
             let state = NinebotProxyClient.vehicleState(

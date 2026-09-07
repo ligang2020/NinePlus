@@ -1737,13 +1737,26 @@ private struct NinebotTripsView: View {
 
     private var monthOptions: [String] {
         var months = Set(snapshot.state.rides.compactMap(tripMonthString(for:)))
+        months.formUnion(model.travelRecords(for: snapshot.vehicle.sn).compactMap(tripMonthString(for:)))
         months.insert(tripMonthString(for: Date()))
         months.insert(selectedMonth)
         return months.sorted(by: >)
     }
 
     private var filteredRecords: [NinebotRideRecord] {
-        snapshot.state.rides.filter { tripMonthString(for: $0) == selectedMonth }
+        // The store is the source of truth for historical months. Merge it
+        // with the current snapshot and de-duplicate by the stable ride key so
+        // an older month remains readable even when dashboard data is stale.
+        var byID: [String: NinebotRideRecord] = [:]
+        for record in snapshot.state.rides where tripMonthString(for: record) == selectedMonth {
+            byID[record.stableIdentityKey] = record
+        }
+        for record in model.travelRecords(for: snapshot.vehicle.sn, month: selectedMonth) {
+            byID[record.stableIdentityKey] = record
+        }
+        return byID.values.sorted {
+            ($0.startedAt ?? $0.endedAt ?? .distantPast) > ($1.startedAt ?? $1.endedAt ?? .distantPast)
+        }
     }
 
     private var nextFetchMonth: String {

@@ -385,6 +385,12 @@ struct NinebotTravelPage: Equatable {
     var hasMore: Bool
     var records: [NinebotRideRecord]
     var raw: JSONValue
+    /// Diagnostics from the server tell the UI whether an empty page really
+    /// means an empty month or whether rows were returned but lacked a time
+    /// field that the normalizer could safely use.
+    var sourceRecordCount: Int = 0
+    var excludedWithoutStartTime: Int = 0
+    var upstreamComplete: Bool = false
 }
 
 struct NinebotRideDetail: Codable, Equatable, Identifiable {

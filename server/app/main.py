@@ -227,15 +227,28 @@ def normalize_month(month: str) -> str:
     return normalized
 
 
-TRAVEL_ROW_KEYS = ("list", "rows", "records", "travels", "items")
+# ninecli/upstream wrappers have changed shape across cloud regions. Keep
+# the row keys explicit so aggregate arrays (daily mileage, battery packs,
+# etc.) are never mistaken for ride records, but walk through the common
+# response envelopes below them.
+TRAVEL_ROW_KEYS = ("list", "rows", "records", "travels", "items", "travel_list", "travelList", "trip_list", "tripList")
+TRAVEL_WRAPPER_KEYS = ("data", "result", "response", "payload", "body", "travel", "travel_data", "travelData")
 TRAVEL_START_TIME_KEYS = (
-    "start_time", "startTime", "start_at", "startAt", "start_timestamp", "startTimestamp",
-    "begin_time", "beginTime", "begin_at", "beginAt", "travel_start_time", "travelStartTime",
-    "ride_start_time", "rideStartTime", "stime",
+    "start_time", "startTime", "start_at", "startAt", "start_timestamp", "startTimestamp", "start_ts", "startTs",
+    "begin_time", "beginTime", "begin_at", "beginAt", "begin_timestamp", "beginTimestamp", "begin_ts", "beginTs",
+    "travel_start_time", "travelStartTime", "travel_start_at", "travelStartAt", "travel_start_timestamp", "travelStartTimestamp",
+    "travel_begin_time", "travelBeginTime", "travel_begin_at", "travelBeginAt",
+    "start_date_time", "startDateTime", "start_datetime", "startDatetime", "started_at", "startedAt",
+    "departure_time", "departureTime", "ride_start_time", "rideStartTime", "ride_start_at", "rideStartAt",
+    "start_time_ms", "startTimeMs", "travel_timestamp", "travelTimestamp", "stime",
 )
 TRAVEL_END_TIME_KEYS = (
-    "end_time", "endTime", "end_at", "endAt", "end_timestamp", "endTimestamp",
-    "stop_time", "stopTime", "finish_time", "finishTime", "travel_end_time", "travelEndTime", "etime",
+    "end_time", "endTime", "end_at", "endAt", "end_timestamp", "endTimestamp", "end_ts", "endTs",
+    "stop_time", "stopTime", "stop_at", "stopAt", "stop_timestamp", "stopTimestamp", "finish_time", "finishTime",
+    "finish_at", "finishAt", "finish_timestamp", "finishTimestamp", "travel_end_time", "travelEndTime",
+    "travel_end_at", "travelEndAt", "travel_end_timestamp", "travelEndTimestamp", "end_date_time", "endDateTime",
+    "end_datetime", "endDatetime", "ended_at", "endedAt", "arrival_time", "arrivalTime", "ride_end_time", "rideEndTime",
+    "ride_end_at", "rideEndAt", "end_time_ms", "endTimeMs", "etime",
 )
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
@@ -286,22 +299,55 @@ def travel_timestamp(value: Any) -> float | None:
     return timestamp if 946684800 <= timestamp <= 4102444800 else None
 
 
-def first_travel_timestamp(row: dict[str, Any], keys: tuple[str, ...]) -> float | None:
-    for key in keys:
-        timestamp = travel_timestamp(row.get(key))
-        if timestamp is not None:
-            return timestamp
+def _nested_travel_timestamp(value: Any, *, depth: int = 0) -> float | None:
+    """Read a timestamp from a scalar or the small time-object wrappers used by the cloud."""
+    timestamp = travel_timestamp(value)
+    if timestamp is not None or depth >= 3 or not isinstance(value, dict):
+        return timestamp
+    for key in ("timestamp", "time", "value", "date", "datetime", "iso", "ts"):
+        if key in value:
+            timestamp = _nested_travel_timestamp(value[key], depth=depth + 1)
+            if timestamp is not None:
+                return timestamp
     return None
 
 
-def upstream_travel_rows(payload: Any) -> list[Any]:
+def first_travel_timestamp(row: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    """Find explicit trip times even when a record nests them under data/info."""
+    def search(container: Any, depth: int = 0) -> float | None:
+        if not isinstance(container, dict) or depth > 3:
+            return None
+        for key in keys:
+            if key in container:
+                timestamp = _nested_travel_timestamp(container[key])
+                if timestamp is not None:
+                    return timestamp
+        for key in ("data", "info", "detail", "travel", "trip", "record", "attributes"):
+            nested = container.get(key)
+            if isinstance(nested, dict):
+                timestamp = search(nested, depth + 1)
+                if timestamp is not None:
+                    return timestamp
+        return None
+    return search(row)
+
+
+def upstream_travel_rows(payload: Any, *, max_depth: int = 4) -> list[Any]:
+    """Extract ride rows from direct or nested upstream response envelopes."""
     if isinstance(payload, list):
         return payload
-    if isinstance(payload, dict):
-        for key in TRAVEL_ROW_KEYS:
-            value = payload.get(key)
-            if isinstance(value, list):
-                return value
+    if not isinstance(payload, dict) or max_depth < 0:
+        return []
+    for key in TRAVEL_ROW_KEYS:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    for key in TRAVEL_WRAPPER_KEYS:
+        nested = payload.get(key)
+        if isinstance(nested, (dict, list)):
+            rows = upstream_travel_rows(nested, max_depth=max_depth - 1)
+            if rows:
+                return rows
     return []
 
 
@@ -453,6 +499,7 @@ def normalize_travel_page(
         "total": max(reported_total or 0, len(all_rows)),
         "upstream_total": reported_total,
         "source_record_count": len(raw_rows),
+        "raw_keys": sorted(payload.keys()) if isinstance(payload, dict) else [],
         "returned": len(page_rows),
         "has_more": has_more,
         "upstream_pagination_supported": upstream_pagination_supported,
