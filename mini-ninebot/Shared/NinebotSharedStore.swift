@@ -239,13 +239,18 @@ struct NinebotSharedStore {
         loadInterfaceRideRecords(sn: sn).count
     }
 
-    func upsertInterfaceRideRecords(_ records: [NinebotRideRecord], sn: String) {
-        guard !records.isEmpty else { return }
+    /// Merges a cloud page into the durable archive and returns the exact
+    /// normalized records that were persisted. Returning the result lets the
+    /// app refresh its in-memory Records cache without immediately decoding
+    /// the same UserDefaults JSON a second time on the main actor.
+    @discardableResult
+    func upsertInterfaceRideRecords(_ records: [NinebotRideRecord], sn: String) -> [NinebotRideRecord] {
+        guard !records.isEmpty else { return loadInterfaceRideRecords(sn: sn) }
         let mergedRecords = mergeInterfaceRideRecords(
             incoming: records,
             stored: loadInterfaceRideRecords(sn: sn)
         )
-        saveInterfaceRideRecords(mergedRecords, sn: sn)
+        return saveInterfaceRideRecords(mergedRecords, sn: sn)
     }
 
     /// Returns the complete local archive for one vehicle. Historical months are
@@ -416,10 +421,12 @@ struct NinebotSharedStore {
         return sortedInterfaceRideRecords(deduplicatedInterfaceRideRecords(records))
     }
 
-    private func saveInterfaceRideRecords(_ records: [NinebotRideRecord], sn: String) {
+    @discardableResult
+    private func saveInterfaceRideRecords(_ records: [NinebotRideRecord], sn: String) -> [NinebotRideRecord] {
         let limited = Array(sortedInterfaceRideRecords(deduplicatedInterfaceRideRecords(records)).prefix(500))
-        guard let data = try? encoder.encode(limited) else { return }
+        guard let data = try? encoder.encode(limited) else { return limited }
         defaults.set(data, forKey: interfaceRideKey(sn: sn))
+        return limited
     }
 
     private func mergeInterfaceRideRecords(

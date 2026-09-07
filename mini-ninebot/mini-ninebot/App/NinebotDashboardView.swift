@@ -1725,6 +1725,12 @@ private struct NinebotTripsView: View {
         }
         .safeAreaPadding(.bottom, 8)
         .task(id: "\(snapshot.vehicle.sn)|\(selectedMonth)") {
+            // Let the tab transition and its first frame commit before a cloud
+            // task changes observable state or begins archive work. This keeps
+            // opening “记录” responsive even with a large local history.
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
             await model.syncTravelMonthIfNeeded(
                 vehicleSN: snapshot.vehicle.sn,
                 month: selectedMonth
@@ -1735,28 +1741,26 @@ private struct NinebotTripsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
+    /// The view model retains a de-duplicated in-memory archive. Reading this
+    /// avoids repeated UserDefaults decoding and avoids invoking the computed
+    /// `state.rides` de-duplication path multiple times during layout.
+    private var archiveRecords: [NinebotRideRecord] {
+        model.travelRecords(for: snapshot.vehicle.sn)
+    }
+
     private var monthOptions: [String] {
-        var months = Set(snapshot.state.rides.compactMap(tripMonthString(for:)))
-        months.formUnion(model.travelRecords(for: snapshot.vehicle.sn).compactMap(tripMonthString(for:)))
+        var months = Set(archiveRecords.compactMap(tripMonthString(for:)))
         months.insert(tripMonthString(for: Date()))
         months.insert(selectedMonth)
         return months.sorted(by: >)
     }
 
     private var filteredRecords: [NinebotRideRecord] {
-        // The store is the source of truth for historical months. Merge it
-        // with the current snapshot and de-duplicate by the stable ride key so
-        // an older month remains readable even when dashboard data is stale.
-        var byID: [String: NinebotRideRecord] = [:]
-        for record in snapshot.state.rides where tripMonthString(for: record) == selectedMonth {
-            byID[record.stableIdentityKey] = record
-        }
-        for record in model.travelRecords(for: snapshot.vehicle.sn, month: selectedMonth) {
-            byID[record.stableIdentityKey] = record
-        }
-        return byID.values.sorted {
-            ($0.startedAt ?? $0.endedAt ?? .distantPast) > ($1.startedAt ?? $1.endedAt ?? .distantPast)
-        }
+        archiveRecords.lazy
+            .filter { tripMonthString(for: $0) == selectedMonth }
+            .sorted {
+                ($0.startedAt ?? $0.endedAt ?? .distantPast) > ($1.startedAt ?? $1.endedAt ?? .distantPast)
+            }
     }
 
     private var nextFetchMonth: String {
@@ -1843,13 +1847,31 @@ private func tripMonthString(for record: NinebotRideRecord) -> String? {
     return tripMonthString(for: date)
 }
 
+private enum TripListFormatters {
+    // These helpers are called for every archived trip while a SwiftUI body is
+    // evaluated. Reusing formatters avoids allocating hundreds of ICU
+    // DateFormatters when the Records tab first opens. All call sites are on
+    // the main actor in the SwiftUI view hierarchy.
+    static let month: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        formatter.dateFormat = "yyyyMM"
+        return formatter
+    }()
+
+    static let rideDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
+}
+
 private func tripMonthString(for date: Date) -> String {
-    let formatter = DateFormatter()
-    formatter.calendar = Calendar(identifier: .gregorian)
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-    formatter.dateFormat = "yyyyMM"
-    return formatter.string(from: date)
+    TripListFormatters.month.string(from: date)
 }
 
 private func previousTripMonth(before month: String) -> String {
@@ -5926,7 +5948,7 @@ private struct RideListSection: View {
             if records.isEmpty {
                 emptyState
             } else {
-                VStack(spacing: 10) {
+                LazyVStack(spacing: 10) {
                     ForEach(Array(records.prefix(visibleLimit).enumerated()), id: \.element.id) { index, record in
                         NavigationLink {
                             NinebotRideDetailView(
@@ -7232,11 +7254,7 @@ private struct VehicleRow: View {
 }
 
 private func formatDate(_ date: Date) -> String {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "zh_CN")
-    formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-    formatter.dateFormat = "yyyy-MM-dd HH:mm"
-    return formatter.string(from: date)
+    TripListFormatters.rideDate.string(from: date)
 }
 
 private func formatTime(_ date: Date) -> String {

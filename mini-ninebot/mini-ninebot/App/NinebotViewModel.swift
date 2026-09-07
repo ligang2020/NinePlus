@@ -174,6 +174,11 @@ final class NinebotViewModel: ObservableObject {
     private var pendingAutomaticRefresh = false
     private var lastForegroundRefreshRequestAt: Date?
     private var lastManualRefreshAt: Date?
+    // Accessing UserDefaults and decoding up to hundreds of raw cloud trips on
+    // every SwiftUI body evaluation caused a visible hitch when opening the
+    // Records tab. Keep the already-loaded archive in memory; the durable
+    // store remains the fallback after a cold migration.
+    private var travelRecordCache: [String: [NinebotRideRecord]] = [:]
 
     private var automaticRefreshInterval: TimeInterval {
         // The dashboard endpoint is backed by a live Ninebot poll. Polling every
@@ -196,6 +201,7 @@ final class NinebotViewModel: ObservableObject {
         store.clearLoginResult()
         self.pushDeviceToken = store.loadPushDeviceToken()
         self.dashboard = store.loadDashboard() ?? .empty
+        self.travelRecordCache = Self.travelRecordCache(for: self.dashboard)
         self.errorMessage = store.loadLastError()
         self.history = Self.historyMap(for: self.dashboard, store: store)
         self.resolvedAddresses = store.loadResolvedAddresses().filter { $0.value.source == Self.addressGeocodingSource }
@@ -531,68 +537,77 @@ final class NinebotViewModel: ObservableObject {
     /// Quickly loads the first real cloud page for a calendar month. Remaining
     /// pages continue only after the first records are saved and rendered, so
     /// historical month selection never waits for a complete archive.
+    ///
+    /// This is intentionally not wrapped in `runLoadingOperation`: selecting
+    /// Records is a background page-level read, not a blocking app operation.
+    /// Toggling the global `isLoading` flag here invalidates the whole dashboard
+    /// while the tab is opening and was the remaining source of the visible hitch.
     func syncTravelMonth(vehicleSN: String, month: String) async {
         guard syncingTravelMonth == nil else { return }
+        guard dataSourceMode == .platform else {
+            let key = Self.travelMonthSyncKey(vehicleSN: vehicleSN, month: month)
+            travelMonthSyncErrors[key] = NinebotInputError.platformOnly.localizedDescription
+            return
+        }
+
         let key = Self.travelMonthSyncKey(vehicleSN: vehicleSN, month: month)
+        syncingTravelMonth = month
+        defer { syncingTravelMonth = nil }
 
-        await runLoadingOperation(message: "正在快速获取 \(Self.displayMonth(month)) 行程") {
-            guard self.dataSourceMode == .platform else {
-                throw NinebotInputError.platformOnly
+        do {
+            let client = try makeClient()
+            // `/travel` performs one ninecli request. The former
+            // `/travel-sync` first assembled up to 99 pages serially,
+            // keeping the view in a loading state for minutes.
+            let firstPage = try await client.fetchTravelMonth(sn: vehicleSN, month: month)
+            travelRecordCache[vehicleSN] = store.upsertInterfaceRideRecords(
+                firstPage.records,
+                sn: vehicleSN
+            )
+            travelMonthSyncErrors.removeValue(forKey: key)
+
+            // Update the published archive directly. Do not trigger a
+            // second dashboard request: that endpoint intentionally omits
+            // old rides and could otherwise overwrite this visible month.
+            let archivedDashboard = applyingArchivedTravelRecords(for: vehicleSN)
+            if let archivedDashboard {
+                scheduleDashboardEnrichment(for: archivedDashboard)
             }
-            self.syncingTravelMonth = month
-            defer { self.syncingTravelMonth = nil }
 
-            do {
-                let client = try makeClient()
-                // `/travel` performs one ninecli request. The former
-                // `/travel-sync` first assembled up to 99 pages serially,
-                // keeping the view in a loading state for minutes.
-                let firstPage = try await client.fetchTravelMonth(sn: vehicleSN, month: month)
-                self.store.upsertInterfaceRideRecords(firstPage.records, sn: vehicleSN)
-                self.travelMonthSyncErrors.removeValue(forKey: key)
-
-                // Update the published archive directly. Do not trigger a
-                // second dashboard request: that endpoint intentionally omits
-                // old rides and could otherwise overwrite this visible month.
-                let archivedDashboard = self.applyingArchivedTravelRecords(for: vehicleSN)
-                if let archivedDashboard {
-                    self.scheduleDashboardEnrichment(for: archivedDashboard)
-                }
-
-                if firstPage.hasMore {
-                    self.prefetchRemainingTravelPages(
-                        vehicleSN: vehicleSN,
-                        month: month,
-                        firstPage: firstPage
-                    )
-                } else if firstPage.records.isEmpty && firstPage.sourceRecordCount > 0 {
-                    // Do not cache a false empty month. The server may have
-                    // returned rows in an envelope we could not parse, or
-                    // rows without the start-time field needed for safe month
-                    // filtering. Leaving it unmarked lets a later retry fetch
-                    // the month after a server/parser upgrade.
-                    self.statusMessage = "云端返回了行程，但时间字段暂未识别，正在保留重试"
-                } else {
-                    // Only an explicit zero-row response is a trustworthy
-                    // empty month and may be cached as complete.
-                    self.store.markTravelMonthSynced(sn: vehicleSN, month: month)
-                }
-
-                let visibleCount = firstPage.records.count
-                let knownTotal = max(firstPage.total, visibleCount)
-                if visibleCount == 0 {
-                    self.statusMessage = "\(Self.displayMonth(month)) 暂无行程"
-                } else if firstPage.hasMore && knownTotal > visibleCount {
-                    self.statusMessage = "已显示 \(Self.displayMonth(month)) \(visibleCount) 条行程，正在后台补齐其余 \(knownTotal - visibleCount) 条"
-                } else {
-                    self.statusMessage = "已获取 \(Self.displayMonth(month)) \(visibleCount) 条行程"
-                }
-                self.errorMessage = nil
-                WidgetCenter.shared.reloadAllTimelines()
-            } catch {
-                self.travelMonthSyncErrors[key] = error.localizedDescription
-                throw error
+            if firstPage.hasMore {
+                prefetchRemainingTravelPages(
+                    vehicleSN: vehicleSN,
+                    month: month,
+                    firstPage: firstPage
+                )
+            } else if firstPage.records.isEmpty && firstPage.sourceRecordCount > 0 {
+                // Do not cache a false empty month. The server may have
+                // returned rows in an envelope we could not parse, or
+                // rows without the start-time field needed for safe month
+                // filtering. Leaving it unmarked lets a later retry fetch
+                // the month after a server/parser upgrade.
+                statusMessage = "云端返回了行程，但时间字段暂未识别，正在保留重试"
+            } else {
+                // Only an explicit zero-row response is a trustworthy
+                // empty month and may be cached as complete.
+                store.markTravelMonthSynced(sn: vehicleSN, month: month)
             }
+
+            let visibleCount = firstPage.records.count
+            let knownTotal = max(firstPage.total, visibleCount)
+            if visibleCount == 0 {
+                statusMessage = "\(Self.displayMonth(month)) 暂无行程"
+            } else if firstPage.hasMore && knownTotal > visibleCount {
+                statusMessage = "已显示 \(Self.displayMonth(month)) \(visibleCount) 条行程，正在后台补齐其余 \(knownTotal - visibleCount) 条"
+            } else {
+                statusMessage = "已获取 \(Self.displayMonth(month)) \(visibleCount) 条行程"
+            }
+            WidgetCenter.shared.reloadAllTimelines()
+        } catch {
+            // Keep any previously cached real records visible. Only the
+            // month-local error is published so the app-wide banner/loading
+            // state cannot interrupt the Records tab transition.
+            travelMonthSyncErrors[key] = error.localizedDescription
         }
     }
 
@@ -635,7 +650,10 @@ final class NinebotViewModel: ObservableObject {
                     guard !pageRideIDs.isSubset(of: seenRideIDs) else { break }
                     seenRideIDs.formUnion(pageRideIDs)
 
-                    self.store.upsertInterfaceRideRecords(nextPage.records, sn: vehicleSN)
+                    self.travelRecordCache[vehicleSN] = self.store.upsertInterfaceRideRecords(
+                        nextPage.records,
+                        sn: vehicleSN
+                    )
                     _ = self.applyingArchivedTravelRecords(for: vehicleSN)
                     currentPage = nextPage
                     nextPageNumber += 1
@@ -820,12 +838,23 @@ final class NinebotViewModel: ObservableObject {
         history[sn] ?? []
     }
 
-    /// Reads the durable travel archive directly instead of relying only on
-    /// the last dashboard snapshot. This keeps an older selected month visible
-    /// even while the lightweight home snapshot is being refreshed.
+    /// Returns the durable travel archive without decoding it repeatedly on the
+    /// main actor. The Records view calls this while SwiftUI is laying out the
+    /// tab, so a memory cache prevents a UserDefaults/JSON decode hitch on every
+    /// body update. The persisted archive is loaded only once as a migration
+    /// fallback when a legacy dashboard has no embedded records.
     func travelRecords(for vehicleSN: String, month: String? = nil) -> [NinebotRideRecord] {
-        store.interfaceRideRecords(sn: vehicleSN).filter { record in
-            guard let month else { return true }
+        let records: [NinebotRideRecord]
+        if let cached = travelRecordCache[vehicleSN] {
+            records = cached
+        } else {
+            let persisted = store.interfaceRideRecords(sn: vehicleSN)
+            travelRecordCache[vehicleSN] = persisted
+            records = persisted
+        }
+
+        guard let month else { return records }
+        return records.filter { record in
             guard let date = record.startedAt ?? record.endedAt else { return false }
             return Self.travelMonthKey(for: date) == month
         }
@@ -1024,13 +1053,21 @@ final class NinebotViewModel: ObservableObject {
         }
 
         var dashboardWithArchive = dashboard
-        let records = store.interfaceRideRecords(sn: vehicleSN)
+        let records = travelRecordCache[vehicleSN] ?? store.interfaceRideRecords(sn: vehicleSN)
+        travelRecordCache[vehicleSN] = records
         dashboardWithArchive.vehicles[vehicleIndex].state.rideRecords = records.isEmpty ? nil : records
         return saveDashboard(dashboardWithArchive)
     }
 
     private static func travelMonthSyncKey(vehicleSN: String, month: String) -> String {
         "\(vehicleSN)|\(month)"
+    }
+
+    private static func travelRecordCache(for dashboard: NinebotDashboard) -> [String: [NinebotRideRecord]] {
+        Dictionary(uniqueKeysWithValues: dashboard.vehicles.compactMap { snapshot in
+            let records = snapshot.state.rideRecords ?? []
+            return records.isEmpty ? nil : (snapshot.vehicle.sn, records)
+        })
     }
 
     @discardableResult
@@ -1040,6 +1077,12 @@ final class NinebotViewModel: ObservableObject {
         recordVehicleEvents(previous: previousDashboard, current: archivedDashboard)
         archiveCompletedChargingSessions(previous: previousDashboard, current: archivedDashboard)
         self.dashboard = archivedDashboard
+        // Keep Records-tab reads in memory after every dashboard publication.
+        // Values are arrays with copy-on-write storage, so this does not copy
+        // raw trip JSON until a later mutation actually needs it.
+        for (sn, records) in Self.travelRecordCache(for: archivedDashboard) where !records.isEmpty {
+            travelRecordCache[sn] = records
+        }
         history = Self.historyMap(for: archivedDashboard, store: store)
         NinebotChargingLiveActivityManager.sync(with: archivedDashboard)
         return archivedDashboard
@@ -1296,7 +1339,10 @@ final class NinebotViewModel: ObservableObject {
 
             let current = dashboardToUpdate.vehicles[index]
             if let page, !page.records.isEmpty {
-                store.upsertInterfaceRideRecords(page.records, sn: vehicleSN)
+                travelRecordCache[vehicleSN] = store.upsertInterfaceRideRecords(
+                    page.records,
+                    sn: vehicleSN
+                )
             }
 
             let state = NinebotProxyClient.vehicleState(
@@ -1474,13 +1520,17 @@ final class NinebotViewModel: ObservableObject {
             || message.contains("账户不存在")
     }
 
-    private static func travelMonthKey(for date: Date) -> String {
+    private static let travelMonthFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         formatter.dateFormat = "yyyyMM"
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    private static func travelMonthKey(for date: Date) -> String {
+        travelMonthFormatter.string(from: date)
     }
 
     private static func displayMonth(_ month: String) -> String {

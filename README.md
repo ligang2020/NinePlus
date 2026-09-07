@@ -38,7 +38,7 @@ background without delaying the first screen.
 Web 版本 **v32** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v44` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v45` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. The workflow uses the repository
 `GITHUB_TOKEN` by default; if repository policy prevents release creation, add a
 fine-grained `GH_RELEASE_TOKEN` Actions secret with repository **Contents: Read
@@ -49,8 +49,15 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v44 --derived-data build/DerivedData-v44
+  scripts/package-unsigned-ipa.sh --output build/ipa-v45 --derived-data build/DerivedData-v45
 ```
+
+## v45 记录页打开流畅性优化
+
+- 修复打开「记录」页的明显卡顿：行程归档改为内存缓存读取，避免 SwiftUI 首屏和重绘时反复从 UserDefaults 解码、去重和排序数百条真实骑行数据。
+- 月份筛选和行程日期格式化复用 formatter，列表采用惰性布局；首屏只构建可见行程行，历史月份继续使用真实开始时间显示。
+- 行程云端同步改为记录页独立的非阻塞任务，先完成 Tab 切换和首帧渲染，不再切换全局 loading 状态；首批真实记录到达即显示，剩余分页仍在后台补齐。
+- 写入行程归档后直接复用已规范化的内存结果，避免再次读取并解码同一份 JSON；iOS App 与 Widget 的 Marketing Version / Build 均升级为 **45**，推送 `v45` 标签会由 GitHub Actions 打包 unsigned IPA、上传 Actions Artifact，并发布 IPA 与 SHA-256 到 GitHub Release。
 
 ## v44 历史月份行程与启动同步优化
 
