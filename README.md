@@ -38,7 +38,7 @@ background without delaying the first screen.
 Web 版本 **v32** 在充电记录页加入通栏“充电功率曲线”卡片：使用 Tailwind 深色毛玻璃卡片与纯 SVG 平滑面积图，支持实时功率、峰值/平均功率、时间轴、悬浮/键盘数据点，以及移动端响应式布局。构建 Web 版本：`cd web && npm run build`。
 
 GitHub Actions builds an unsigned device IPA and uploads it to workflow
-artifacts. Pushing tag `v45` also creates or updates the matching GitHub Release
+artifacts. Pushing tag `v46` also creates or updates the matching GitHub Release
 with the IPA and its SHA-256 checksum. The workflow uses the repository
 `GITHUB_TOKEN` by default; if repository policy prevents release creation, add a
 fine-grained `GH_RELEASE_TOKEN` Actions secret with repository **Contents: Read
@@ -49,8 +49,14 @@ For a local package, use Xcode 16.4 or newer:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  scripts/package-unsigned-ipa.sh --output build/ipa-v45 --derived-data build/DerivedData-v45
+  scripts/package-unsigned-ipa.sh --output build/ipa-v46 --derived-data build/DerivedData-v46
 ```
+
+## v46 记录月份筛选修复
+
+- 修复切换记录月份时无法获取其他月份数据的问题：原逻辑使用单一全局同步状态，当前月份请求尚未结束时，用户切换到其他月份会被直接丢弃；现在按“车辆 + 月份”分别跟踪请求，历史月份切换不会再被前一个月份阻塞。
+- 月份筛选的加载状态改为只绑定当前车辆和当前月份，切换月份后会立即发起对应月份的真实云端请求，并保留已有归档数据。
+- 删除月份筛选中的重复并发请求，避免“获取上一月份”按钮和 SwiftUI 页面任务同时请求同一个月份；App 与 Widget 的 Marketing Version / Build 均升级为 **46**，推送 `v46` 标签会由 GitHub Actions 打包 unsigned IPA、上传 Actions Artifact，并发布 IPA 与 SHA-256 到 GitHub Release。
 
 ## v45 记录页打开流畅性优化
 

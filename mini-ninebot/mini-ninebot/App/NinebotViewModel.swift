@@ -159,6 +159,10 @@ final class NinebotViewModel: ObservableObject {
     @Published private(set) var vehicleEvents: [NinebotVehicleEvent] = []
     @Published private(set) var loadingRideDetailKeys: Set<String> = []
     @Published private(set) var syncingTravelMonth: String?
+    /// Month syncs are keyed by vehicle and month. A single optional month
+    /// used to make selecting 2026.07 while another month was loading silently
+    /// drop the new request, leaving the filter stuck on an empty month.
+    @Published private(set) var syncingTravelMonthKeys: Set<String> = []
     @Published private(set) var travelMonthSyncErrors: [String: String] = [:]
 
     private let store = NinebotSharedStore()
@@ -543,16 +547,23 @@ final class NinebotViewModel: ObservableObject {
     /// Toggling the global `isLoading` flag here invalidates the whole dashboard
     /// while the tab is opening and was the remaining source of the visible hitch.
     func syncTravelMonth(vehicleSN: String, month: String) async {
-        guard syncingTravelMonth == nil else { return }
+        let key = Self.travelMonthSyncKey(vehicleSN: vehicleSN, month: month)
+        guard !syncingTravelMonthKeys.contains(key) else { return }
         guard dataSourceMode == .platform else {
-            let key = Self.travelMonthSyncKey(vehicleSN: vehicleSN, month: month)
             travelMonthSyncErrors[key] = NinebotInputError.platformOnly.localizedDescription
             return
         }
 
-        let key = Self.travelMonthSyncKey(vehicleSN: vehicleSN, month: month)
+        // Do not serialize unrelated months behind one global optional. The
+        // previous implementation made a month selected during another fetch
+        // return immediately; because SwiftUI cancelled that old task, the new
+        // month was never requested at all.
+        syncingTravelMonthKeys.insert(key)
         syncingTravelMonth = month
-        defer { syncingTravelMonth = nil }
+        defer {
+            syncingTravelMonthKeys.remove(key)
+            syncingTravelMonth = syncingTravelMonthKeys.first.flatMap { $0.split(separator: "|").last.map(String.init) }
+        }
 
         do {
             let client = try makeClient()
@@ -675,20 +686,19 @@ final class NinebotViewModel: ObservableObject {
     /// Used by the month picker so a historical month is requested once when it
     /// is first selected, while successful empty months do not trigger a loop.
     func syncTravelMonthIfNeeded(vehicleSN: String, month: String) async {
-        guard dataSourceMode == .platform else { return }
-
-        // A user can switch months while the initial month is still loading.
-        // Wait for that one request rather than dropping the newly selected
-        // month; the task is cancelled automatically if selection changes again.
-        while syncingTravelMonth != nil && !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
-
         guard !Task.isCancelled,
+              dataSourceMode == .platform,
               shouldSyncTravelMonth(vehicleSN: vehicleSN, month: month) else {
             return
         }
+        // Requests are keyed by month. Do not wait for another selection: the
+        // old wait loop observed task cancellation and abandoned the newly
+        // selected month before it ever reached syncTravelMonth.
         await syncTravelMonth(vehicleSN: vehicleSN, month: month)
+    }
+
+    func isSyncingTravelMonth(vehicleSN: String, month: String) -> Bool {
+        syncingTravelMonthKeys.contains(Self.travelMonthSyncKey(vehicleSN: vehicleSN, month: month))
     }
 
     func hasSyncedTravelMonth(vehicleSN: String, month: String) -> Bool {

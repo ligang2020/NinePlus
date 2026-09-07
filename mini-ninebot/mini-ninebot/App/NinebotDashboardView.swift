@@ -1700,14 +1700,17 @@ private struct NinebotTripsView: View {
                     months: monthOptions,
                     selectedMonth: selectedMonth,
                     nextFetchMonth: nextFetchMonth,
-                    isSyncing: model.syncingTravelMonth != nil,
+                    isSyncing: model.isSyncingTravelMonth(
+                        vehicleSN: snapshot.vehicle.sn,
+                        month: selectedMonth
+                    ),
                     onSelect: { selectedMonth = $0 },
                     onFetchOlder: {
-                        let targetMonth = nextFetchMonth
-                        selectedMonth = targetMonth
-                        Task {
-                            await model.syncTravelMonth(vehicleSN: snapshot.vehicle.sn, month: targetMonth)
-                        }
+                        // Changing the selection drives the keyed `.task`
+                        // below. Avoid starting a second untracked request;
+                        // that race used to make the selected month lose its
+                        // fetch when another month was still loading.
+                        selectedMonth = nextFetchMonth
                     }
                 )
                 RideListSection(
@@ -6000,7 +6003,9 @@ private struct RideListSection: View {
 
     @ViewBuilder
     private var emptyState: some View {
-        let isSyncingSelectedMonth = model.syncingTravelMonth == selectedMonth
+        let isSyncingSelectedMonth = vehicleSN.map {
+            model.isSyncingTravelMonth(vehicleSN: $0, month: selectedMonth)
+        } ?? false
         let syncError = vehicleSN.flatMap {
             model.travelMonthSyncError(vehicleSN: $0, month: selectedMonth)
         }
