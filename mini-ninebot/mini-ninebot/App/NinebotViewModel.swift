@@ -177,6 +177,7 @@ final class NinebotViewModel: ObservableObject {
     private var prefetchingTravelMonthKeys: Set<String> = []
     private var pendingAutomaticRefresh = false
     private var lastForegroundRefreshRequestAt: Date?
+    private var lastBackgroundAt: Date?
     private var lastManualRefreshAt: Date?
     // Accessing UserDefaults and decoding up to hundreds of raw cloud trips on
     // every SwiftUI body evaluation caused a visible hitch when opening the
@@ -327,15 +328,17 @@ final class NinebotViewModel: ObservableObject {
 
     private func beginForegroundRefreshCycle() -> Bool {
         let now = Date()
-        if let lastForegroundRefreshRequestAt,
+        if let lastForegroundRefreshRequestAt, lastBackgroundAt == nil,
            now.timeIntervalSince(lastForegroundRefreshRequestAt) < 1.5 {
             return false
         }
         lastForegroundRefreshRequestAt = now
+        lastBackgroundAt = nil
         return true
     }
 
     func stopForegroundRefreshLoop() {
+        lastBackgroundAt = Date()
         foregroundRefreshTask?.cancel()
         foregroundRefreshTask = nil
     }

@@ -83,7 +83,7 @@ struct NinebotDashboardView: View {
                                     points: model.history(for: primary.vehicle.sn)
                                 )
                             } label: {
-                                VehicleHealthPanel(snapshot: primary)
+                                VehicleHealthPanel(snapshot: primary, points: model.history(for: primary.vehicle.sn))
                             }
                             .buttonStyle(.plain)
                                 .padding(.horizontal, 16)
@@ -4434,6 +4434,8 @@ private struct RangeEstimateBar: View {
 
 private struct VehicleHealthPanel: View {
     var snapshot: NinebotVehicleSnapshot
+    var points: [NinebotVehicleHistoryPoint]
+    private var distanceSinceLastChargeText: String { NinebotChargingSession(snapshot: snapshot, points: points).distanceSinceLastChargeText }
 
     var body: some View {
         let warnings = snapshot.state.warningTexts
@@ -4461,15 +4463,23 @@ private struct VehicleHealthPanel: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: 8) {
-                    Text(snapshot.state.batteryText)
-                        .font(.title3.monospacedDigit().weight(.bold))
-                        .foregroundStyle(batteryTextColor(snapshot.state))
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(Color.teslaSecondaryText)
+                VStack(alignment: .trailing, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(snapshot.state.batteryText)
+                            .font(.title3.monospacedDigit().weight(.bold))
+                            .foregroundStyle(batteryTextColor(snapshot.state))
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(Color.teslaSecondaryText)
+                    }
+                    if snapshot.state.isCharging == true {
+                        Text("距上次充电 \(distanceSinceLastChargeText)")
+                            .font(.caption2.monospacedDigit().weight(.medium))
+                            .foregroundStyle(Color.teslaSecondaryText)
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                    }
                 }
-                .frame(alignment: .center)
+                .frame(maxWidth: 150, alignment: .trailing)
             }
 
             if let storedEnergy = snapshot.state.storedEnergyKWh {
